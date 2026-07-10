@@ -10,13 +10,25 @@
 import asyncio
 import logging
 import re
+import time
 
 import kinopoisk
 import omdb
+import ratelimit
 import wikidata
 from config import KINOPOISK_TOKEN
 
 logger = logging.getLogger(__name__)
+
+# Кэш результатов поиска по нормализованному запросу — одинаковые/популярные
+# запросы (в т.ч. от разных пользователей) не тратят лимит источника.
+_QCACHE: dict[str, tuple[float, list]] = {}
+_QTTL = 6 * 3600   # свежесть результата, сек
+_QMAX = 300        # максимум запросов в кэше
+
+
+def _qnorm(query: str) -> str:
+    return " ".join(query.lower().split())
 
 
 def extract_imdb_id(text: str) -> str | None:
@@ -153,6 +165,32 @@ async def find_movies(query: str) -> list[dict]:
         if wt and has_cyrillic(wt):
             it["title"] = wt
     return items
+
+
+async def cached_search(query: str) -> dict:
+    """Cache-first поиск под лимит источника.
+    Возвращает {items, cached, limited}:
+      cached  — отдано из кэша запросов (внешний вызов не делался);
+      limited — дневной бюджет исчерпан и свежего кэша нет (клиенту показать
+                «поиск временно ограничен»)."""
+    key = _qnorm(query)
+    now = time.time()
+    hit = _QCACHE.get(key)
+    if hit and now - hit[0] < _QTTL:
+        return {"items": hit[1], "cached": True, "limited": False}
+
+    if not ratelimit.try_spend_search():
+        if hit:  # бюджета нет — отдаём устаревший кэш, лучше чем ничего
+            return {"items": hit[1], "cached": True, "limited": False}
+        logger.warning("Search budget exhausted, query %r not cached", query)
+        return {"items": [], "cached": False, "limited": True}
+
+    items = await find_movies(query)
+    _QCACHE[key] = (now, items)
+    if len(_QCACHE) > _QMAX:  # простая очистка старейших
+        for k in sorted(_QCACHE, key=lambda k: _QCACHE[k][0])[:_QMAX // 6]:
+            _QCACHE.pop(k, None)
+    return {"items": items, "cached": False, "limited": False}
 
 
 def _clean(val):

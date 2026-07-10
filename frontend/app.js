@@ -110,7 +110,21 @@ function showSearch() {
       const q = input.value.trim();
       if (q.length < 2) { results.innerHTML = ""; return; }
       results.innerHTML = `<div class="hint">Ищу…</div>`;
-      const { items } = await api(`/api/search?q=${encodeURIComponent(q)}`);
+      let data;
+      try {
+        data = await api(`/api/search?q=${encodeURIComponent(q)}`);
+      } catch (e) {
+        const msg = String(e.message) === "429"
+          ? "Слишком часто. Подожди минуту 🙂"
+          : `Ошибка поиска: ${esc(e.message)}`;
+        results.innerHTML = `<div class="hint">${msg}</div>`;
+        return;
+      }
+      if (data.limited) {
+        results.innerHTML = `<div class="hint">Поиск временно ограничен (дневной лимит источника). Попробуй позже.</div>`;
+        return;
+      }
+      const items = data.items;
       if (!items.length) { results.innerHTML = `<div class="hint">Не найдено. Попробуй год или английское название.</div>`; return; }
       const grid = document.createElement("div");
       grid.className = "grid";

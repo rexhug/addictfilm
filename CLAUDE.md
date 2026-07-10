@@ -41,13 +41,13 @@
 - venv уже создан: `.venv/` (fastapi, uvicorn, aiosqlite, aiohttp, python-dotenv).
 
 ## Состояние
-**Фаза A (мультитенантный фундамент) — сделана и проверена** (24 e2e-теста,
-живой поиск kinopoisk работает): схема users/films/user_films, авторизация-upsert
-без whitelist, per-user эндпоинты, community-рейтинг, персональная статистика.
-`.env` заполнен БОЕВЫМИ токенами (BOT_TOKEN нового бота + KINOPOISK_TOKEN).
+**Фазы A и B — сделаны и проверены** (боевые токены в `.env`).
+- A (мультитенантный фундамент): схема users/films/user_films, авторизация-upsert
+  без whitelist, per-user эндпоинты, community-рейтинг, персональная статистика.
+- B (защита лимита kinopoisk): `backend/ratelimit.py` — кэш поисковых запросов
+  (`search.cached_search`), дневной бюджет внешних вызовов, per-user throttle (429).
 
 Дальше по плану (см. трекер задач):
-- Фаза B — cache-first поиск + rate-limit под лимит kinopoisk.
 - Фаза C — discovery (публичный каталог, топ спильноты, страница фильма).
 - Фаза D — персональная статистика с графиками.
 Роадмап — в README.md.

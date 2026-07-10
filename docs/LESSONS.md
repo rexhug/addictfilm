@@ -10,6 +10,12 @@
 - **Токен**: выдаёт Telegram-бот **@kinopoiskdev_bot** — без email-верификации, мгновенно.
 - **Лимит**: ~200 запросов/сутки на бесплатном тарифе → обязателен in-memory кэш
   (в `kinopoisk.py` уже есть) и `selectFields` (меньше трафика).
+- **Защита лимита (Фаза B, `backend/ratelimit.py`)**: (1) кэш ПОИСКОВЫХ запросов
+  по нормализованному ключу в `search.cached_search` — одинаковые запросы разных
+  юзеров бесплатны; (2) дневной бюджет внешних поисковых вызовов
+  (`DAILY_SEARCH_BUDGET`, по умолч. 150) — при исчерпании отдаём `limited:true`;
+  (3) per-user throttle (`USER_SEARCH_MAX`/`WINDOW`) → 429. Всё in-memory:
+  для нескольких инстансов заменить на Redis/БД (сейчас один процесс).
 - **ГРАБЛИ selectFields**: `selectFields=persons` работает, а `selectFields=persons.name` —
   возвращает ПУСТО. Вложенные поля персон нельзя выбирать точечно.
 - **Кириллица в query**: обязательно URL-encode (aiohttp params делает сам; curl — `--data-urlencode`).

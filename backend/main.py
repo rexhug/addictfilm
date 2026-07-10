@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import database as db
+import ratelimit
 import search
 from auth import validate_init_data
 from config import BOT_TOKEN
@@ -127,11 +128,15 @@ async def api_search(q: str, user: dict = Depends(current_user)):
     q = q.strip()
     if len(q) < 2:
         return {"items": []}
+    # Throttle: один пользователь не должен выжигать общую квоту источника.
+    if not ratelimit.allow_user(user["id"]):
+        raise HTTPException(status_code=429, detail="Слишком много запросов, подождите минуту")
     imdb_id = search.extract_imdb_id(q)
     if imdb_id:
         d = await search.fetch_details("i", imdb_id)
         return {"items": [d] if d else []}
-    return {"items": await search.find_movies(q)}
+    res = await search.cached_search(q)  # cache-first + дневной бюджет
+    return {"items": res["items"], "limited": res["limited"]}
 
 
 class AddBody(BaseModel):
