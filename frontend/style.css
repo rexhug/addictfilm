@@ -1,0 +1,65 @@
+/* Тема тянется из Telegram (var(--tg-theme-*)) — апп выглядит «родным» в light/dark. */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, system-ui, sans-serif;
+  background: var(--tg-theme-bg-color, #fff);
+  color: var(--tg-theme-text-color, #000);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+#tabs {
+  display: flex; gap: 4px; padding: 8px;
+  position: sticky; top: 0; z-index: 10;
+  background: var(--tg-theme-bg-color, #fff);
+  overflow-x: auto;
+}
+#tabs button {
+  border: none; border-radius: 16px; padding: 8px 14px; font-size: 14px;
+  background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+  color: var(--tg-theme-text-color, #000);
+  white-space: nowrap; cursor: pointer;
+}
+#tabs button.active {
+  background: var(--tg-theme-button-color, #2481cc);
+  color: var(--tg-theme-button-text-color, #fff);
+}
+
+#screen { padding: 8px; }
+
+/* Сетка постеров */
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.poster-card { position: relative; border-radius: 10px; overflow: hidden; cursor: pointer; }
+.poster-card img { width: 100%; aspect-ratio: 2/3; object-fit: cover; display: block;
+  background: var(--tg-theme-secondary-bg-color, #eee); }
+.poster-card .no-poster { width: 100%; aspect-ratio: 2/3; display: flex; align-items: center;
+  justify-content: center; text-align: center; font-size: 12px; padding: 6px;
+  background: var(--tg-theme-secondary-bg-color, #eee); }
+.poster-card .badge { position: absolute; top: 6px; right: 6px; font-size: 12px;
+  background: rgba(0,0,0,.65); color: #fff; border-radius: 8px; padding: 2px 6px; }
+.poster-card .title { font-size: 12px; padding: 4px 2px; line-height: 1.2; }
+
+/* Карточка фильма */
+.detail img.hero { width: 55%; border-radius: 12px; display: block; margin: 8px auto; }
+.detail h2 { text-align: center; font-size: 20px; margin: 4px 0; }
+.detail .meta { text-align: center; font-size: 13px; opacity: .75; margin-bottom: 8px; }
+.detail .plot { font-size: 14px; line-height: 1.4; margin: 10px 0; }
+.rate-row { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; margin: 10px 0; }
+.rate-row button { width: 44px; height: 44px; border-radius: 50%; border: none; font-size: 15px;
+  background: var(--tg-theme-secondary-bg-color, #f0f0f0); color: inherit; cursor: pointer; }
+.rate-row button.mine {
+  background: var(--tg-theme-button-color, #2481cc);
+  color: var(--tg-theme-button-text-color, #fff); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 12px; }
+.actions button { border: none; border-radius: 10px; padding: 10px 14px; font-size: 14px;
+  background: var(--tg-theme-secondary-bg-color, #f0f0f0); color: inherit; cursor: pointer; }
+.actions button.danger { color: #e53935; }
+
+/* Поиск */
+#search-input { width: 100%; padding: 12px; font-size: 16px; border-radius: 10px;
+  border: 1px solid var(--tg-theme-hint-color, #ccc);
+  background: var(--tg-theme-secondary-bg-color, #f7f7f7); color: inherit; margin-bottom: 10px; }
+
+.hint { text-align: center; opacity: .6; padding: 24px 12px; font-size: 14px; }
+.stat-block { background: var(--tg-theme-secondary-bg-color, #f7f7f7);
+  border-radius: 12px; padding: 12px; margin-bottom: 10px; font-size: 14px; line-height: 1.5; }
