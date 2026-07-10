@@ -9,13 +9,16 @@ import logging
 
 import aiohttp
 
-from config import KINOPOISK_TOKEN
+from config import KINOPOISK_TOKENS
 
 logger = logging.getLogger(__name__)
 
 BASE = "https://api.poiskkino.dev/v1.4"
 _TIMEOUT = aiohttp.ClientTimeout(total=12)
 _session: aiohttp.ClientSession | None = None
+
+# Индекс round-robin по пулу токенов (ключ передаём per-request, не в сессии).
+_rr = 0
 
 # Детали по id не меняются — кэшируем (экономим лимит 200 запросов/сутки).
 _cache: dict[str, dict] = {}
@@ -49,9 +52,7 @@ def extract_credits(persons: list[dict], max_actors: int = 5) -> tuple[str | Non
 async def _get_session() -> aiohttp.ClientSession:
     global _session
     if _session is None or _session.closed:
-        _session = aiohttp.ClientSession(
-            timeout=_TIMEOUT, headers={"X-API-KEY": KINOPOISK_TOKEN},
-        )
+        _session = aiohttp.ClientSession(timeout=_TIMEOUT)  # ключ шлём per-request
     return _session
 
 
@@ -62,21 +63,48 @@ async def aclose() -> None:
     _session = None
 
 
+async def _request(path: str, params) -> dict | None:
+    """GET к kinopoisk с ротацией токенов. Перебираем пул по кругу; при
+    401/402/403/429 (квота/доступ) пробуем следующий ключ. None = все ключи не
+    дали ответа (или пул пуст)."""
+    global _rr
+    keys = KINOPOISK_TOKENS
+    if not keys:
+        return None
+    start = _rr
+    _rr = (_rr + 1) % len(keys)  # следующий вызов стартует со следующего ключа
+    session = await _get_session()
+    last = None
+    for i in range(len(keys)):
+        idx = (start + i) % len(keys)
+        try:
+            async with session.get(f"{BASE}{path}", params=params,
+                                   headers={"X-API-KEY": keys[idx]}) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                last = resp.status
+                if resp.status in (401, 402, 403, 429):  # квота/доступ — следующий ключ
+                    logger.warning("Kinopoisk %s: ключ #%d → HTTP %s, пробую следующий",
+                                   path, idx, resp.status)
+                    continue
+                logger.warning("Kinopoisk %s -> HTTP %s", path, resp.status)
+                return None
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logger.warning("Kinopoisk %s error: %s", path, e)
+            last = "err"
+            continue
+    logger.warning("Kinopoisk %s: пул ключей исчерпан (last=%s)", path, last)
+    return None
+
+
 async def search_movies(query: str, limit: int = 8) -> list[dict]:
     """Поиск по названию. Возвращает список «сырых» документов (или [])."""
-    if not KINOPOISK_TOKEN:
+    if not KINOPOISK_TOKENS:
         return []
-    session = await _get_session()
     params = [("query", query), ("limit", str(limit)), ("page", "1")]
     params += [("selectFields", f) for f in _FIELDS]
-    try:
-        async with session.get(f"{BASE}/movie/search", params=params) as resp:
-            if resp.status != 200:
-                logger.warning("Kinopoisk search %r -> HTTP %s", query, resp.status)
-                return []
-            data = await resp.json()
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        logger.warning("Kinopoisk search error: %s", e)
+    data = await _request("/movie/search", params)
+    if not data:
         return []
     docs = data.get("docs", [])
     for d in docs:
@@ -92,19 +120,11 @@ async def get_movie(kp_id: str) -> dict | None:
     cached = _cache.get(str(kp_id))
     if cached is not None:
         return cached
-    if not KINOPOISK_TOKEN:
+    if not KINOPOISK_TOKENS:
         return None
-    session = await _get_session()
     params = [("selectFields", f) for f in _FIELDS]
-    try:
-        async with session.get(f"{BASE}/movie/{kp_id}", params=params) as resp:
-            if resp.status != 200:
-                return None
-            data = await resp.json()
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        logger.warning("Kinopoisk get_movie %s error: %s", kp_id, e)
-        return None
-    if data.get("id"):
+    data = await _request(f"/movie/{kp_id}", params)
+    if data and data.get("id"):
         _cache[str(kp_id)] = data
     return data
 
@@ -112,22 +132,16 @@ async def get_movie(kp_id: str) -> dict | None:
 async def ratings_by_imdb(imdb_ids: list[str]) -> dict[str, float]:
     """Рейтинги Кинопоиска по списку IMDb ID: {imdb_id: kp}. Батчами (для бекфила)."""
     ids = [i for i in imdb_ids if i and i.startswith("tt")]
-    if not KINOPOISK_TOKEN or not ids:
+    if not KINOPOISK_TOKENS or not ids:
         return {}
-    session = await _get_session()
     out: dict[str, float] = {}
     for start in range(0, len(ids), 40):
         chunk = ids[start:start + 40]
         params = [("externalId.imdb", x) for x in chunk]
         params += [("selectFields", "externalId"), ("selectFields", "rating"),
                    ("limit", "250"), ("page", "1")]
-        try:
-            async with session.get(f"{BASE}/movie", params=params) as resp:
-                if resp.status != 200:
-                    continue
-                data = await resp.json()
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            logger.warning("Kinopoisk ratings_by_imdb error: %s", e)
+        data = await _request("/movie", params)
+        if not data:
             continue
         for m in data.get("docs", []):
             imdb = (m.get("externalId") or {}).get("imdb")
@@ -140,22 +154,16 @@ async def ratings_by_imdb(imdb_ids: list[str]) -> dict[str, float]:
 async def credits_by_imdb(imdb_ids: list[str]) -> dict[str, tuple[str | None, str | None]]:
     """(режиссёры, актёры) по списку IMDb ID: {imdb_id: (directors, actors)}. Для бекфила."""
     ids = [i for i in imdb_ids if i and i.startswith("tt")]
-    if not KINOPOISK_TOKEN or not ids:
+    if not KINOPOISK_TOKENS or not ids:
         return {}
-    session = await _get_session()
     out: dict[str, tuple[str | None, str | None]] = {}
     for start in range(0, len(ids), 30):
         chunk = ids[start:start + 30]
         params = [("externalId.imdb", x) for x in chunk]
         params += [("selectFields", "externalId"), ("selectFields", "persons"),
                    ("limit", "250"), ("page", "1")]
-        try:
-            async with session.get(f"{BASE}/movie", params=params) as resp:
-                if resp.status != 200:
-                    continue
-                data = await resp.json()
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            logger.warning("Kinopoisk credits_by_imdb error: %s", e)
+        data = await _request("/movie", params)
+        if not data:
             continue
         for m in data.get("docs", []):
             imdb = (m.get("externalId") or {}).get("imdb")

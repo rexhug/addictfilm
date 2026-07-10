@@ -12,9 +12,10 @@ import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 
-# Бюджет внешних поисковых вызовов в сутки. Оставляем запас под добавления/детали
-# (они тоже дёргают источник), поэтому меньше жёстких 200. Настраивается через .env.
-DAILY_SEARCH_BUDGET: int = int(os.getenv("DAILY_SEARCH_BUDGET", "150"))
+# Бюджет внешних поисковых вызовов в сутки. С пулом токенов kinopoisk (ротация в
+# kinopoisk.py суммирует лимиты, ~2k на ключ) запас большой; оставляем headroom
+# под добавления/детали. Настраивается через .env (DAILY_SEARCH_BUDGET).
+DAILY_SEARCH_BUDGET: int = int(os.getenv("DAILY_SEARCH_BUDGET", "2000"))
 
 # Per-user throttle: не более USER_MAX запросов за USER_WINDOW секунд.
 USER_MAX: int = int(os.getenv("USER_SEARCH_MAX", "20"))

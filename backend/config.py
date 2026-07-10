@@ -7,5 +7,10 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 # Публичный Mini App: белого списка пользователей НЕТ — регистрируется любой,
 # кто открыл приложение (авторизация по подписи initData, см. auth.py).
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
-KINOPOISK_TOKEN: str = os.getenv("KINOPOISK_TOKEN", "")
+
+# Пул токенов kinopoisk.dev: несколько ключей через запятую в KINOPOISK_TOKEN.
+# Ротация в kinopoisk.py суммирует их суточные лимиты и даёт устойчивость к 403/квоте.
+KINOPOISK_TOKENS: list[str] = [t.strip() for t in os.getenv("KINOPOISK_TOKEN", "").split(",") if t.strip()]
+KINOPOISK_TOKEN: str = KINOPOISK_TOKENS[0] if KINOPOISK_TOKENS else ""  # для проверок «есть ли ключ»
+
 OMDB_API_KEY: str = os.getenv("OMDB_API_KEY", "")
