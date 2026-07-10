@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
+COPY scripts/ ./scripts/
 
 # SQLite живёт на постоянном томе (см. fly.toml [mounts] / переменную DB_PATH).
 ENV DB_PATH=/data/movies.db
