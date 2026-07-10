@@ -9,9 +9,11 @@
 """
 import asyncio
 import logging
+import os
 import re
 import time
 
+import database as db
 import kinopoisk
 import omdb
 import ratelimit
@@ -20,11 +22,15 @@ from config import KINOPOISK_TOKEN
 
 logger = logging.getLogger(__name__)
 
-# Кэш результатов поиска по нормализованному запросу — одинаковые/популярные
+# Двухуровневый кэш поиска по нормализованному запросу — одинаковые/популярные
 # запросы (в т.ч. от разных пользователей) не тратят лимит источника.
+#   L1: in-memory (быстро, но гибнет при рестарте).
+#   L2: таблица search_cache в БД (постоянный, общий, переживает деплой).
 _QCACHE: dict[str, tuple[float, list]] = {}
-_QTTL = 6 * 3600   # свежесть результата, сек
-_QMAX = 300        # максимум запросов в кэше
+_QTTL = 6 * 3600   # свежесть L1, сек
+_QMAX = 300        # максимум запросов в L1
+# TTL постоянного кэша (БД): результаты поиска стабильны неделями. Настраивается.
+_DB_TTL = int(os.getenv("SEARCH_CACHE_TTL_SEC", str(14 * 24 * 3600)))
 
 
 def _qnorm(query: str) -> str:
@@ -175,19 +181,27 @@ async def cached_search(query: str) -> dict:
                 «поиск временно ограничен»)."""
     key = _qnorm(query)
     now = time.time()
+    # L1: in-memory.
     hit = _QCACHE.get(key)
     if hit and now - hit[0] < _QTTL:
         return {"items": hit[1], "cached": True, "limited": False}
+    # L2: постоянный кэш в БД (переживает рестарт/деплой, общий на всех).
+    stored = await db.search_cache_get(key, _DB_TTL)
+    if stored is not None:
+        _QCACHE[key] = (now, stored)
+        return {"items": stored, "cached": True, "limited": False}
 
     if not ratelimit.try_spend_search():
-        if hit:  # бюджета нет — отдаём устаревший кэш, лучше чем ничего
+        if hit:  # бюджета нет — отдаём устаревший L1-кэш, лучше чем ничего
             return {"items": hit[1], "cached": True, "limited": False}
         logger.warning("Search budget exhausted, query %r not cached", query)
         return {"items": [], "cached": False, "limited": True}
 
     items = await find_movies(query)
     _QCACHE[key] = (now, items)
-    if len(_QCACHE) > _QMAX:  # простая очистка старейших
+    if items:  # пустые не кэшируем в БД (мог быть временный сбой источника)
+        await db.search_cache_put(key, items)
+    if len(_QCACHE) > _QMAX:  # простая очистка старейших L1
         for k in sorted(_QCACHE, key=lambda k: _QCACHE[k][0])[:_QMAX // 6]:
             _QCACHE.pop(k, None)
     return {"items": items, "cached": False, "limited": False}
