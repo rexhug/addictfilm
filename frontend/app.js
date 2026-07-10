@@ -220,20 +220,60 @@ async function showStats() {
   screen.innerHTML = `<div class="hint">Считаю…</div>`;
   const s = await api("/api/stats");
   const y = s.year;
-  screen.innerHTML = `
-    <div class="stat-block">🎬 Просмотрено: <b>${s.watched}</b> · в списке «Хочу»: <b>${s.want}</b><br>
-      ⏱ Экранное время: <b>${Math.floor(s.total_runtime_min / 60)} ч</b>
-      ${s.avg_rating != null ? `<br>⭐ Моя средняя оценка: <b>${s.avg_rating}</b> <small>(${s.rating_count})</small>` : ""}</div>
-    ${s.top_genres_pct.length ? `<div class="stat-block">🎭 Мои жанры:<br>${
-      s.top_genres_pct.map(([g, p]) => `${esc(g)} — ${p}%`).join("<br>")}</div>` : ""}
-    ${s.top_actors.length ? `<div class="stat-block">⭐ Актёры:<br>${
-      s.top_actors.map(([n, c]) => `${esc(n)} — ${c}`).join("<br>")}</div>` : ""}
-    ${s.top_directors.length ? `<div class="stat-block">🎬 Режиссёры:<br>${
-      s.top_directors.map(([n, c]) => `${esc(n)} — ${c}`).join("<br>")}</div>` : ""}
-    ${y.count ? `<div class="stat-block">📅 Итоги ${y.year}: <b>${y.count}</b> фильмов
-      ${y.avg_rating ? ` · средняя <b>${y.avg_rating}</b>` : ""}
-      ${y.top_genre ? `<br>любимый жанр — ${esc(y.top_genre)}` : ""}
-      ${y.top_actor ? `<br>актёр года — ${esc(y.top_actor[0])}` : ""}</div>` : ""}`;
+  if (!s.watched && !s.want) {
+    screen.innerHTML = `<div class="hint">Пока нет статистики. Добавь фильмы и поставь оценки 🌐</div>`;
+    return;
+  }
+  const hours = Math.floor(s.total_runtime_min / 60);
+
+  // KPI-плитки.
+  const tiles = `<div class="stats-grid">
+    ${statTile("🎬", s.watched, "просмотрено")}
+    ${statTile("🔖", s.want, "в «Хочу»")}
+    ${statTile("⭐", s.avg_rating ?? "—", "средняя")}
+    ${statTile("⏱", hours, "часов")}
+  </div>`;
+
+  // Гистограмма моих оценок 1..10.
+  const dist = s.rating_dist || [];
+  const maxD = Math.max(1, ...dist);
+  const hist = dist.some(v => v > 0) ? chartCard("Мои оценки", `<div class="hist">${
+    dist.map((c, i) => `<div class="hist-col">
+      <div class="hist-bar-area">${c ? `<div class="hist-val">${c}</div>` : ""}
+        <div class="hist-bar" style="height:${c ? Math.max(6, Math.round(c / maxD * 100)) : 0}%"></div></div>
+      <div class="hist-x">${i + 1}</div></div>`).join("")}</div>`) : "";
+
+  // Горизонтальные бары: жанры (%), актёры/режиссёры (по числу фильмов).
+  const genres = s.top_genres_pct.length ? chartCard("Жанры",
+    s.top_genres_pct.map(([g, p]) => hbar(g, p + "%", p)).join("")) : "";
+  const maxA = s.top_actors.length ? s.top_actors[0][1] : 1;
+  const actors = s.top_actors.length ? chartCard("Актёры",
+    s.top_actors.map(([n, c]) => hbar(n, c, Math.round(c / maxA * 100))).join("")) : "";
+  const maxDir = s.top_directors.length ? s.top_directors[0][1] : 1;
+  const directors = s.top_directors.length ? chartCard("Режиссёры",
+    s.top_directors.map(([n, c]) => hbar(n, c, Math.round(c / maxDir * 100))).join("")) : "";
+
+  const yearCard = y.count ? chartCard(`Итоги ${y.year}`, `
+    <div class="year-line"><b>${y.count}</b> фильмов${y.avg_rating ? ` · средняя <b>${y.avg_rating}</b>` : ""}</div>
+    ${y.top_genre ? `<div class="year-line">Любимый жанр — ${esc(y.top_genre)}</div>` : ""}
+    ${y.top_actor ? `<div class="year-line">Актёр года — ${esc(y.top_actor[0])} <small>(${y.top_actor[1]})</small></div>` : ""}
+    ${y.best_titles && y.best_titles.length ? `<div class="year-line">Лучшее <small>(${y.best_avg})</small>: ${y.best_titles.map(esc).join(", ")}</div>` : ""}`) : "";
+
+  screen.innerHTML = tiles + hist + genres + actors + directors + yearCard;
+}
+
+function statTile(icon, value, label) {
+  return `<div class="tile"><div class="tile-icon">${icon}</div>
+    <div class="tile-val">${esc(value)}</div><div class="tile-label">${label}</div></div>`;
+}
+function chartCard(title, inner) {
+  return `<div class="chart-card"><div class="chart-title">${esc(title)}</div>${inner}</div>`;
+}
+function hbar(label, valueText, pct) {
+  return `<div class="hbar-row">
+    <div class="hbar-label">${esc(label)}</div>
+    <div class="hbar-track"><div class="hbar-fill" style="width:${Math.max(4, pct)}%"></div></div>
+    <div class="hbar-val">${esc(valueText)}</div></div>`;
 }
 
 // ── Утилиты ───────────────────────────────────────────────────────────────────

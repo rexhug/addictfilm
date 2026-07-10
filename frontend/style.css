@@ -81,3 +81,35 @@ body {
 .hint { text-align: center; opacity: .6; padding: 24px 12px; font-size: 14px; }
 .stat-block { background: var(--tg-theme-secondary-bg-color, #f7f7f7);
   border-radius: 12px; padding: 12px; margin-bottom: 10px; font-size: 14px; line-height: 1.5; }
+
+/* Статистика: KPI-плитки и графики (single-hue из темы Telegram) */
+.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+.tile { background: var(--tg-theme-secondary-bg-color, #f2f2f2); border-radius: 12px;
+  padding: 10px 4px; text-align: center; }
+.tile-icon { font-size: 17px; }
+.tile-val { font-size: 20px; font-weight: 700; margin-top: 2px; }
+.tile-label { font-size: 11px; opacity: .6; margin-top: 1px; }
+
+.chart-card { background: var(--tg-theme-secondary-bg-color, #f7f7f7); border-radius: 12px;
+  padding: 12px; margin-bottom: 10px; }
+.chart-title { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+
+/* Гистограмма оценок 1..10 */
+.hist { display: flex; align-items: flex-end; gap: 4px; }
+.hist-col { flex: 1; display: flex; flex-direction: column; align-items: center; }
+.hist-bar-area { height: 96px; width: 100%; display: flex; flex-direction: column;
+  align-items: center; justify-content: flex-end; }
+.hist-val { font-size: 10px; opacity: .55; line-height: 12px; }
+.hist-bar { width: 72%; border-radius: 4px 4px 0 0;
+  background: var(--tg-theme-button-color, #2481cc); }
+.hist-x { font-size: 10px; opacity: .5; margin-top: 4px; }
+
+/* Горизонтальные бары (жанры/актёры/режиссёры) */
+.hbar-row { display: flex; align-items: center; gap: 8px; margin: 7px 0; font-size: 13px; }
+.hbar-label { flex: 0 0 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbar-track { flex: 1; height: 8px; border-radius: 6px; overflow: hidden;
+  background: var(--tg-theme-bg-color, #e6e6e6); }
+.hbar-fill { height: 100%; border-radius: 6px; background: var(--tg-theme-button-color, #2481cc); }
+.hbar-val { flex: 0 0 auto; min-width: 30px; text-align: right; opacity: .7;
+  font-variant-numeric: tabular-nums; }
+.year-line { font-size: 13px; line-height: 1.7; }

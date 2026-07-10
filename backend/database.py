@@ -355,6 +355,13 @@ async def get_user_stats(user_id: int) -> dict:
         avg_rating = round(row["avg"], 1) if row["avg"] is not None else None
         rating_count = row["cnt"]
 
+        # Распределение моих оценок 1..10 (для гистограммы на экране статистики).
+        cur = await db.execute(
+            "SELECT rating, COUNT(*) c FROM user_films WHERE user_id=? AND rating IS NOT NULL "
+            "GROUP BY rating", (user_id,))
+        dist = {r["rating"]: r["c"] for r in await cur.fetchall()}
+        rating_dist = [dist.get(i, 0) for i in range(1, 11)]
+
         cur = await db.execute(
             """
             SELECT f.genres, f.actors, f.directors, f.runtime
@@ -399,6 +406,7 @@ async def get_user_stats(user_id: int) -> dict:
             "want": want,
             "avg_rating": avg_rating,
             "rating_count": rating_count,
+            "rating_dist": rating_dist,
             "total_runtime_min": total_runtime_min,
             "top_genres_pct": top_genres_pct,
             "top_actors": top_actors,
