@@ -12,6 +12,7 @@ import glob
 import json
 import os
 import re
+import secrets
 import aiosqlite
 from datetime import datetime, timezone, timedelta
 
@@ -82,9 +83,28 @@ async def init_db() -> None:
                 created_at TEXT NOT NULL
             )
         """)
+        # ── Пара (Фаза E): приглашения + активные пары ──────────────────────────
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS partner_invites (
+                token      TEXT PRIMARY KEY,
+                from_user  INTEGER NOT NULL,
+                status     TEXT NOT NULL DEFAULT 'pending',  -- pending | accepted
+                created_at TEXT NOT NULL
+            )
+        """)
+        # Симметрично: для пары (a,b) две строки — a→b и b→a (лукап по user_id O(1)).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS partners (
+                user_id    INTEGER PRIMARY KEY,
+                partner_id INTEGER NOT NULL,
+                since      TEXT NOT NULL
+            )
+        """)
+
         # Индексы под горячие запросы: список юзера и community-агрегат по фильму.
         await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_user ON user_films(user_id, status)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_film ON user_films(film_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_invite_from ON partner_invites(from_user, status)")
         await db.commit()
 
 
@@ -613,3 +633,140 @@ async def list_genres() -> list[dict]:
                 if g and g != "N/A":
                     counts[g] = counts.get(g, 0) + 1
         return [{"name": n, "count": c} for n, c in sorted(counts.items(), key=lambda x: -x[1])]
+
+
+# ── Пара (Фаза E): приглашения, пары, совместная статистика ───────────────────
+async def get_user(user_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT id, first_name, username FROM users WHERE id = ?", (user_id,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def get_partner(user_id: int) -> int | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT partner_id FROM partners WHERE user_id = ?", (user_id,))
+        row = await cur.fetchone()
+        return row[0] if row else None
+
+
+async def get_pending_invite(from_user: int) -> str | None:
+    """Токен своего активного (неиспользованного) приглашения, если есть."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT token FROM partner_invites WHERE from_user = ? AND status = 'pending' "
+            "ORDER BY created_at DESC LIMIT 1", (from_user,))
+        row = await cur.fetchone()
+        return row[0] if row else None
+
+
+async def create_invite(from_user: int) -> str:
+    """Создать (или переиспользовать) приглашение в пару. Возвращает токен."""
+    existing = await get_pending_invite(from_user)
+    if existing:
+        return existing
+    token = secrets.token_urlsafe(12)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO partner_invites (token, from_user, status, created_at) VALUES (?,?, 'pending', ?)",
+            (token, from_user, _now()))
+        await db.commit()
+    return token
+
+
+async def accept_invite(token: str, accepting_user: int) -> dict:
+    """Принять приглашение. reason: invalid | self | inviter_taken | already_paired | ok."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        inv = await (await db.execute(
+            "SELECT from_user, status FROM partner_invites WHERE token = ?", (token,))).fetchone()
+        if not inv or inv["status"] != "pending":
+            return {"ok": False, "reason": "invalid"}
+        from_user = inv["from_user"]
+        if from_user == accepting_user:
+            return {"ok": False, "reason": "self"}
+        if await get_partner(from_user) is not None:
+            return {"ok": False, "reason": "inviter_taken"}
+        if await get_partner(accepting_user) is not None:
+            return {"ok": False, "reason": "already_paired"}
+        now = _now()
+        await db.execute("INSERT OR REPLACE INTO partners (user_id, partner_id, since) VALUES (?,?,?)",
+                         (from_user, accepting_user, now))
+        await db.execute("INSERT OR REPLACE INTO partners (user_id, partner_id, since) VALUES (?,?,?)",
+                         (accepting_user, from_user, now))
+        await db.execute("UPDATE partner_invites SET status='accepted' WHERE token = ?", (token,))
+        await db.commit()
+        return {"ok": True, "partner_id": from_user}
+
+
+async def unpair(user_id: int) -> None:
+    partner = await get_partner(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        ids = [user_id] + ([partner] if partner is not None else [])
+        await db.execute(
+            f"DELETE FROM partners WHERE user_id IN ({','.join('?' * len(ids))})", ids)
+        # неиспользованные приглашения обеих сторон тоже гасим — при новой паре создаётся свежее
+        await db.execute(
+            f"DELETE FROM partner_invites WHERE from_user IN ({','.join('?' * len(ids))}) AND status='pending'", ids)
+        await db.commit()
+
+
+async def partner_stats(user_id: int, partner_id: int) -> dict:
+    """Совместная статистика пары (scoped на двух юзеров). Честные ничьи."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        # Фильмы, которые оценили ОБА.
+        rated = await (await db.execute(
+            """
+            SELECT f.title AS title, r1.rating AS a, r2.rating AS b
+            FROM user_films r1 JOIN user_films r2 ON r1.film_id = r2.film_id
+            JOIN films f ON f.id = r1.film_id
+            WHERE r1.user_id = ? AND r2.user_id = ?
+              AND r1.rating IS NOT NULL AND r2.rating IS NOT NULL
+            """, (user_id, partner_id))).fetchall()
+        n = len(rated)
+        agreement = matches = None
+        controversial = best = None
+        if n:
+            diffs = [abs(r["a"] - r["b"]) for r in rated]
+            agreement = round(100 - (sum(diffs) / n) / 9 * 100)
+            matches = sum(1 for r in rated if r["a"] == r["b"])
+            cw = max(rated, key=lambda r: abs(r["a"] - r["b"]))
+            if abs(cw["a"] - cw["b"]) > 0:
+                controversial = {"title": cw["title"], "a": cw["a"], "b": cw["b"]}
+            bw = max(rated, key=lambda r: r["a"] + r["b"])
+            best = {"title": bw["title"], "avg": round((bw["a"] + bw["b"]) / 2, 1)}
+
+        # Фильмы, которые ОБА посмотрели → общие жанры/актёры.
+        both = await (await db.execute(
+            """
+            SELECT f.genres, f.actors
+            FROM user_films r1 JOIN user_films r2 ON r1.film_id = r2.film_id
+            JOIN films f ON f.id = r1.film_id
+            WHERE r1.user_id = ? AND r2.user_id = ?
+              AND r1.status = 'watched' AND r2.status = 'watched'
+            """, (user_id, partner_id))).fetchall()
+        genre_counts, actor_counts = {}, {}
+        for r in both:
+            for g in (r["genres"] or "").split(","):
+                g = g.strip()
+                if g and g != "N/A":
+                    genre_counts[g] = genre_counts.get(g, 0) + 1
+            for a in (r["actors"] or "").split(","):
+                a = a.strip()
+                if a:
+                    actor_counts[a] = actor_counts.get(a, 0) + 1
+        top_genres = [g for g, _ in sorted(genre_counts.items(), key=lambda x: -x[1])[:5]]
+        top_actors = [(nm, c) for nm, c in sorted(actor_counts.items(), key=lambda x: -x[1]) if c >= 2][:5]
+
+        return {
+            "rated_together": n,
+            "watched_together": len(both),
+            "agreement": agreement,
+            "matches": matches,
+            "controversial": controversial,
+            "best": best,
+            "top_genres": top_genres,
+            "top_actors": top_actors,
+        }

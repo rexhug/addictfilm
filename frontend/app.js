@@ -42,6 +42,20 @@ const DICT = {
     chart_ratings: "Мои оценки", chart_genres: "Жанры", chart_actors: "Актёры", chart_directors: "Режиссёры",
     year_title: (y) => `Итоги ${y}`, year_avg: "средняя", year_fav_genre: "Любимый жанр — ", year_actor: "Актёр года — ", year_best: "Лучшее",
     auth_err_s: "Открой через кнопку меню бота в Telegram",
+    partner_title: "Пара", partner_none_sub: "Добавь партнёра — считайте совместимость вкусов вместе",
+    partner_invite_btn: "Добавить партнёра", partner_invited_sub: "Приглашение готово. Отправь ссылку партнёру в Telegram.",
+    partner_share_btn: "Поделиться ссылкой", partner_share_text: "Давай отмечать фильмы вместе в Addict Film 💞",
+    partner_with: "Пара с", partner_word: "партнёром", partner_compat: "совместимость",
+    partner_no_common: "Пока нет фильмов, которые оценили оба",
+    partner_matches: "Точных совпадений", partner_best: "Лучший общий", partner_controversial: "Самый спорный", partner_genres: "Общие жанры",
+    partner_unpair_btn: "Разорвать пару", partner_unpair_confirm: "Разорвать пару? Личные списки останутся у каждого.",
+    accept_title: "Приглашение в пару", accept_sub: "Вас зовут отмечать и оценивать фильмы вместе, с общей статистикой совместимости.",
+    accept_yes: "Принять", accept_no: "Не сейчас",
+    accept_ok: (name) => `Готово! Теперь вы в паре${name ? ` с ${name}` : ""}.`,
+    accept_fail_invalid: "Приглашение недействительно или уже использовано.",
+    accept_fail_self: "Нельзя принять собственное приглашение 🙂",
+    accept_fail_inviter_taken: "У пригласившего уже есть пара.",
+    accept_fail_already_paired: "У вас уже есть пара. Сначала разорвите текущую.",
   },
   en: {
     tagline: "Movies you'll love",
@@ -70,6 +84,20 @@ const DICT = {
     chart_ratings: "My ratings", chart_genres: "Genres", chart_actors: "Actors", chart_directors: "Directors",
     year_title: (y) => `${y} in review`, year_avg: "average", year_fav_genre: "Favorite genre — ", year_actor: "Actor of the year — ", year_best: "Best",
     auth_err_s: "Open via the bot's menu button in Telegram",
+    partner_title: "Partner", partner_none_sub: "Add a partner — see how your movie tastes match",
+    partner_invite_btn: "Add partner", partner_invited_sub: "Invite ready. Send the link to your partner in Telegram.",
+    partner_share_btn: "Share link", partner_share_text: "Let's track movies together on Addict Film 💞",
+    partner_with: "Paired with", partner_word: "partner", partner_compat: "compatibility",
+    partner_no_common: "No films you both rated yet",
+    partner_matches: "Exact matches", partner_best: "Best shared", partner_controversial: "Most divisive", partner_genres: "Shared genres",
+    partner_unpair_btn: "Unpair", partner_unpair_confirm: "Unpair? Each keeps their personal lists.",
+    accept_title: "Pairing invite", accept_sub: "You're invited to track and rate movies together, with shared compatibility stats.",
+    accept_yes: "Accept", accept_no: "Not now",
+    accept_ok: (name) => `Done! You're now paired${name ? ` with ${name}` : ""}.`,
+    accept_fail_invalid: "Invite is invalid or already used.",
+    accept_fail_self: "You can't accept your own invite 🙂",
+    accept_fail_inviter_taken: "The inviter already has a partner.",
+    accept_fail_already_paired: "You already have a partner. Unpair first.",
   },
 };
 let lang = "ru";
@@ -320,7 +348,7 @@ async function showStats() {
   const s = await api("/api/stats");
   const y = s.year;
   const box = document.getElementById("stats");
-  if (!s.watched && !s.want) { box.innerHTML = emptyState("📊", t("stats_empty_t"), t("stats_empty_s")); return; }
+  if (!s.watched && !s.want) { box.innerHTML = emptyState("📊", t("stats_empty_t"), t("stats_empty_s")); mountPartner(box); return; }
   const hours = Math.floor(s.total_runtime_min / 60);
   const tiles = `<div class="stats-grid">
     ${statTile("🎬", s.watched, t("tile_watched"))}${statTile("🔖", s.want, t("tile_want"))}
@@ -340,7 +368,81 @@ async function showStats() {
     ${y.top_actor ? `<div class="year-line">${esc(t("year_actor"))}${esc(y.top_actor[0])} <small>(${y.top_actor[1]})</small></div>` : ""}
     ${y.best_titles && y.best_titles.length ? `<div class="year-line">${esc(t("year_best"))} <small>(${y.best_avg})</small>: ${y.best_titles.map(esc).join(", ")}</div>` : ""}`) : "";
   box.innerHTML = tiles + hist + genres + actors + directors + yearCard;
+  mountPartner(box);
 }
+
+// ── Пара ──────────────────────────────────────────────────────────────────────
+async function mountPartner(box) {
+  let p;
+  try { p = await api("/api/partner"); } catch (e) { return; }
+  const card = document.createElement("div");
+  card.className = "chart-card partner";
+  if (p.status === "paired") {
+    let s;
+    try { s = await api("/api/partner/stats"); } catch (e) { return; }
+    const name = esc(s.partner.name || t("partner_word"));
+    card.innerHTML = `
+      <div class="chart-title">${t("partner_with")} ${name}</div>
+      ${s.agreement != null
+        ? `<div class="compat"><div class="compat-num">${s.agreement}%</div><div class="compat-lbl">${esc(t("partner_compat"))} · ${s.rated_together} ${esc(t("count_films", s.rated_together))}</div></div>`
+        : `<div class="partner-sub">${esc(t("partner_no_common"))}</div>`}
+      ${s.matches ? `<div class="year-line">${esc(t("partner_matches"))}: <b>${s.matches}</b></div>` : ""}
+      ${s.best ? `<div class="year-line">${esc(t("partner_best"))}: ${esc(s.best.title)} <small>(${s.best.avg})</small></div>` : ""}
+      ${s.controversial ? `<div class="year-line">${esc(t("partner_controversial"))}: ${esc(s.controversial.title)} <small>(${s.controversial.a} / ${s.controversial.b})</small></div>` : ""}
+      ${s.top_genres.length ? `<div class="year-line">${esc(t("partner_genres"))}: ${s.top_genres.map(esc).join(", ")}</div>` : ""}
+      <button class="pbtn danger" id="p-unpair">${esc(t("partner_unpair_btn"))}</button>`;
+    box.prepend(card);
+    card.querySelector("#p-unpair").onclick = () => tg.showConfirm(t("partner_unpair_confirm"), async ok => {
+      if (!ok) return;
+      await api("/api/partner/unpair", { method: "POST" });
+      showStats();
+    });
+  } else if (p.status === "invited") {
+    card.innerHTML = `<div class="chart-title">${esc(t("partner_title"))}</div>
+      <div class="partner-sub">${esc(t("partner_invited_sub"))}</div>
+      <button class="pbtn" id="p-share">${esc(t("partner_share_btn"))}</button>`;
+    box.prepend(card);
+    card.querySelector("#p-share").onclick = () => sharePartnerLink(p.link);
+  } else {
+    card.innerHTML = `<div class="chart-title">${esc(t("partner_title"))}</div>
+      <div class="partner-sub">${esc(t("partner_none_sub"))}</div>
+      <button class="pbtn primary" id="p-invite">${esc(t("partner_invite_btn"))}</button>`;
+    box.prepend(card);
+    card.querySelector("#p-invite").onclick = async () => {
+      const r = await api("/api/partner/invite", { method: "POST" });
+      sharePartnerLink(r.link);
+      showStats();
+    };
+  }
+}
+function sharePartnerLink(link) {
+  const url = "https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent(t("partner_share_text"));
+  if (tg.openTelegramLink) tg.openTelegramLink(url); else window.open(url, "_blank");
+}
+
+async function showAcceptInvite(param) {
+  window.scrollTo(0, 0);
+  screen.innerHTML = `<div class="accept">
+    <div class="accept-icon">💞</div>
+    <div class="accept-title">${esc(t("accept_title"))}</div>
+    <div class="accept-sub">${esc(t("accept_sub"))}</div>
+    <div class="accept-actions">
+      <button class="pbtn primary" id="acc-yes">${esc(t("accept_yes"))}</button>
+      <button class="pbtn" id="acc-no">${esc(t("accept_no"))}</button>
+    </div></div>`;
+  document.getElementById("acc-no").onclick = () => { setActiveTab("home"); showHome(); };
+  document.getElementById("acc-yes").onclick = async () => {
+    const r = await api("/api/partner/accept", { method: "POST", body: JSON.stringify({ token: param }) });
+    if (r.ok) {
+      tg.HapticFeedback?.notificationOccurred("success");
+      tg.showAlert(t("accept_ok", r.partner.name), () => { setActiveTab("stats"); showStats(); });
+    } else {
+      tg.showAlert(t("accept_fail_" + r.reason) || t("accept_fail_invalid"));
+      setActiveTab("home"); showHome();
+    }
+  };
+}
+
 function statTile(icon, value, label) { return `<div class="tile"><div class="tile-icon">${icon}</div><div class="tile-val">${esc(value)}</div><div class="tile-label">${esc(label)}</div></div>`; }
 function chartCard(title, inner) { return `<div class="chart-card"><div class="chart-title">${esc(title)}</div>${inner}</div>`; }
 function hbar(label, valueText, pct) { return `<div class="hbar-row"><div class="hbar-label">${esc(label)}</div><div class="hbar-track"><div class="hbar-fill" style="width:${Math.max(4, pct)}%"></div></div><div class="hbar-val">${esc(valueText)}</div></div>`; }
@@ -359,7 +461,9 @@ if (!tg) {
   (async () => {
     try {
       me = await api("/api/me");
-      showHome();
+      const sp = tg.initDataUnsafe?.start_param || "";
+      if (sp.startsWith("inv_")) showAcceptInvite(sp);  // пришли по инвайт-ссылке
+      else showHome();
     } catch (e) {
       screen.innerHTML = emptyState("⛔", esc(e.message), t("auth_err_s"));
     }

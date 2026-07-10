@@ -206,6 +206,68 @@ async def genres(user: dict = Depends(current_user)):
     return {"items": await db.list_genres()}
 
 
+# ── API: пара (партнёрство) ───────────────────────────────────────────────────
+BOT_USERNAME = os.getenv("BOT_USERNAME", "addictfilmbot")
+
+
+def _invite_link(token: str) -> str:
+    return f"https://t.me/{BOT_USERNAME}?startapp=inv_{token}"
+
+
+def _partner_brief(u: dict | None) -> dict:
+    return {"id": u["id"], "name": u.get("first_name") or ""} if u else {"id": None, "name": ""}
+
+
+@app.get("/api/partner")
+async def partner(user: dict = Depends(current_user)):
+    pid = await db.get_partner(user["id"])
+    if pid is not None:
+        return {"status": "paired", "partner": _partner_brief(await db.get_user(pid))}
+    token = await db.get_pending_invite(user["id"])
+    if token:
+        return {"status": "invited", "link": _invite_link(token)}
+    return {"status": "none"}
+
+
+@app.post("/api/partner/invite")
+async def partner_invite(user: dict = Depends(current_user)):
+    if await db.get_partner(user["id"]) is not None:
+        raise HTTPException(status_code=409, detail="Пара уже есть")
+    token = await db.create_invite(user["id"])
+    return {"link": _invite_link(token)}
+
+
+class AcceptBody(BaseModel):
+    token: str
+
+
+@app.post("/api/partner/accept")
+async def partner_accept(body: AcceptBody, user: dict = Depends(current_user)):
+    token = body.token.strip()
+    if token.startswith("inv_"):
+        token = token[4:]
+    res = await db.accept_invite(token, user["id"])
+    if not res["ok"]:
+        return {"ok": False, "reason": res["reason"]}
+    return {"ok": True, "partner": _partner_brief(await db.get_user(res["partner_id"]))}
+
+
+@app.post("/api/partner/unpair")
+async def partner_unpair(user: dict = Depends(current_user)):
+    await db.unpair(user["id"])
+    return {"ok": True}
+
+
+@app.get("/api/partner/stats")
+async def partner_stats(user: dict = Depends(current_user)):
+    pid = await db.get_partner(user["id"])
+    if pid is None:
+        raise HTTPException(status_code=404, detail="Нет пары")
+    s = await db.partner_stats(user["id"], pid)
+    s["partner"] = _partner_brief(await db.get_user(pid))
+    return s
+
+
 # ── Фронтенд ─────────────────────────────────────────────────────────────────
 @app.get("/")
 async def index():

@@ -164,6 +164,22 @@ section{margin-top:32px;}
 .year-line{font-size:13px;line-height:1.7;}
 .year-line small{color:var(--ink-2);}
 
+/* ── Пара ───────────────────────────────────── */
+.partner-sub{font-size:13px;color:var(--ink-2);line-height:1.5;margin-bottom:12px;}
+.compat{display:flex;align-items:baseline;gap:10px;margin:2px 0 12px;}
+.compat-num{font-size:34px;font-weight:750;letter-spacing:-0.03em;color:var(--accent);font-variant-numeric:tabular-nums;}
+.compat-lbl{font-size:13px;color:var(--ink-2);}
+.pbtn{width:100%;border:1px solid var(--hair);border-radius:14px;padding:13px 16px;font-size:15px;font-weight:550;
+  background:var(--s2);color:var(--ink);cursor:pointer;font-family:var(--font);margin-top:10px;transition:transform .15s;}
+.pbtn:active{transform:scale(.98);}
+.pbtn.primary{background:var(--accent);color:#fff;border-color:transparent;}
+.pbtn.danger{background:transparent;color:#F87171;}
+.accept{text-align:center;padding:60px 26px;}
+.accept-icon{font-size:52px;line-height:1;}
+.accept-title{font-size:22px;font-weight:650;letter-spacing:-0.02em;margin-top:16px;}
+.accept-sub{font-size:14px;color:var(--ink-2);line-height:1.55;margin-top:10px;}
+.accept-actions{display:flex;flex-direction:column;margin-top:24px;}
+
 /* ── floating tab bar ───────────────────────── */
 #tabbar{position:fixed;left:0;right:0;bottom:calc(16px + env(safe-area-inset-bottom));z-index:30;
   margin:0 auto;width:min(400px,calc(100% - 32px));height:66px;border-radius:28px;
