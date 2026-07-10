@@ -1,6 +1,6 @@
 # Fly.io конфиг публичного Mini App. Перед деплоем замени app на своё уникальное имя.
 app = "addict-film"
-primary_region = "waw"   # Варшава — ближе к RU/UA; при желании сменить
+primary_region = "fra"   # Франкфурт — ближайший доступный к UA
 
 [build]
 
