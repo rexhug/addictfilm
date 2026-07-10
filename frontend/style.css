@@ -29,10 +29,16 @@ body{
   display:grid;place-items:center;position:relative;color:var(--ink);box-shadow:var(--shadow);}
 .bell svg{width:20px;height:20px;}
 .bell .dot{position:absolute;top:9px;right:10px;width:8px;height:8px;border-radius:50%;background:var(--accent);border:2px solid var(--s2);}
+/* переключатель языка RU/EN */
+.lang{flex:none;height:42px;padding:0 12px;border-radius:15px;background:var(--s2);border:1px solid var(--hair);
+  display:inline-flex;align-items:center;gap:6px;color:var(--ink);box-shadow:var(--shadow);cursor:pointer;transition:transform .18s;}
+.lang:active{transform:scale(.92);}
+.lang svg{width:18px;height:18px;color:var(--ink-2);}
+.lang b{font-size:13px;font-weight:650;letter-spacing:.02em;}
 
 /* ── search (home tile) ─────────────────────── */
 .search{margin:20px 20px 0;height:52px;border-radius:16px;background:var(--s2);border:1px solid var(--hair);
-  display:flex;align-items:center;gap:11px;padding:0 12px 0 15px;box-shadow:var(--shadow);}
+  display:flex;align-items:center;gap:11px;padding:0 18px 0 15px;box-shadow:var(--shadow);}
 .search .q{flex:1;color:var(--ink-2);font-size:15.5px;font-weight:450;}
 .search .icn{color:var(--ink-2);flex:none;display:grid;place-items:center;}
 .search .icn svg{width:19px;height:19px;}
