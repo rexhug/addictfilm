@@ -54,6 +54,10 @@ body {
 .actions button { border: none; border-radius: 10px; padding: 10px 14px; font-size: 14px;
   background: var(--tg-theme-secondary-bg-color, #f0f0f0); color: inherit; cursor: pointer; }
 .actions button.danger { color: #e53935; }
+.actions button.primary, .partner-card button.primary {
+  background: var(--tg-theme-button-color, #2481cc);
+  color: var(--tg-theme-button-text-color, #fff);
+}
 
 /* Поиск */
 #search-input { width: 100%; padding: 12px; font-size: 16px; border-radius: 10px;
@@ -63,3 +67,11 @@ body {
 .hint { text-align: center; opacity: .6; padding: 24px 12px; font-size: 14px; }
 .stat-block { background: var(--tg-theme-secondary-bg-color, #f7f7f7);
   border-radius: 12px; padding: 12px; margin-bottom: 10px; font-size: 14px; line-height: 1.5; }
+.partner-card { background: var(--tg-theme-secondary-bg-color, #f7f7f7); border-radius: 12px;
+  padding: 18px 14px; line-height: 1.5; }
+.partner-card h2 { font-size: 20px; margin-bottom: 8px; }
+.partner-card p { margin: 8px 0; }
+.partner-card button { border: none; border-radius: 10px; padding: 10px 14px; margin-top: 8px;
+  font-size: 14px; cursor: pointer; }
+.partner-card button.danger { color: #e53935; }
+.share-link { display: block; overflow-wrap: anywhere; color: var(--tg-theme-link-color, #2481cc); }

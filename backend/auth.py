@@ -28,13 +28,19 @@ def validate_init_data(init_data: str, bot_token: str, max_age_sec: int = 86400)
 
     # Защита от повторного использования старых initData.
     try:
-        auth_date = int(data.get("auth_date", "0"))
+        auth_date = int(data["auth_date"])
     except ValueError:
         return None
-    if max_age_sec and auth_date and time.time() - auth_date > max_age_sec:
+    except KeyError:
+        return None
+    now = time.time()
+    if auth_date <= 0 or auth_date > now + 60:
+        return None
+    if max_age_sec and now - auth_date > max_age_sec:
         return None
 
     try:
-        return json.loads(data.get("user", "{}")) or None
+        user = json.loads(data.get("user", "{}"))
     except json.JSONDecodeError:
         return None
+    return user if isinstance(user, dict) and isinstance(user.get("id"), int) else None

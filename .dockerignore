@@ -1,0 +1,14 @@
+.git
+.venv
+.env
+__pycache__
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+*.log
+docs
+scripts
+backend/tests
+AGENTS.md
+CLAUDE.md
