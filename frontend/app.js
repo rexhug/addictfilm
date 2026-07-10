@@ -1,5 +1,6 @@
-// Скелет Mini App: список → карточка → оценка, поиск, статистика.
-// Все данные — через наш API; авторизация — initData в заголовке.
+// Публичный Mini App: мой список → карточка фильма → оценка, поиск, статистика.
+// Модель single-user: у каждого свой список; на карточке — моя оценка и
+// community-оценка (средняя по всем пользователям). Авторизация — initData.
 
 const tg = window.Telegram.WebApp;
 tg.ready();
@@ -28,19 +29,21 @@ async function showList(tab) {
   screen.innerHTML = `<div class="hint">Загружаю…</div>`;
   const { items } = await api(`/api/movies?status=${STATUS_MAP[tab]}&limit=60`);
   if (!items.length) {
-    screen.innerHTML = `<div class="hint">Пусто. Добавь фильм через 🔍</div>`;
+    const empty = tab === "want" ? "Пусто. Добавь фильм через 🔍"
+      : tab === "watched" ? "Пока ничего не просмотрено."
+      : "Оцени просмотренные фильмы — появится твой топ.";
+    screen.innerHTML = `<div class="hint">${empty}</div>`;
     return;
   }
   const grid = document.createElement("div");
   grid.className = "grid";
   for (const m of items) {
-    const avg = avgRating(m.ratings);
     const card = document.createElement("div");
     card.className = "poster-card";
     card.innerHTML = `
       ${m.poster_url ? `<img loading="lazy" src="${m.poster_url}">`
                      : `<div class="no-poster">${esc(m.title)}</div>`}
-      ${avg ? `<span class="badge">💞 ${avg}</span>` : ""}
+      ${m.my_rating ? `<span class="badge">★ ${m.my_rating}</span>` : ""}
       <div class="title">${esc(m.title)} (${esc(m.year || "")})</div>`;
     card.onclick = () => showDetail(m.id);
     grid.appendChild(card);
@@ -51,7 +54,8 @@ async function showList(tab) {
 async function showDetail(id) {
   screen.innerHTML = `<div class="hint">Загружаю…</div>`;
   const m = await api(`/api/movie/${id}`);
-  const myRating = m.ratings[me.id];
+  const myRating = m.my_rating;
+  const inList = m.status != null;
   const rateBtns = Array.from({ length: 10 }, (_, i) => i + 1)
     .map(n => `<button data-n="${n}" class="${n === myRating ? "mine" : ""}">${n}</button>`)
     .join("");
@@ -65,10 +69,11 @@ async function showDetail(id) {
         ${ratingLine(m)}
       </div>
       ${m.plot ? `<p class="plot">${esc(m.plot)}</p>` : ""}
+      <div class="rate-label">Моя оценка:</div>
       <div class="rate-row">${rateBtns}</div>
       <div class="actions">
-        <button id="toggle-status">${m.status === "watched" ? "↩️ В «Хотим»" : "✅ Просмотрели"}</button>
-        <button id="del" class="danger">🗑 Удалить</button>
+        <button id="toggle-status">${m.status === "watched" ? "↩️ В «Хочу посмотреть»" : "✅ Смотрел(а)"}</button>
+        ${inList ? `<button id="del" class="danger">🗑 Убрать из списка</button>` : ""}
       </div>
     </div>`;
 
@@ -82,11 +87,12 @@ async function showDetail(id) {
     await api(`/api/movie/${id}/status`, { method: "POST", body: JSON.stringify({ status }) });
     showDetail(id);
   };
-  document.getElementById("del").onclick = () => {
-    tg.showConfirm(`Удалить «${m.title}»?`, async ok => {
+  const del = document.getElementById("del");
+  if (del) del.onclick = () => {
+    tg.showConfirm(`Убрать «${m.title}» из своего списка?`, async ok => {
       if (!ok) return;
       await api(`/api/movie/${id}`, { method: "DELETE" });
-      showList("want");
+      setActive("want"); showList("want");
     });
   };
 }
@@ -117,12 +123,12 @@ function showSearch() {
           ${it.rating ? `<span class="badge">⭐ ${it.rating}</span>` : ""}
           <div class="title">${esc(it.title)} (${esc(it.year || "")})</div>`;
         card.onclick = () => {
-          tg.showConfirm(`Добавить «${it.title}» в «Хотим посмотреть»?`, async ok => {
+          tg.showConfirm(`Добавить «${it.title}» в «Хочу посмотреть»?`, async ok => {
             if (!ok) return;
             const r = await api("/api/add", { method: "POST",
               body: JSON.stringify({ src: it.src, ref: it.ref }) });
-            if (r.reason === "exists") tg.showAlert("Уже есть в списке!");
-            else { tg.HapticFeedback?.notificationOccurred("success"); showList("want"); setActive("want"); }
+            if (r.reason === "exists") tg.showAlert("Уже в твоём списке!");
+            else { tg.HapticFeedback?.notificationOccurred("success"); setActive("want"); showList("want"); }
           });
         };
         grid.appendChild(card);
@@ -136,31 +142,30 @@ function showSearch() {
 async function showStats() {
   screen.innerHTML = `<div class="hint">Считаю…</div>`;
   const s = await api("/api/stats");
-  const compat = s.compatibility;
   const y = s.year;
   screen.innerHTML = `
-    <div class="stat-block">🎬 Просмотрено вместе: <b>${s.watched}</b> из ${s.watched + s.want}<br>
-      ⏱ Экранное время: <b>${Math.floor(s.total_runtime_min / 60)} ч</b></div>
-    ${compat.agreement != null ? `<div class="stat-block">💑 Совместимость: <b>${compat.agreement}%</b>
-      <br><small>по ${compat.count} общим фильмам</small></div>` : ""}
-    ${s.top_genres_pct.length ? `<div class="stat-block">🎭 Жанры:<br>${
+    <div class="stat-block">🎬 Просмотрено: <b>${s.watched}</b> · в списке «Хочу»: <b>${s.want}</b><br>
+      ⏱ Экранное время: <b>${Math.floor(s.total_runtime_min / 60)} ч</b>
+      ${s.avg_rating != null ? `<br>⭐ Моя средняя оценка: <b>${s.avg_rating}</b> <small>(${s.rating_count})</small>` : ""}</div>
+    ${s.top_genres_pct.length ? `<div class="stat-block">🎭 Мои жанры:<br>${
       s.top_genres_pct.map(([g, p]) => `${esc(g)} — ${p}%`).join("<br>")}</div>` : ""}
     ${s.top_actors.length ? `<div class="stat-block">⭐ Актёры:<br>${
       s.top_actors.map(([n, c]) => `${esc(n)} — ${c}`).join("<br>")}</div>` : ""}
+    ${s.top_directors.length ? `<div class="stat-block">🎬 Режиссёры:<br>${
+      s.top_directors.map(([n, c]) => `${esc(n)} — ${c}`).join("<br>")}</div>` : ""}
     ${y.count ? `<div class="stat-block">📅 Итоги ${y.year}: <b>${y.count}</b> фильмов
-      ${y.avg_rating ? ` · средняя <b>${y.avg_rating}</b>` : ""}</div>` : ""}`;
+      ${y.avg_rating ? ` · средняя <b>${y.avg_rating}</b>` : ""}
+      ${y.top_genre ? `<br>любимый жанр — ${esc(y.top_genre)}` : ""}
+      ${y.top_actor ? `<br>актёр года — ${esc(y.top_actor[0])}` : ""}</div>` : ""}`;
 }
 
 // ── Утилиты ───────────────────────────────────────────────────────────────────
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
-function avgRating(r) {
-  const v = Object.values(r || {});
-  return v.length === 2 ? ((v[0] + v[1]) / 2).toFixed(1) : null;
-}
 function ratingLine(m) {
   const parts = [];
   if (m.kp_rating) parts.push(`КП ${m.kp_rating}`);
   if (m.imdb_rating) parts.push(`IMDb ${m.imdb_rating}`);
+  if (m.community && m.community.count) parts.push(`👥 ${m.community.avg} (${m.community.count})`);
   return parts.length ? `<br>⭐ ${parts.join(" · ")}` : "";
 }
 function setActive(tab) {
@@ -179,7 +184,7 @@ document.querySelectorAll("#tabs button").forEach(btn => {
   };
 });
 
-// Старт: проверяем авторизацию и открываем «Хотим».
+// Старт: проверяем авторизацию и открываем «Хочу посмотреть».
 (async () => {
   try {
     me = await api("/api/me");

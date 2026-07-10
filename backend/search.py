@@ -160,7 +160,7 @@ def _clean(val):
 
 
 async def fetch_details(src: str, ref: str) -> dict | None:
-    """Полные данные фильма под database.add_movie."""
+    """Полные данные фильма под database.get_or_create_film."""
     if src == "k":
         doc = await kinopoisk.get_movie(ref)
         if not doc:
