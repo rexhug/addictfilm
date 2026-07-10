@@ -16,7 +16,7 @@ const DICT = {
   ru: {
     tagline: "Кино, которое ты любишь",
     search_ph: "Поиск фильмов, сериалов, актёров…",
-    chip_popular: "Популярное", chip_top: "Топ спильноты", chip_genres: "Жанры",
+    chip_popular: "Популярное", chip_top: "Топ сообщества", chip_genres: "Жанры",
     tab_home: "Главная", tab_want: "Хочу", tab_watched: "Смотрел", tab_top: "Мой топ", tab_stats: "Статистика",
     list_want: "Хочу посмотреть", list_watched: "Смотрел", list_top: "Мой топ",
     count_films: (n) => pl(n, ["фильм", "фильма", "фильмов"]),
