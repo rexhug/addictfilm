@@ -14,7 +14,8 @@ import re
 import aiosqlite
 from datetime import datetime, timezone, timedelta
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "movies.db")
+# В облаке БД живёт на постоянном томе (DB_PATH=/data/movies.db), локально — рядом с проектом.
+DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "movies.db"))
 
 
 def _now() -> str:

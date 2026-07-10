@@ -1,0 +1,12 @@
+.venv/
+.git/
+.claude/
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+*.log
+.env
+docs/
+README.md
