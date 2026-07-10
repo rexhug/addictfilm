@@ -172,6 +172,27 @@ async def random_movie(user: dict = Depends(current_user)):
     return {"item": m}
 
 
+# ── API: discovery (публичный каталог) ────────────────────────────────────────
+@app.get("/api/browse")
+async def browse(sort: str = "popular", genre: str = "", limit: int = 30,
+                 offset: int = 0, user: dict = Depends(current_user)):
+    limit = max(1, min(limit, 60))
+    if sort == "top":
+        items = await db.browse_top(user["id"], limit=limit, offset=offset)
+    elif sort == "genre":
+        if not genre.strip():
+            return {"items": []}
+        items = await db.browse_by_genre(user["id"], genre.strip(), limit=limit, offset=offset)
+    else:
+        items = await db.browse_popular(user["id"], limit=limit, offset=offset)
+    return {"items": items}
+
+
+@app.get("/api/genres")
+async def genres(user: dict = Depends(current_user)):
+    return {"items": await db.list_genres()}
+
+
 # ── Фронтенд ─────────────────────────────────────────────────────────────────
 @app.get("/")
 async def index():

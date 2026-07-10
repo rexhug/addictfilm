@@ -59,6 +59,18 @@ async function showDetail(id) {
   const rateBtns = Array.from({ length: 10 }, (_, i) => i + 1)
     .map(n => `<button data-n="${n}" class="${n === myRating ? "mine" : ""}">${n}</button>`)
     .join("");
+  // Кнопки статуса зависят от того, где фильм у меня сейчас.
+  let actions;
+  if (m.status == null) {
+    actions = `<button data-set="want_to_watch">🔖 Хочу посмотреть</button>
+               <button data-set="watched">✅ Смотрел(а)</button>`;
+  } else if (m.status === "want_to_watch") {
+    actions = `<button data-set="watched">✅ Смотрел(а)</button>
+               <button id="del" class="danger">🗑 Убрать</button>`;
+  } else {
+    actions = `<button data-set="want_to_watch">↩️ В «Хочу»</button>
+               <button id="del" class="danger">🗑 Убрать</button>`;
+  }
   screen.innerHTML = `
     <div class="detail">
       ${m.poster_url ? `<img class="hero" src="${m.poster_url}">` : ""}
@@ -69,12 +81,9 @@ async function showDetail(id) {
         ${ratingLine(m)}
       </div>
       ${m.plot ? `<p class="plot">${esc(m.plot)}</p>` : ""}
-      <div class="rate-label">Моя оценка:</div>
+      <div class="rate-label">Моя оценка${inList ? "" : " (оценить = добавить в «Смотрел»)"}:</div>
       <div class="rate-row">${rateBtns}</div>
-      <div class="actions">
-        <button id="toggle-status">${m.status === "watched" ? "↩️ В «Хочу посмотреть»" : "✅ Смотрел(а)"}</button>
-        ${inList ? `<button id="del" class="danger">🗑 Убрать из списка</button>` : ""}
-      </div>
+      <div class="actions">${actions}</div>
     </div>`;
 
   screen.querySelectorAll(".rate-row button").forEach(b => b.onclick = async () => {
@@ -82,19 +91,73 @@ async function showDetail(id) {
     await api(`/api/movie/${id}/rate`, { method: "POST", body: JSON.stringify({ rating: +b.dataset.n }) });
     showDetail(id);
   });
-  document.getElementById("toggle-status").onclick = async () => {
-    const status = m.status === "watched" ? "want_to_watch" : "watched";
-    await api(`/api/movie/${id}/status`, { method: "POST", body: JSON.stringify({ status }) });
+  screen.querySelectorAll(".actions button[data-set]").forEach(b => b.onclick = async () => {
+    tg.HapticFeedback?.impactOccurred("light");
+    await api(`/api/movie/${id}/status`, { method: "POST", body: JSON.stringify({ status: b.dataset.set }) });
     showDetail(id);
-  };
+  });
   const del = document.getElementById("del");
   if (del) del.onclick = () => {
     tg.showConfirm(`Убрать «${m.title}» из своего списка?`, async ok => {
       if (!ok) return;
       await api(`/api/movie/${id}`, { method: "DELETE" });
-      setActive("want"); showList("want");
+      showDetail(id);  // фильм остаётся в каталоге, статус сбрасывается
     });
   };
+}
+
+// ── Discovery: публичный каталог ──────────────────────────────────────────────
+async function showBrowse(sort = "popular", genre = "") {
+  const modes = [["popular", "🔥 Популярное"], ["top", "⭐ Топ спильноты"], ["genre", "🎭 Жанры"]];
+  screen.innerHTML = `
+    <div class="subnav">${modes.map(([k, l]) =>
+      `<button data-mode="${k}" class="${k === sort ? "active" : ""}">${l}</button>`).join("")}</div>
+    <div id="browse-body"><div class="hint">Загружаю…</div></div>`;
+  screen.querySelectorAll(".subnav button").forEach(b => b.onclick = () => showBrowse(b.dataset.mode));
+  const body = document.getElementById("browse-body");
+
+  if (sort === "genre") {
+    const { items: gs } = await api("/api/genres");
+    if (!gs.length) { body.innerHTML = `<div class="hint">Каталог пока пуст. Добавь фильмы через 🔍</div>`; return; }
+    body.innerHTML = `
+      <div class="chips">${gs.map(g =>
+        `<button class="chip ${g.name === genre ? "active" : ""}" data-g="${esc(g.name)}">${esc(g.name)} <small>${g.count}</small></button>`).join("")}</div>
+      <div id="genre-films">${genre ? `<div class="hint">Загружаю…</div>` : `<div class="hint">Выбери жанр</div>`}</div>`;
+    body.querySelectorAll(".chip").forEach(c => c.onclick = () => showBrowse("genre", c.dataset.g));
+    if (genre) {
+      const { items } = await api(`/api/browse?sort=genre&genre=${encodeURIComponent(genre)}`);
+      renderBrowseGrid(document.getElementById("genre-films"), items, "genre");
+    }
+    return;
+  }
+
+  const { items } = await api(`/api/browse?sort=${sort}`);
+  renderBrowseGrid(body, items, sort);
+}
+
+function renderBrowseGrid(container, items, sort) {
+  if (!items.length) {
+    const msg = sort === "top" ? "Пока никто не оценил фильмы. Стань первым!"
+                               : "Каталог пока пуст. Добавь фильмы через 🔍";
+    container.innerHTML = `<div class="hint">${msg}</div>`;
+    return;
+  }
+  const grid = document.createElement("div");
+  grid.className = "grid";
+  for (const it of items) {
+    const card = document.createElement("div");
+    card.className = "poster-card";
+    const c = it.community || {};
+    card.innerHTML = `
+      ${it.poster_url ? `<img loading="lazy" src="${it.poster_url}">`
+                      : `<div class="no-poster">${esc(it.title)}</div>`}
+      ${c.count ? `<span class="badge">👥 ${c.avg}</span>` : ""}
+      ${it.in_list ? `<span class="badge badge-left">✓</span>` : ""}
+      <div class="title">${esc(it.title)} (${esc(it.year || "")})</div>`;
+    card.onclick = () => showDetail(it.id);
+    grid.appendChild(card);
+  }
+  container.replaceChildren(grid);
 }
 
 function showSearch() {
@@ -192,17 +255,18 @@ document.querySelectorAll("#tabs button").forEach(btn => {
   btn.onclick = () => {
     setActive(btn.dataset.tab);
     const t = btn.dataset.tab;
-    if (t === "search") showSearch();
+    if (t === "browse") showBrowse();
+    else if (t === "search") showSearch();
     else if (t === "stats") showStats();
     else showList(t);
   };
 });
 
-// Старт: проверяем авторизацию и открываем «Хочу посмотреть».
+// Старт: проверяем авторизацию и открываем публичный каталог.
 (async () => {
   try {
     me = await api("/api/me");
-    showList("want");
+    showBrowse();
   } catch (e) {
     screen.innerHTML = `<div class="hint">⛔ ${esc(e.message)}<br>Открой через кнопку меню бота в Telegram.</div>`;
   }

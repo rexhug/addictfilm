@@ -61,6 +61,23 @@ body {
   border: 1px solid var(--tg-theme-hint-color, #ccc);
   background: var(--tg-theme-secondary-bg-color, #f7f7f7); color: inherit; margin-bottom: 10px; }
 
+/* Discovery: подвкладки и жанровые чипсы */
+.subnav { display: flex; gap: 6px; margin-bottom: 10px; overflow-x: auto; }
+.subnav button { border: none; border-radius: 14px; padding: 6px 12px; font-size: 13px;
+  white-space: nowrap; cursor: pointer;
+  background: var(--tg-theme-secondary-bg-color, #f0f0f0); color: inherit; }
+.subnav button.active {
+  background: var(--tg-theme-button-color, #2481cc);
+  color: var(--tg-theme-button-text-color, #fff); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.chip { border: none; border-radius: 14px; padding: 6px 10px; font-size: 13px; cursor: pointer;
+  background: var(--tg-theme-secondary-bg-color, #f0f0f0); color: inherit; }
+.chip small { opacity: .5; }
+.chip.active { background: var(--tg-theme-button-color, #2481cc);
+  color: var(--tg-theme-button-text-color, #fff); }
+.chip.active small { opacity: .8; }
+.poster-card .badge.badge-left { left: 6px; right: auto; background: #2e7d32; font-weight: 700; }
+
 .hint { text-align: center; opacity: .6; padding: 24px 12px; font-size: 14px; }
 .stat-block { background: var(--tg-theme-secondary-bg-color, #f7f7f7);
   border-radius: 12px; padding: 12px; margin-bottom: 10px; font-size: 14px; line-height: 1.5; }

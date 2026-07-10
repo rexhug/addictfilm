@@ -458,3 +458,99 @@ async def get_year_stats(user_id: int, year: int) -> dict:
             "best_avg": best,
             "best_titles": best_titles,
         }
+
+
+# ── Discovery: публичный каталог (Фаза C) ────────────────────────────────────
+# Минимум оценок, чтобы фильм попал в «Топ спильноты» (честность: топ из одной
+# случайной оценки — ложь). Пока база пользователей мала — 1; поднять при росте.
+MIN_COMMUNITY_VOTES = int(os.getenv("MIN_COMMUNITY_VOTES", "1"))
+
+
+def _browse_dict(row) -> dict:
+    """Строка каталога -> нормализованный item с community-рейтингом и моим статусом."""
+    d = dict(row)
+    avg = d.pop("community_avg", None)
+    d["community"] = {"avg": round(avg, 1) if avg is not None else None,
+                      "count": d.pop("community_count", 0) or 0}
+    d["popularity"] = d.get("popularity", 0) or 0
+    d["in_list"] = d.pop("my_status", None) is not None
+    return d
+
+
+# Корреляционные подзапросы: community и популярность фильма; LEFT JOIN — мой статус.
+_BROWSE_COLS = """
+    f.*,
+    (SELECT AVG(rating) FROM user_films WHERE film_id=f.id AND rating IS NOT NULL) AS community_avg,
+    (SELECT COUNT(rating) FROM user_films WHERE film_id=f.id AND rating IS NOT NULL) AS community_count,
+    (SELECT COUNT(*) FROM user_films WHERE film_id=f.id) AS popularity,
+    me.status AS my_status, me.rating AS my_rating
+"""
+
+
+async def browse_popular(user_id: int, limit: int = 30, offset: int = 0) -> list[dict]:
+    """Популярное: по числу пользователей, добавивших фильм."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"""
+            SELECT {_BROWSE_COLS}
+            FROM films f
+            LEFT JOIN user_films me ON me.film_id = f.id AND me.user_id = ?
+            ORDER BY popularity DESC, f.created_at DESC
+            LIMIT ? OFFSET ?
+            """, (user_id, limit, offset))
+        return [_browse_dict(r) for r in await cur.fetchall()]
+
+
+async def browse_top(user_id: int, limit: int = 30, offset: int = 0,
+                     min_votes: int | None = None) -> list[dict]:
+    """Топ спильноты: по средней оценке всех пользователей (min_votes — честный порог)."""
+    mv = MIN_COMMUNITY_VOTES if min_votes is None else min_votes
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """
+            SELECT f.*,
+                   AVG(uf.rating) AS community_avg,
+                   COUNT(uf.rating) AS community_count,
+                   (SELECT COUNT(*) FROM user_films WHERE film_id=f.id) AS popularity,
+                   me.status AS my_status, me.rating AS my_rating
+            FROM films f
+            JOIN user_films uf ON uf.film_id = f.id AND uf.rating IS NOT NULL
+            LEFT JOIN user_films me ON me.film_id = f.id AND me.user_id = ?
+            GROUP BY f.id
+            HAVING COUNT(uf.rating) >= ?
+            ORDER BY community_avg DESC, community_count DESC
+            LIMIT ? OFFSET ?
+            """, (user_id, mv, limit, offset))
+        return [_browse_dict(r) for r in await cur.fetchall()]
+
+
+async def browse_by_genre(user_id: int, genre: str, limit: int = 30, offset: int = 0) -> list[dict]:
+    """Каталог по жанру (подстрока в поле genres), по популярности."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"""
+            SELECT {_BROWSE_COLS}
+            FROM films f
+            LEFT JOIN user_films me ON me.film_id = f.id AND me.user_id = ?
+            WHERE f.genres LIKE '%' || ? || '%'
+            ORDER BY popularity DESC, f.created_at DESC
+            LIMIT ? OFFSET ?
+            """, (user_id, genre, limit, offset))
+        return [_browse_dict(r) for r in await cur.fetchall()]
+
+
+async def list_genres() -> list[dict]:
+    """Жанры, присутствующие в каталоге, по убыванию частоты: [{name, count}]."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT genres FROM films")
+        counts: dict[str, int] = {}
+        for r in await cur.fetchall():
+            for g in (r["genres"] or "").split(","):
+                g = g.strip()
+                if g and g != "N/A":
+                    counts[g] = counts.get(g, 0) + 1
+        return [{"name": n, "count": c} for n, c in sorted(counts.items(), key=lambda x: -x[1])]
