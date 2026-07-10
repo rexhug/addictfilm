@@ -26,12 +26,13 @@ def validate_init_data(init_data: str, bot_token: str, max_age_sec: int = 86400)
     if not hmac.compare_digest(calc, given_hash):
         return None
 
-    # Защита от повторного использования старых initData.
+    # Защита от повторного использования старых initData. Требуем свежий auth_date:
+    # без него (или 0) проверку возраста пройти нельзя — иначе гвардия молча обходится.
     try:
         auth_date = int(data.get("auth_date", "0"))
     except ValueError:
         return None
-    if max_age_sec and auth_date and time.time() - auth_date > max_age_sec:
+    if max_age_sec and (not auth_date or time.time() - auth_date > max_age_sec):
         return None
 
     try:

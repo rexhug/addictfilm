@@ -24,6 +24,7 @@ USER_WINDOW: int = int(os.getenv("USER_SEARCH_WINDOW", "60"))
 _day: str | None = None
 _spent: int = 0
 _hits: dict[int, deque] = defaultdict(deque)
+_calls: int = 0  # счётчик обращений для периодической уборки _hits
 
 
 def _today() -> str:
@@ -49,9 +50,23 @@ def search_budget_left() -> int:
     return max(0, DAILY_SEARCH_BUDGET - _spent)
 
 
+def _sweep(now: float) -> None:
+    """Убрать записи неактивных пользователей (иначе _hits растёт на публике)."""
+    for uid in list(_hits):
+        dq = _hits[uid]
+        while dq and now - dq[0] > USER_WINDOW:
+            dq.popleft()
+        if not dq:
+            del _hits[uid]
+
+
 def allow_user(user_id: int) -> bool:
     """Скользящее окно: False, если пользователь превысил USER_MAX за USER_WINDOW сек."""
+    global _calls
     now = time.monotonic()
+    _calls += 1
+    if _calls % 500 == 0:  # периодическая уборка «мёртвых» пользователей
+        _sweep(now)
     dq = _hits[user_id]
     while dq and now - dq[0] > USER_WINDOW:
         dq.popleft()
@@ -63,6 +78,6 @@ def allow_user(user_id: int) -> bool:
 
 def _reset_for_tests() -> None:
     """Только для тестов: обнулить состояние."""
-    global _day, _spent
-    _day, _spent = None, 0
+    global _day, _spent, _calls
+    _day, _spent, _calls = None, 0, 0
     _hits.clear()

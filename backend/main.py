@@ -32,6 +32,7 @@ FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 @app.on_event("startup")
 async def startup() -> None:
     await db.init_db()
+    await search.purge_expired()  # подчистить протухший кэш поиска при старте
     logger.info("Database initialized")
 
 
@@ -128,14 +129,16 @@ async def api_search(q: str, user: dict = Depends(current_user)):
     q = q.strip()
     if len(q) < 2:
         return {"items": []}
-    # Throttle: один пользователь не должен выжигать общую квоту источника.
-    if not ratelimit.allow_user(user["id"]):
-        raise HTTPException(status_code=429, detail="Слишком много запросов, подождите минуту")
     imdb_id = search.extract_imdb_id(q)
-    if imdb_id:
+    if imdb_id:  # прямой запрос по tt-id идёт в OMDb → тоже под throttle
+        if not ratelimit.allow_user(user["id"]):
+            raise HTTPException(status_code=429, detail="Слишком много запросов, подождите минуту")
         d = await search.fetch_details("i", imdb_id)
         return {"items": [d] if d else []}
-    res = await search.cached_search(q)  # cache-first + дневной бюджет
+    # Throttle считается внутри — только если реально идём в API (кэш-хиты бесплатны).
+    res = await search.cached_search(q, user["id"])
+    if res["throttled"]:
+        raise HTTPException(status_code=429, detail="Слишком много запросов, подождите минуту")
     return {"items": res["items"], "limited": res["limited"]}
 
 

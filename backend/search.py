@@ -31,6 +31,7 @@ _QTTL = 6 * 3600   # свежесть L1, сек
 _QMAX = 300        # максимум запросов в L1
 # TTL постоянного кэша (БД): результаты поиска стабильны неделями. Настраивается.
 _DB_TTL = int(os.getenv("SEARCH_CACHE_TTL_SEC", str(14 * 24 * 3600)))
+_puts = 0  # счётчик записей в L2 — для периодической уборки протухшего
 
 
 def _qnorm(query: str) -> str:
@@ -173,38 +174,55 @@ async def find_movies(query: str) -> list[dict]:
     return items
 
 
-async def cached_search(query: str) -> dict:
+async def cached_search(query: str, user_id: int | None = None) -> dict:
     """Cache-first поиск под лимит источника.
-    Возвращает {items, cached, limited}:
-      cached  — отдано из кэша запросов (внешний вызов не делался);
-      limited — дневной бюджет исчерпан и свежего кэша нет (клиенту показать
-                «поиск временно ограничен»)."""
+    Возвращает {items, cached, limited, throttled}:
+      cached    — отдано из кэша (L1/L2), внешний вызов не делался;
+      limited   — дневной бюджет исчерпан и свежего кэша нет;
+      throttled — пользователь превысил per-user лимит (штрафуем ТОЛЬКО реальные
+                  обращения к API — кэш-хиты бесплатны и не throttl-ятся)."""
     key = _qnorm(query)
     now = time.time()
     # L1: in-memory.
     hit = _QCACHE.get(key)
     if hit and now - hit[0] < _QTTL:
-        return {"items": hit[1], "cached": True, "limited": False}
+        return {"items": hit[1], "cached": True, "limited": False, "throttled": False}
     # L2: постоянный кэш в БД (переживает рестарт/деплой, общий на всех).
     stored = await db.search_cache_get(key, _DB_TTL)
     if stored is not None:
         _QCACHE[key] = (now, stored)
-        return {"items": stored, "cached": True, "limited": False}
+        return {"items": stored, "cached": True, "limited": False, "throttled": False}
+
+    # Дальше — реальный внешний вызов. Per-user throttle считаем только здесь.
+    if user_id is not None and not ratelimit.allow_user(user_id):
+        return {"items": [], "cached": False, "limited": False, "throttled": True}
 
     if not ratelimit.try_spend_search():
         if hit:  # бюджета нет — отдаём устаревший L1-кэш, лучше чем ничего
-            return {"items": hit[1], "cached": True, "limited": False}
+            return {"items": hit[1], "cached": True, "limited": False, "throttled": False}
         logger.warning("Search budget exhausted, query %r not cached", query)
-        return {"items": [], "cached": False, "limited": True}
+        return {"items": [], "cached": False, "limited": True, "throttled": False}
 
     items = await find_movies(query)
     _QCACHE[key] = (now, items)
     if items:  # пустые не кэшируем в БД (мог быть временный сбой источника)
         await db.search_cache_put(key, items)
+        global _puts
+        _puts += 1
+        if _puts % 100 == 0:  # изредка подчищаем протухший L2
+            await purge_expired()
     if len(_QCACHE) > _QMAX:  # простая очистка старейших L1
         for k in sorted(_QCACHE, key=lambda k: _QCACHE[k][0])[:_QMAX // 6]:
             _QCACHE.pop(k, None)
-    return {"items": items, "cached": False, "limited": False}
+    return {"items": items, "cached": False, "limited": False, "throttled": False}
+
+
+async def purge_expired() -> int:
+    """Убрать протухшие записи постоянного кэша поиска (на старте и периодически)."""
+    removed = await db.purge_search_cache(_DB_TTL)
+    if removed:
+        logger.info("search_cache: удалено %d протухших записей", removed)
+    return removed
 
 
 def _clean(val):

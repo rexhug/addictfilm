@@ -118,6 +118,16 @@ async def search_cache_put(q: str, results: list) -> None:
         await db.commit()
 
 
+async def purge_search_cache(max_age_sec: int) -> int:
+    """Удалить протухшие записи кэша поиска (иначе таблица растёт без границы).
+    Возвращает число удалённых строк."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_sec)).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("DELETE FROM search_cache WHERE created_at < ?", (cutoff,))
+        await db.commit()
+        return cur.rowcount
+
+
 async def backup_db(keep: int = 7) -> str | None:
     """Консистентный бэкап (VACUUM INTO) рядом с базой; храним последние `keep`."""
     dirname = os.path.dirname(os.path.abspath(DB_PATH))
