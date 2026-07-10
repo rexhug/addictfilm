@@ -199,6 +199,8 @@ async def genres(user: dict = Depends(current_user)):
 # ── Фронтенд ─────────────────────────────────────────────────────────────────
 @app.get("/")
 async def index():
-    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+    # no-store: HTML всегда свежий, чтобы новые версии app.js/style.css (?v=) подхватывались.
+    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"),
+                        headers={"Cache-Control": "no-store, max-age=0"})
 
 app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="static")
