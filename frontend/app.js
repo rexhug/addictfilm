@@ -22,37 +22,56 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+// ── UI-хелперы ────────────────────────────────────────────────────────────────
+function emptyState(icon, text, sub = "") {
+  return `<div class="empty"><div class="empty-icon">${icon}</div>
+    <div class="empty-text">${esc(text)}</div>${sub ? `<div class="empty-sub">${esc(sub)}</div>` : ""}</div>`;
+}
+function skeletonGrid(n = 9) {
+  return `<div class="grid">${Array.from({ length: n }, () =>
+    `<div class="poster-card"><div class="poster-wrap sk"></div><div class="sk sk-line"></div></div>`).join("")}</div>`;
+}
+// Единая постер-карточка для всех сеток (списки, каталог, поиск).
+function posterCard({ poster, title, year, badge = "", mark = "" }, onClick) {
+  const card = document.createElement("div");
+  card.className = "poster-card";
+  card.innerHTML = `
+    <div class="poster-wrap">
+      ${poster ? `<img loading="lazy" src="${esc(poster)}">` : `<div class="no-poster">${esc(title)}</div>`}
+      ${badge ? `<span class="badge">${badge}</span>` : ""}
+      ${mark ? `<span class="badge badge-left">${mark}</span>` : ""}
+    </div>
+    <div class="title">${esc(title)}${year ? ` <span class="year">${esc(year)}</span>` : ""}</div>`;
+  card.onclick = onClick;
+  return card;
+}
+function gridOf(items, toCard) {
+  const grid = document.createElement("div");
+  grid.className = "grid";
+  for (const it of items) grid.appendChild(toCard(it));
+  return grid;
+}
+
 // ── Экраны ────────────────────────────────────────────────────────────────────
 const STATUS_MAP = { want: "want_to_watch", watched: "watched", top: "top" };
 
 async function showList(tab) {
-  screen.innerHTML = `<div class="hint">Загружаю…</div>`;
+  screen.innerHTML = skeletonGrid();
   const { items } = await api(`/api/movies?status=${STATUS_MAP[tab]}&limit=60`);
   if (!items.length) {
-    const empty = tab === "want" ? "Пусто. Добавь фильм через 🔍"
-      : tab === "watched" ? "Пока ничего не просмотрено."
-      : "Оцени просмотренные фильмы — появится твой топ.";
-    screen.innerHTML = `<div class="hint">${empty}</div>`;
+    screen.innerHTML = tab === "want" ? emptyState("🔖", "Список пуст", "Добавь фильмы через поиск 🔍")
+      : tab === "watched" ? emptyState("✅", "Пока ничего не просмотрено", "Отмечай фильмы «Смотрел(а)»")
+      : emptyState("⭐", "Твой топ пуст", "Оцени просмотренные фильмы");
     return;
   }
-  const grid = document.createElement("div");
-  grid.className = "grid";
-  for (const m of items) {
-    const card = document.createElement("div");
-    card.className = "poster-card";
-    card.innerHTML = `
-      ${m.poster_url ? `<img loading="lazy" src="${m.poster_url}">`
-                     : `<div class="no-poster">${esc(m.title)}</div>`}
-      ${m.my_rating ? `<span class="badge">★ ${m.my_rating}</span>` : ""}
-      <div class="title">${esc(m.title)} (${esc(m.year || "")})</div>`;
-    card.onclick = () => showDetail(m.id);
-    grid.appendChild(card);
-  }
-  screen.replaceChildren(grid);
+  screen.replaceChildren(gridOf(items, m => posterCard(
+    { poster: m.poster_url, title: m.title, year: m.year, badge: m.my_rating ? `★ ${m.my_rating}` : "" },
+    () => showDetail(m.id))));
 }
 
 async function showDetail(id) {
-  screen.innerHTML = `<div class="hint">Загружаю…</div>`;
+  screen.innerHTML = `<div class="detail"><div class="hero sk"></div>
+    <div class="sk sk-line wide"></div><div class="sk sk-line"></div></div>`;
   const m = await api(`/api/movie/${id}`);
   const myRating = m.my_rating;
   const inList = m.status != null;
@@ -71,17 +90,24 @@ async function showDetail(id) {
     actions = `<button data-set="want_to_watch">↩️ В «Хочу»</button>
                <button id="del" class="danger">🗑 Убрать</button>`;
   }
+  const genreChips = (m.genres || "").split(",").map(g => g.trim()).filter(Boolean)
+    .map(g => `<span class="meta-chip">${esc(g)}</span>`).join("");
+  const ratingChips = [
+    m.kp_rating ? `<span class="rating-chip">КП <b>${esc(m.kp_rating)}</b></span>` : "",
+    m.imdb_rating ? `<span class="rating-chip">IMDb <b>${esc(m.imdb_rating)}</b></span>` : "",
+    (m.community && m.community.count)
+      ? `<span class="rating-chip community">👥 <b>${m.community.avg}</b> <small>${m.community.count}</small></span>` : "",
+  ].join("");
   screen.innerHTML = `
     <div class="detail">
-      ${m.poster_url ? `<img class="hero" src="${m.poster_url}">` : ""}
+      ${m.poster_url ? `<img class="hero" src="${esc(m.poster_url)}">` : ""}
       <h2>${esc(m.title)}${m.year ? ` · ${esc(m.year)}` : ""}</h2>
-      <div class="meta">
-        ${esc(m.genres || "")}${m.runtime ? ` · ${esc(m.runtime)}` : ""}
-        ${m.directors ? `<br>реж. ${esc(m.directors)}` : ""}
-        ${ratingLine(m)}
-      </div>
+      ${genreChips || m.runtime ? `<div class="meta-chips">${genreChips}${
+        m.runtime ? `<span class="meta-chip">⏱ ${esc(m.runtime)}</span>` : ""}</div>` : ""}
+      ${m.directors ? `<div class="meta-line">реж. ${esc(m.directors)}</div>` : ""}
+      ${ratingChips ? `<div class="rating-chips">${ratingChips}</div>` : ""}
       ${m.plot ? `<p class="plot">${esc(m.plot)}</p>` : ""}
-      <div class="rate-label">Моя оценка${inList ? "" : " (оценить = добавить в «Смотрел»)"}:</div>
+      <div class="rate-label">Моя оценка${inList ? "" : " · тап = «Смотрел(а)»"}</div>
       <div class="rate-row">${rateBtns}</div>
       <div class="actions">${actions}</div>
     </div>`;
@@ -112,17 +138,17 @@ async function showBrowse(sort = "popular", genre = "") {
   screen.innerHTML = `
     <div class="subnav">${modes.map(([k, l]) =>
       `<button data-mode="${k}" class="${k === sort ? "active" : ""}">${l}</button>`).join("")}</div>
-    <div id="browse-body"><div class="hint">Загружаю…</div></div>`;
+    <div id="browse-body">${skeletonGrid()}</div>`;
   screen.querySelectorAll(".subnav button").forEach(b => b.onclick = () => showBrowse(b.dataset.mode));
   const body = document.getElementById("browse-body");
 
   if (sort === "genre") {
     const { items: gs } = await api("/api/genres");
-    if (!gs.length) { body.innerHTML = `<div class="hint">Каталог пока пуст. Добавь фильмы через 🔍</div>`; return; }
+    if (!gs.length) { body.innerHTML = emptyState("🎭", "Жанров пока нет", "Каталог наполнится, когда добавишь фильмы 🔍"); return; }
     body.innerHTML = `
       <div class="chips">${gs.map(g =>
         `<button class="chip ${g.name === genre ? "active" : ""}" data-g="${esc(g.name)}">${esc(g.name)} <small>${g.count}</small></button>`).join("")}</div>
-      <div id="genre-films">${genre ? `<div class="hint">Загружаю…</div>` : `<div class="hint">Выбери жанр</div>`}</div>`;
+      <div id="genre-films">${genre ? skeletonGrid(6) : emptyState("👆", "Выбери жанр", "")}</div>`;
     body.querySelectorAll(".chip").forEach(c => c.onclick = () => showBrowse("genre", c.dataset.g));
     if (genre) {
       const { items } = await api(`/api/browse?sort=genre&genre=${encodeURIComponent(genre)}`);
@@ -137,33 +163,23 @@ async function showBrowse(sort = "popular", genre = "") {
 
 function renderBrowseGrid(container, items, sort) {
   if (!items.length) {
-    const msg = sort === "top" ? "Пока никто не оценил фильмы. Стань первым!"
-                               : "Каталог пока пуст. Добавь фильмы через 🔍";
-    container.innerHTML = `<div class="hint">${msg}</div>`;
+    container.innerHTML = sort === "top"
+      ? emptyState("⭐", "Ещё нет оценок", "Оцени фильм — он попадёт в топ спильноты")
+      : emptyState("🌐", "Каталог пуст", "Добавь фильмы через поиск 🔍");
     return;
   }
-  const grid = document.createElement("div");
-  grid.className = "grid";
-  for (const it of items) {
-    const card = document.createElement("div");
-    card.className = "poster-card";
+  container.replaceChildren(gridOf(items, it => {
     const c = it.community || {};
-    card.innerHTML = `
-      ${it.poster_url ? `<img loading="lazy" src="${it.poster_url}">`
-                      : `<div class="no-poster">${esc(it.title)}</div>`}
-      ${c.count ? `<span class="badge">👥 ${c.avg}</span>` : ""}
-      ${it.in_list ? `<span class="badge badge-left">✓</span>` : ""}
-      <div class="title">${esc(it.title)} (${esc(it.year || "")})</div>`;
-    card.onclick = () => showDetail(it.id);
-    grid.appendChild(card);
-  }
-  container.replaceChildren(grid);
+    return posterCard({ poster: it.poster_url, title: it.title, year: it.year,
+      badge: c.count ? `👥 ${c.avg}` : "", mark: it.in_list ? "✓" : "" }, () => showDetail(it.id));
+  }));
 }
 
 function showSearch() {
+  const startHint = emptyState("🔍", "Что смотрим?", "Введи название — минимум 2 буквы");
   screen.innerHTML = `
     <input id="search-input" placeholder="Название фильма или сериала…" autofocus>
-    <div id="search-results"></div>`;
+    <div id="search-results">${startHint}</div>`;
   const input = document.getElementById("search-input");
   const results = document.getElementById("search-results");
   let timer;
@@ -171,46 +187,32 @@ function showSearch() {
     clearTimeout(timer);
     timer = setTimeout(async () => {
       const q = input.value.trim();
-      if (q.length < 2) { results.innerHTML = ""; return; }
-      results.innerHTML = `<div class="hint">Ищу…</div>`;
+      if (q.length < 2) { results.innerHTML = startHint; return; }
+      results.innerHTML = skeletonGrid(6);
       let data;
       try {
         data = await api(`/api/search?q=${encodeURIComponent(q)}`);
       } catch (e) {
-        const msg = String(e.message) === "429"
-          ? "Слишком часто. Подожди минуту 🙂"
-          : `Ошибка поиска: ${esc(e.message)}`;
-        results.innerHTML = `<div class="hint">${msg}</div>`;
+        results.innerHTML = String(e.message) === "429"
+          ? emptyState("⏳", "Слишком часто", "Подожди минуту и попробуй снова")
+          : emptyState("⚠️", "Ошибка поиска", String(e.message));
         return;
       }
       if (data.limited) {
-        results.innerHTML = `<div class="hint">Поиск временно ограничен (дневной лимит источника). Попробуй позже.</div>`;
+        results.innerHTML = emptyState("⏳", "Поиск временно ограничен", "Дневной лимит источника. Попробуй позже");
         return;
       }
       const items = data.items;
-      if (!items.length) { results.innerHTML = `<div class="hint">Не найдено. Попробуй год или английское название.</div>`; return; }
-      const grid = document.createElement("div");
-      grid.className = "grid";
-      for (const it of items) {
-        const card = document.createElement("div");
-        card.className = "poster-card";
-        card.innerHTML = `
-          ${it.poster || it.poster_url ? `<img src="${it.poster || it.poster_url}">`
-                                       : `<div class="no-poster">${esc(it.title)}</div>`}
-          ${it.rating ? `<span class="badge">⭐ ${it.rating}</span>` : ""}
-          <div class="title">${esc(it.title)} (${esc(it.year || "")})</div>`;
-        card.onclick = () => {
-          tg.showConfirm(`Добавить «${it.title}» в «Хочу посмотреть»?`, async ok => {
-            if (!ok) return;
-            const r = await api("/api/add", { method: "POST",
-              body: JSON.stringify({ src: it.src, ref: it.ref }) });
-            if (r.reason === "exists") tg.showAlert("Уже в твоём списке!");
-            else { tg.HapticFeedback?.notificationOccurred("success"); setActive("want"); showList("want"); }
-          });
-        };
-        grid.appendChild(card);
-      }
-      results.replaceChildren(grid);
+      if (!items.length) { results.innerHTML = emptyState("🤷", "Ничего не найдено", "Попробуй год или английское название"); return; }
+      results.replaceChildren(gridOf(items, it => posterCard(
+        { poster: it.poster || it.poster_url, title: it.title, year: it.year,
+          badge: it.rating ? `⭐ ${it.rating}` : "" },
+        () => tg.showConfirm(`Добавить «${it.title}» в «Хочу посмотреть»?`, async ok => {
+          if (!ok) return;
+          const r = await api("/api/add", { method: "POST", body: JSON.stringify({ src: it.src, ref: it.ref }) });
+          if (r.reason === "exists") tg.showAlert("Уже в твоём списке!");
+          else { tg.HapticFeedback?.notificationOccurred("success"); setActive("want"); showList("want"); }
+        }))));
     }, 400);
   };
   input.focus();
@@ -278,13 +280,6 @@ function hbar(label, valueText, pct) {
 
 // ── Утилиты ───────────────────────────────────────────────────────────────────
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
-function ratingLine(m) {
-  const parts = [];
-  if (m.kp_rating) parts.push(`КП ${m.kp_rating}`);
-  if (m.imdb_rating) parts.push(`IMDb ${m.imdb_rating}`);
-  if (m.community && m.community.count) parts.push(`👥 ${m.community.avg} (${m.community.count})`);
-  return parts.length ? `<br>⭐ ${parts.join(" · ")}` : "";
-}
 function setActive(tab) {
   document.querySelectorAll("#tabs button").forEach(b =>
     b.classList.toggle("active", b.dataset.tab === tab));
