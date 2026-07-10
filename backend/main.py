@@ -57,6 +57,10 @@ async def me(user: dict = Depends(current_user)):
 @app.get("/api/movies")
 async def movies(status: str = "want_to_watch", sort: str = "date",
                  limit: int = 50, offset: int = 0, user: dict = Depends(current_user)):
+    if status not in ("want_to_watch", "watched", "top"):
+        raise HTTPException(status_code=422, detail="Неизвестный статус")
+    limit = max(1, min(limit, 100))   # защита от чрезмерной выборки
+    offset = max(0, offset)
     items = await db.get_user_films(user["id"], status, limit=limit, offset=offset, sort=sort)
     return {"items": items, "total": await db.count_user_films(user["id"], status)}
 
@@ -109,6 +113,8 @@ class CommentBody(BaseModel):
 
 @app.post("/api/movie/{film_id}/comment")
 async def comment(film_id: int, body: CommentBody, user: dict = Depends(current_user)):
+    if not await db.get_film(film_id):  # иначе set_comment создаёт «сиротский» user_films
+        raise HTTPException(status_code=404, detail="Фильм не найден")
     text = body.text.strip()
     if text:
         await db.set_comment(user["id"], film_id, text[:500])
@@ -150,6 +156,10 @@ class AddBody(BaseModel):
 
 @app.post("/api/add")
 async def add(body: AddBody, user: dict = Depends(current_user)):
+    if body.src not in ("k", "i"):
+        raise HTTPException(status_code=422, detail="Неизвестный источник")
+    if body.status not in ("want_to_watch", "watched"):
+        raise HTTPException(status_code=422, detail="Неизвестный статус")
     details = await search.fetch_details(body.src, body.ref)
     if not details or not details.get("imdb_id"):
         raise HTTPException(status_code=502, detail="Не удалось получить данные")

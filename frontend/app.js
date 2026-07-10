@@ -1,10 +1,12 @@
 // Addict Film — премиум-редизайн + локализация RU/EN.
 // Фиксированная high-end тёмная тема (не зависит от темы Telegram).
 
-const tg = window.Telegram.WebApp;
-tg.ready();
-tg.expand();
-try { tg.setHeaderColor("#050505"); tg.setBackgroundColor("#050505"); } catch (e) {}
+const tg = window.Telegram && window.Telegram.WebApp;  // вне Telegram — null, не падаем
+if (tg) {
+  tg.ready();
+  tg.expand();
+  try { tg.setHeaderColor("#050505"); tg.setBackgroundColor("#050505"); } catch (e) {}
+}
 
 const screen = document.getElementById("screen");
 let me = null;
@@ -71,7 +73,7 @@ const DICT = {
   },
 };
 let lang = "ru";
-try { lang = localStorage.getItem("lang") || ((tg.initDataUnsafe?.user?.language_code || "").startsWith("en") ? "en" : "ru"); } catch (e) {}
+try { lang = localStorage.getItem("lang") || ((tg?.initDataUnsafe?.user?.language_code || "").startsWith("en") ? "en" : "ru"); } catch (e) {}
 function t(key, ...args) { const v = (DICT[lang] || DICT.ru)[key] ?? DICT.ru[key] ?? key; return typeof v === "function" ? v(...args) : v; }
 function setLang(l) { lang = l; try { localStorage.setItem("lang", l); } catch (e) {} applyTabLabels(); showHome(); }
 function applyTabLabels() {
@@ -348,15 +350,18 @@ function backBtn() { return `<button class="back" aria-label="Back"><svg viewBox
 function wireBack(fn) { const b = screen.querySelector(".back"); if (b) b.onclick = fn; }
 function setActiveTab(t) { document.querySelectorAll("#tabbar .tab").forEach(b => b.classList.toggle("active", b.dataset.tab === t)); }
 function route(tab) { if (tab === "home") showHome(); else if (tab === "stats") showStats(); else showList(tab); }
-document.querySelectorAll("#tabbar .tab").forEach(btn => { btn.onclick = () => { setActiveTab(btn.dataset.tab); route(btn.dataset.tab); }; });
-
-// Старт.
-applyTabLabels();
-(async () => {
-  try {
-    me = await api("/api/me");
-    showHome();
-  } catch (e) {
-    screen.innerHTML = emptyState("⛔", esc(e.message), t("auth_err_s"));
-  }
-})();
+// Вне Telegram (нет window.Telegram.WebApp) — не падаем, а объясняем.
+if (!tg) {
+  screen.innerHTML = emptyState("💬", "Откройте в Telegram", "Это мини-приложение работает внутри Telegram");
+} else {
+  document.querySelectorAll("#tabbar .tab").forEach(btn => { btn.onclick = () => { setActiveTab(btn.dataset.tab); route(btn.dataset.tab); }; });
+  applyTabLabels();
+  (async () => {
+    try {
+      me = await api("/api/me");
+      showHome();
+    } catch (e) {
+      screen.innerHTML = emptyState("⛔", esc(e.message), t("auth_err_s"));
+    }
+  })();
+}
