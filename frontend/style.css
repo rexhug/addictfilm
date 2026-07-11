@@ -182,6 +182,7 @@ section{margin-top:32px;}
   color:var(--ink);font-size:16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;padding:0 14px;
   outline:none;margin:4px 0;letter-spacing:.03em;}
 .code-input:focus{border-color:rgba(59,130,246,.5);}
+.sec-label{font-size:13px;font-weight:600;color:var(--ink-2);letter-spacing:-0.01em;padding:6px 4px 12px;margin-top:6px;}
 .accept{text-align:center;padding:60px 26px;}
 .accept-icon{font-size:52px;line-height:1;}
 .accept-title{font-size:22px;font-weight:650;letter-spacing:-0.02em;margin-top:16px;}

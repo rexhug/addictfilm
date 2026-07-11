@@ -37,7 +37,7 @@ const DICT = {
     search_limited_t: "Поиск временно ограничен", search_limited_s: "Дневной лимит источника. Попробуй позже",
     search_none_t: "Ничего не найдено", search_none_s: "Попробуй год или английское название",
     confirm_add: (t) => `Добавить «${t}» в «Хочу посмотреть»?`, already_in_list: "Уже в твоём списке!",
-    stats_title: "Статистика", stats_empty_t: "Пока нет статистики", stats_empty_s: "Добавь фильмы и поставь оценки", calc: "Считаю…",
+    stats_title: "Статистика", my_stats: "Моя статистика", stats_empty_t: "Пока нет статистики", stats_empty_s: "Добавь фильмы и поставь оценки", calc: "Считаю…",
     tile_watched: "просмотрено", tile_want: "в «Хочу»", tile_avg: "средняя", tile_hours: "часов",
     chart_ratings: "Мои оценки", chart_genres: "Жанры", chart_actors: "Актёры", chart_directors: "Режиссёры",
     year_title: (y) => `Итоги ${y}`, year_avg: "средняя", year_fav_genre: "Любимый жанр — ", year_actor: "Актёр года — ", year_best: "Лучшее",
@@ -81,7 +81,7 @@ const DICT = {
     search_limited_t: "Search temporarily limited", search_limited_s: "Daily source limit. Try later",
     search_none_t: "Nothing found", search_none_s: "Try a year or the English title",
     confirm_add: (t) => `Add "${t}" to your wishlist?`, already_in_list: "Already in your list!",
-    stats_title: "Stats", stats_empty_t: "No stats yet", stats_empty_s: "Add films and rate them", calc: "Calculating…",
+    stats_title: "Stats", my_stats: "My stats", stats_empty_t: "No stats yet", stats_empty_s: "Add films and rate them", calc: "Calculating…",
     tile_watched: "watched", tile_want: "wishlist", tile_avg: "average", tile_hours: "hours",
     chart_ratings: "My ratings", chart_genres: "Genres", chart_actors: "Actors", chart_directors: "Directors",
     year_title: (y) => `${y} in review`, year_avg: "average", year_fav_genre: "Favorite genre — ", year_actor: "Actor of the year — ", year_best: "Best",
@@ -345,14 +345,32 @@ function showSearch() {
   input.focus();
 }
 
-// ── Статистика ────────────────────────────────────────────────────────────────
+// ── Статистика (пара в приоритете сверху, личная — ниже) ──────────────────────
 async function showStats() {
   window.scrollTo(0, 0);
   screen.innerHTML = `<div class="page-head"><h1>${esc(t("stats_title"))}</h1></div><div id="stats"><div class="empty"><div class="empty-sub">${esc(t("calc"))}</div></div></div>`;
-  const s = await api("/api/stats");
-  const y = s.year;
   const box = document.getElementById("stats");
-  if (!s.watched && !s.want) { box.innerHTML = emptyState("📊", t("stats_empty_t"), t("stats_empty_s")); mountPartner(box); return; }
+
+  // 1. Пара — приоритетно, первым блоком.
+  let partner = { status: "none" }, pstats = null;
+  try { partner = await api("/api/partner"); } catch (e) {}
+  if (partner.status === "paired") { try { pstats = await api("/api/partner/stats"); } catch (e) {} }
+
+  // 2. Личная статистика за всё время — ниже.
+  const s = await api("/api/stats");
+  const personal = (!s.watched && !s.want)
+    ? emptyState("📊", t("stats_empty_t"), t("stats_empty_s"))
+    : personalStatsHTML(s);
+
+  const paired = partner.status === "paired";
+  box.innerHTML = partnerCardHTML(partner, pstats)
+    + (paired ? `<div class="sec-label">${esc(t("my_stats"))}</div>` : "")
+    + personal;
+  wirePartner(box);
+}
+
+function personalStatsHTML(s) {
+  const y = s.year;
   const hours = Math.floor(s.total_runtime_min / 60);
   const tiles = `<div class="stats-grid">
     ${statTile("🎬", s.watched, t("tile_watched"))}${statTile("🔖", s.want, t("tile_want"))}
@@ -371,60 +389,59 @@ async function showStats() {
     ${y.top_genre ? `<div class="year-line">${esc(t("year_fav_genre"))}${esc(y.top_genre)}</div>` : ""}
     ${y.top_actor ? `<div class="year-line">${esc(t("year_actor"))}${esc(y.top_actor[0])} <small>(${y.top_actor[1]})</small></div>` : ""}
     ${y.best_titles && y.best_titles.length ? `<div class="year-line">${esc(t("year_best"))} <small>(${y.best_avg})</small>: ${y.best_titles.map(esc).join(", ")}</div>` : ""}`) : "";
-  box.innerHTML = tiles + hist + genres + actors + directors + yearCard;
-  mountPartner(box);
+  return tiles + hist + genres + actors + directors + yearCard;
 }
 
 // ── Пара ──────────────────────────────────────────────────────────────────────
-async function mountPartner(box) {
-  let p;
-  try { p = await api("/api/partner"); } catch (e) { return; }
-  const card = document.createElement("div");
-  card.className = "chart-card partner";
+function partnerCardHTML(p, ps) {
   if (p.status === "paired") {
-    let s;
-    try { s = await api("/api/partner/stats"); } catch (e) { return; }
-    const name = esc(s.partner.name || t("partner_word"));
-    card.innerHTML = `
-      <div class="chart-title">${t("partner_with")} ${name}</div>
-      ${s.agreement != null
-        ? `<div class="compat"><div class="compat-num">${s.agreement}%</div><div class="compat-lbl">${esc(t("partner_compat"))} · ${s.rated_together} ${esc(t("count_films", s.rated_together))}</div></div>`
-        : `<div class="partner-sub">${esc(t("partner_no_common"))}</div>`}
-      ${s.matches ? `<div class="year-line">${esc(t("partner_matches"))}: <b>${s.matches}</b></div>` : ""}
-      ${s.best ? `<div class="year-line">${esc(t("partner_best"))}: ${esc(s.best.title)} <small>(${s.best.avg})</small></div>` : ""}
-      ${s.controversial ? `<div class="year-line">${esc(t("partner_controversial"))}: ${esc(s.controversial.title)} <small>(${s.controversial.a} / ${s.controversial.b})</small></div>` : ""}
-      ${s.top_genres.length ? `<div class="year-line">${esc(t("partner_genres"))}: ${s.top_genres.map(esc).join(", ")}</div>` : ""}
-      <button class="pbtn danger" id="p-unpair">${esc(t("partner_unpair_btn"))}</button>`;
-    box.prepend(card);
-    card.querySelector("#p-unpair").onclick = () => tg.showConfirm(t("partner_unpair_confirm"), async ok => {
-      if (!ok) return;
-      await api("/api/partner/unpair", { method: "POST" });
-      showStats();
-    });
-  } else if (p.status === "invited") {
-    card.innerHTML = `<div class="chart-title">${esc(t("partner_title"))}</div>
+    const name = esc((p.partner && p.partner.name) || t("partner_word"));
+    let body = "";
+    if (ps) {
+      body = `${ps.agreement != null
+          ? `<div class="compat"><div class="compat-num">${ps.agreement}%</div><div class="compat-lbl">${esc(t("partner_compat"))} · ${ps.rated_together} ${esc(t("count_films", ps.rated_together))}</div></div>`
+          : `<div class="partner-sub">${esc(t("partner_no_common"))}</div>`}
+        ${ps.matches ? `<div class="year-line">${esc(t("partner_matches"))}: <b>${ps.matches}</b></div>` : ""}
+        ${ps.best ? `<div class="year-line">${esc(t("partner_best"))}: ${esc(ps.best.title)} <small>(${ps.best.avg})</small></div>` : ""}
+        ${ps.controversial ? `<div class="year-line">${esc(t("partner_controversial"))}: ${esc(ps.controversial.title)} <small>(${ps.controversial.a} / ${ps.controversial.b})</small></div>` : ""}
+        ${ps.top_genres.length ? `<div class="year-line">${esc(t("partner_genres"))}: ${ps.top_genres.map(esc).join(", ")}</div>` : ""}`;
+    }
+    return `<div class="chart-card partner"><div class="chart-title">${t("partner_with")} ${name}</div>${body}
+      <button class="pbtn danger" id="p-unpair">${esc(t("partner_unpair_btn"))}</button></div>`;
+  }
+  if (p.status === "invited") {
+    return `<div class="chart-card partner"><div class="chart-title">${esc(t("partner_title"))}</div>
       <div class="partner-sub">${esc(t("partner_invited_sub"))}</div>
       <div class="code-hint">${esc(t("partner_code_hint"))}</div>
-      <div class="code-box" id="p-copy">${esc(p.code || "")}</div>
-      <button class="pbtn primary" id="p-share">${esc(t("partner_share_btn"))}</button>
-      <button class="pbtn" id="p-enter">${esc(t("partner_code_btn"))}</button>`;
-    box.prepend(card);
-    card.querySelector("#p-share").onclick = () => sharePartnerLink(p.link);
-    card.querySelector("#p-copy").onclick = () => copyText(p.code);
-    card.querySelector("#p-enter").onclick = () => partnerCodeForm(card);
-  } else {
-    card.innerHTML = `<div class="chart-title">${esc(t("partner_title"))}</div>
-      <div class="partner-sub">${esc(t("partner_none_sub"))}</div>
-      <button class="pbtn primary" id="p-invite">${esc(t("partner_invite_btn"))}</button>
-      <button class="pbtn" id="p-enter">${esc(t("partner_code_btn"))}</button>`;
-    box.prepend(card);
-    card.querySelector("#p-invite").onclick = async () => {
-      const r = await api("/api/partner/invite", { method: "POST" });
-      sharePartnerLink(r.link);
-      showStats();
-    };
-    card.querySelector("#p-enter").onclick = () => partnerCodeForm(card);
+      <div class="code-box" id="p-copy" data-code="${esc(p.code || "")}">${esc(p.code || "")}</div>
+      <button class="pbtn primary" id="p-share" data-link="${esc(p.link || "")}">${esc(t("partner_share_btn"))}</button>
+      <button class="pbtn" id="p-enter">${esc(t("partner_code_btn"))}</button></div>`;
   }
+  return `<div class="chart-card partner"><div class="chart-title">${esc(t("partner_title"))}</div>
+    <div class="partner-sub">${esc(t("partner_none_sub"))}</div>
+    <button class="pbtn primary" id="p-invite">${esc(t("partner_invite_btn"))}</button>
+    <button class="pbtn" id="p-enter">${esc(t("partner_code_btn"))}</button></div>`;
+}
+
+function wirePartner(box) {
+  const unpair = box.querySelector("#p-unpair");
+  if (unpair) unpair.onclick = () => tg.showConfirm(t("partner_unpair_confirm"), async ok => {
+    if (!ok) return;
+    await api("/api/partner/unpair", { method: "POST" });
+    showStats();
+  });
+  const share = box.querySelector("#p-share");
+  if (share) share.onclick = () => sharePartnerLink(share.dataset.link);
+  const copy = box.querySelector("#p-copy");
+  if (copy) copy.onclick = () => copyText(copy.dataset.code);
+  const enter = box.querySelector("#p-enter");
+  if (enter) enter.onclick = () => partnerCodeForm(box.querySelector(".partner"));
+  const invite = box.querySelector("#p-invite");
+  if (invite) invite.onclick = async () => {
+    const r = await api("/api/partner/invite", { method: "POST" });
+    sharePartnerLink(r.link);
+    showStats();
+  };
 }
 function partnerCodeForm(card) {
   card.innerHTML = `<div class="chart-title">${esc(t("partner_code_btn"))}</div>
