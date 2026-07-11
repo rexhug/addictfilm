@@ -226,14 +226,6 @@ async def get_film(film_id: int) -> dict | None:
         return dict(row) if row else None
 
 
-async def get_film_by_imdb(imdb_id: str) -> dict | None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT * FROM films WHERE imdb_id = ?", (imdb_id,))
-        row = await cur.fetchone()
-        return dict(row) if row else None
-
-
 async def community_rating(film_id: int) -> dict:
     """Средняя оценка всех пользователей по фильму + количество оценок."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -832,63 +824,3 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         "agreement": agreement, "rated_together": len(rated),
         "matches": matches, "controversial": controversial, "best": best,
     }
-
-
-async def partner_stats(user_id: int, partner_id: int) -> dict:
-    """Совместная статистика пары (scoped на двух юзеров). Честные ничьи."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        # Фильмы, которые оценили ОБА.
-        rated = await (await db.execute(
-            """
-            SELECT f.title AS title, r1.rating AS a, r2.rating AS b
-            FROM user_films r1 JOIN user_films r2 ON r1.film_id = r2.film_id
-            JOIN films f ON f.id = r1.film_id
-            WHERE r1.user_id = ? AND r2.user_id = ?
-              AND r1.rating IS NOT NULL AND r2.rating IS NOT NULL
-            """, (user_id, partner_id))).fetchall()
-        n = len(rated)
-        agreement = matches = None
-        controversial = best = None
-        if n:
-            diffs = [abs(r["a"] - r["b"]) for r in rated]
-            agreement = round(100 - (sum(diffs) / n) / 9 * 100)
-            matches = sum(1 for r in rated if r["a"] == r["b"])
-            cw = max(rated, key=lambda r: abs(r["a"] - r["b"]))
-            if abs(cw["a"] - cw["b"]) > 0:
-                controversial = {"title": cw["title"], "a": cw["a"], "b": cw["b"]}
-            bw = max(rated, key=lambda r: r["a"] + r["b"])
-            best = {"title": bw["title"], "avg": round((bw["a"] + bw["b"]) / 2, 1)}
-
-        # Фильмы, которые ОБА посмотрели → общие жанры/актёры.
-        both = await (await db.execute(
-            """
-            SELECT f.genres, f.actors
-            FROM user_films r1 JOIN user_films r2 ON r1.film_id = r2.film_id
-            JOIN films f ON f.id = r1.film_id
-            WHERE r1.user_id = ? AND r2.user_id = ?
-              AND r1.status = 'watched' AND r2.status = 'watched'
-            """, (user_id, partner_id))).fetchall()
-        genre_counts, actor_counts = {}, {}
-        for r in both:
-            for g in (r["genres"] or "").split(","):
-                g = g.strip()
-                if g and g != "N/A":
-                    genre_counts[g] = genre_counts.get(g, 0) + 1
-            for a in (r["actors"] or "").split(","):
-                a = a.strip()
-                if a:
-                    actor_counts[a] = actor_counts.get(a, 0) + 1
-        top_genres = [g for g, _ in sorted(genre_counts.items(), key=lambda x: -x[1])[:5]]
-        top_actors = [(nm, c) for nm, c in sorted(actor_counts.items(), key=lambda x: -x[1]) if c >= 2][:5]
-
-        return {
-            "rated_together": n,
-            "watched_together": len(both),
-            "agreement": agreement,
-            "matches": matches,
-            "controversial": controversial,
-            "best": best,
-            "top_genres": top_genres,
-            "top_actors": top_actors,
-        }
