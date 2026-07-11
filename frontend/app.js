@@ -49,6 +49,8 @@ const DICT = {
     partner_no_common: "Пока нет фильмов, которые оценили оба",
     partner_matches: "Точных совпадений", partner_best: "Лучший общий", partner_controversial: "Самый спорный", partner_genres: "Общие жанры",
     partner_unpair_btn: "Разорвать пару", partner_unpair_confirm: "Разорвать пару? Личные списки останутся у каждого.",
+    partner_code_btn: "У меня есть код", partner_code_ph: "Код партнёра", partner_connect: "Подключить",
+    partner_code_hint: "Или отправь партнёру этот код:",
     accept_title: "Приглашение в пару", accept_sub: "Вас зовут отмечать и оценивать фильмы вместе, с общей статистикой совместимости.",
     accept_yes: "Принять", accept_no: "Не сейчас",
     accept_ok: (name) => `Готово! Теперь вы в паре${name ? ` с ${name}` : ""}.`,
@@ -91,6 +93,8 @@ const DICT = {
     partner_no_common: "No films you both rated yet",
     partner_matches: "Exact matches", partner_best: "Best shared", partner_controversial: "Most divisive", partner_genres: "Shared genres",
     partner_unpair_btn: "Unpair", partner_unpair_confirm: "Unpair? Each keeps their personal lists.",
+    partner_code_btn: "I have a code", partner_code_ph: "Partner code", partner_connect: "Connect",
+    partner_code_hint: "Or send your partner this code:",
     accept_title: "Pairing invite", accept_sub: "You're invited to track and rate movies together, with shared compatibility stats.",
     accept_yes: "Accept", accept_no: "Not now",
     accept_ok: (name) => `Done! You're now paired${name ? ` with ${name}` : ""}.`,
@@ -400,20 +404,46 @@ async function mountPartner(box) {
   } else if (p.status === "invited") {
     card.innerHTML = `<div class="chart-title">${esc(t("partner_title"))}</div>
       <div class="partner-sub">${esc(t("partner_invited_sub"))}</div>
-      <button class="pbtn" id="p-share">${esc(t("partner_share_btn"))}</button>`;
+      <div class="code-hint">${esc(t("partner_code_hint"))}</div>
+      <div class="code-box" id="p-copy">${esc(p.code || "")}</div>
+      <button class="pbtn primary" id="p-share">${esc(t("partner_share_btn"))}</button>
+      <button class="pbtn" id="p-enter">${esc(t("partner_code_btn"))}</button>`;
     box.prepend(card);
     card.querySelector("#p-share").onclick = () => sharePartnerLink(p.link);
+    card.querySelector("#p-copy").onclick = () => copyText(p.code);
+    card.querySelector("#p-enter").onclick = () => partnerCodeForm(card);
   } else {
     card.innerHTML = `<div class="chart-title">${esc(t("partner_title"))}</div>
       <div class="partner-sub">${esc(t("partner_none_sub"))}</div>
-      <button class="pbtn primary" id="p-invite">${esc(t("partner_invite_btn"))}</button>`;
+      <button class="pbtn primary" id="p-invite">${esc(t("partner_invite_btn"))}</button>
+      <button class="pbtn" id="p-enter">${esc(t("partner_code_btn"))}</button>`;
     box.prepend(card);
     card.querySelector("#p-invite").onclick = async () => {
       const r = await api("/api/partner/invite", { method: "POST" });
       sharePartnerLink(r.link);
       showStats();
     };
+    card.querySelector("#p-enter").onclick = () => partnerCodeForm(card);
   }
+}
+function partnerCodeForm(card) {
+  card.innerHTML = `<div class="chart-title">${esc(t("partner_code_btn"))}</div>
+    <input class="code-input" id="p-code" placeholder="${esc(t("partner_code_ph"))}" autocomplete="off" autocapitalize="off">
+    <button class="pbtn primary" id="p-connect">${esc(t("partner_connect"))}</button>`;
+  const input = card.querySelector("#p-code");
+  input.focus();
+  card.querySelector("#p-connect").onclick = async () => {
+    let code = input.value.trim();
+    const m = code.match(/inv_[A-Za-z0-9_-]+/);  // если вставили целиком ссылку — вытащим токен
+    if (m) code = m[0];
+    if (!code) return;
+    const r = await api("/api/partner/accept", { method: "POST", body: JSON.stringify({ token: code }) });
+    if (r.ok) { tg.HapticFeedback?.notificationOccurred("success"); tg.showAlert(t("accept_ok", r.partner.name), () => showStats()); }
+    else tg.showAlert(t("accept_fail_" + r.reason) || t("accept_fail_invalid"));
+  };
+}
+function copyText(txt) {
+  try { navigator.clipboard && navigator.clipboard.writeText(txt); tg.HapticFeedback?.impactOccurred("light"); } catch (e) {}
 }
 function sharePartnerLink(link) {
   const url = "https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent(t("partner_share_text"));

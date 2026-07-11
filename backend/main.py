@@ -225,7 +225,7 @@ async def partner(user: dict = Depends(current_user)):
         return {"status": "paired", "partner": _partner_brief(await db.get_user(pid))}
     token = await db.get_pending_invite(user["id"])
     if token:
-        return {"status": "invited", "link": _invite_link(token)}
+        return {"status": "invited", "link": _invite_link(token), "code": token}
     return {"status": "none"}
 
 
@@ -234,7 +234,7 @@ async def partner_invite(user: dict = Depends(current_user)):
     if await db.get_partner(user["id"]) is not None:
         raise HTTPException(status_code=409, detail="Пара уже есть")
     token = await db.create_invite(user["id"])
-    return {"link": _invite_link(token)}
+    return {"link": _invite_link(token), "code": token}
 
 
 class AcceptBody(BaseModel):
