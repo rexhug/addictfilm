@@ -89,6 +89,7 @@ async def rate(film_id: int, body: RateBody, user: dict = Depends(current_user))
     if not await db.get_film(film_id):
         raise HTTPException(status_code=404, detail="Фильм не найден")
     await db.set_rating(user["id"], film_id, body.rating)  # урок: тап по оценке = «просмотрено»
+    await db.sync_film_to_partner(user["id"], film_id)  # пара: партнёру фильм в «Хочу»
     logger.info("Rating saved: film=%s user=%s rating=%s", film_id, user["id"], body.rating)
     return {"ok": True}
 
@@ -104,6 +105,7 @@ async def set_status(film_id: int, body: StatusBody, user: dict = Depends(curren
     if not await db.get_film(film_id):
         raise HTTPException(status_code=404, detail="Фильм не найден")
     await db.set_status(user["id"], film_id, body.status)
+    await db.sync_film_to_partner(user["id"], film_id)  # пара: партнёру фильм в «Хочу»
     return {"ok": True}
 
 
@@ -166,6 +168,7 @@ async def add(body: AddBody, user: dict = Depends(current_user)):
     film_id = await db.get_or_create_film(**details)  # общий каталог, dedup по imdb_id
     watched_at = datetime.now(timezone.utc).isoformat() if body.status == "watched" else None
     added = await db.add_to_list(user["id"], film_id, body.status, watched_at)
+    await db.sync_film_to_partner(user["id"], film_id)  # пара: партнёру фильм в «Хочу»
     if not added:
         return {"ok": False, "reason": "exists", "movie_id": film_id}
     return {"ok": True, "movie_id": film_id}
@@ -260,11 +263,11 @@ async def partner_unpair(user: dict = Depends(current_user)):
 
 @app.get("/api/partner/stats")
 async def partner_stats(user: dict = Depends(current_user)):
-    pid = await db.get_partner(user["id"])
-    if pid is None:
+    pair = await db.get_pair(user["id"])
+    if pair is None:
         raise HTTPException(status_code=404, detail="Нет пары")
-    s = await db.partner_stats(user["id"], pid)
-    s["partner"] = _partner_brief(await db.get_user(pid))
+    s = await db.pair_period_stats(user["id"], pair["partner_id"], pair["since"])
+    s["partner"] = _partner_brief(await db.get_user(pair["partner_id"]))
     return s
 
 

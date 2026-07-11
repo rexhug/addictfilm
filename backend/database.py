@@ -712,6 +712,128 @@ async def unpair(user_id: int) -> None:
         await db.commit()
 
 
+async def get_pair(user_id: int) -> dict | None:
+    """Партнёр + момент создания пары (since) — граница «пар-периода»."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT partner_id, since FROM partners WHERE user_id = ?", (user_id,))
+        row = await cur.fetchone()
+        return {"partner_id": row["partner_id"], "since": row["since"]} if row else None
+
+
+async def sync_film_to_partner(user_id: int, film_id: int) -> None:
+    """Синхрон «только новые»: если есть партнёр — добавить фильм ему в «Хочу»
+    (идемпотентно; существующие у партнёра фильмы не трогаем)."""
+    partner = await get_partner(user_id)
+    if partner is not None:
+        await add_to_list(partner, film_id, "want_to_watch")
+
+
+async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
+    """Статистика ПАРЫ по фильмам пар-периода (оба добавили после since).
+    Формат как личная статистика + поля совместимости. Просмотрено = оба
+    посмотрели; оценки/гистограмма = оценки обоих; жанры/актёры — из оба-просмотренных."""
+    year_now = datetime.now(timezone.utc).year
+    like = f"{year_now}-%"
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(
+            """
+            SELECT f.genres, f.actors, f.directors, f.runtime, f.title,
+                   a.status AS sa, a.rating AS ra, a.watched_at AS wa,
+                   b.status AS sb, b.rating AS rb, b.watched_at AS wb
+            FROM user_films a
+            JOIN user_films b ON a.film_id = b.film_id
+            JOIN films f ON f.id = a.film_id
+            WHERE a.user_id = ? AND b.user_id = ? AND a.added_at >= ? AND b.added_at >= ?
+            """, (user_id, partner_id, since, since))).fetchall()
+
+    both_watched = [r for r in rows if r["sa"] == "watched" and r["sb"] == "watched"]
+    watched = len(both_watched)
+    want = len(rows) - watched
+
+    pooled = [r["ra"] for r in rows if r["ra"] is not None] + [r["rb"] for r in rows if r["rb"] is not None]
+    avg_rating = round(sum(pooled) / len(pooled), 1) if pooled else None
+    dist = {i: 0 for i in range(1, 11)}
+    for v in pooled:
+        dist[v] = dist.get(v, 0) + 1
+    rating_dist = [dist[i] for i in range(1, 11)]
+
+    genre_counts, actor_counts, director_counts = {}, {}, {}
+    total_min = 0
+    year_min, year_genre, year_actor = 0, {}, {}
+    year_ratings, year_count = [], 0
+    for r in both_watched:
+        m = re.search(r"\d+", r["runtime"] or "")
+        rt = int(m.group(0)) if m else 0
+        total_min += rt
+        for g in (r["genres"] or "").split(","):
+            g = g.strip()
+            if g and g != "N/A":
+                genre_counts[g] = genre_counts.get(g, 0) + 1
+        for a in (r["actors"] or "").split(","):
+            a = a.strip()
+            if a:
+                actor_counts[a] = actor_counts.get(a, 0) + 1
+        for d in (r["directors"] or "").split(","):
+            d = d.strip()
+            if d:
+                director_counts[d] = director_counts.get(d, 0) + 1
+        if (r["wa"] or "").startswith(str(year_now)) or (r["wb"] or "").startswith(str(year_now)):
+            year_count += 1
+            year_min += rt
+            for g in (r["genres"] or "").split(","):
+                g = g.strip()
+                if g and g != "N/A":
+                    year_genre[g] = year_genre.get(g, 0) + 1
+            for a in (r["actors"] or "").split(","):
+                a = a.strip()
+                if a:
+                    year_actor[a] = year_actor.get(a, 0) + 1
+            for rv in (r["ra"], r["rb"]):
+                if rv is not None:
+                    year_ratings.append(rv)
+
+    total_refs = sum(genre_counts.values())
+    top_genres_pct = [(g, round(c / total_refs * 100)) for g, c in sorted(genre_counts.items(), key=lambda x: -x[1])[:5]] if total_refs else []
+    top_actors = [(n, c) for n, c in sorted(actor_counts.items(), key=lambda x: -x[1]) if c >= 2][:5]
+    top_directors = [(n, c) for n, c in sorted(director_counts.items(), key=lambda x: -x[1]) if c >= 2][:3]
+
+    # Совместимость по фильмам пар-периода, которые оценили ОБА.
+    rated = [(r["ra"], r["rb"], r["title"]) for r in rows if r["ra"] is not None and r["rb"] is not None]
+    agreement = matches = None
+    controversial = best = None
+    if rated:
+        diffs = [abs(a - b) for a, b, _ in rated]
+        agreement = round(100 - (sum(diffs) / len(rated)) / 9 * 100)
+        matches = sum(1 for a, b, _ in rated if a == b)
+        ca, cb, ct = max(rated, key=lambda x: abs(x[0] - x[1]))
+        if abs(ca - cb) > 0:
+            controversial = {"title": ct, "a": ca, "b": cb}
+        ba, bb, bt = max(rated, key=lambda x: x[0] + x[1])
+        best = {"title": bt, "avg": round((ba + bb) / 2, 1)}
+
+    ranked = sorted(year_actor.items(), key=lambda x: -x[1])
+    year_top_actor = ranked[0] if ranked and ranked[0][1] >= 2 and (len(ranked) == 1 or ranked[0][1] > ranked[1][1]) else None
+    year = {
+        "year": year_now, "count": year_count, "total_runtime_min": year_min,
+        "top_genre": max(year_genre.items(), key=lambda x: x[1])[0] if year_genre else None,
+        "top_actor": year_top_actor,
+        "avg_rating": round(sum(year_ratings) / len(year_ratings), 1) if year_ratings else None,
+        "best_avg": None, "best_titles": [],
+    }
+
+    return {
+        "watched": watched, "want": want,
+        "avg_rating": avg_rating, "rating_count": len(pooled), "rating_dist": rating_dist,
+        "total_runtime_min": total_min,
+        "top_genres_pct": top_genres_pct, "top_actors": top_actors, "top_directors": top_directors,
+        "year": year,
+        "agreement": agreement, "rated_together": len(rated),
+        "matches": matches, "controversial": controversial, "best": best,
+    }
+
+
 async def partner_stats(user_id: int, partner_id: int) -> dict:
     """Совместная статистика пары (scoped на двух юзеров). Честные ничьи."""
     async with aiosqlite.connect(DB_PATH) as db:

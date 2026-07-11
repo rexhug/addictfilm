@@ -51,6 +51,7 @@ const DICT = {
     partner_unpair_btn: "Разорвать пару", partner_unpair_confirm: "Разорвать пару? Личные списки останутся у каждого.",
     partner_code_btn: "У меня есть код", partner_code_ph: "Код партнёра", partner_connect: "Подключить",
     partner_code_hint: "Или отправь партнёру этот код:",
+    pair_empty: "Добавляйте фильмы вместе — здесь появится ваша совместная статистика",
     accept_title: "Приглашение в пару", accept_sub: "Вас зовут отмечать и оценивать фильмы вместе, с общей статистикой совместимости.",
     accept_yes: "Принять", accept_no: "Не сейчас",
     accept_ok: (name) => `Готово! Теперь вы в паре${name ? ` с ${name}` : ""}.`,
@@ -95,6 +96,7 @@ const DICT = {
     partner_unpair_btn: "Unpair", partner_unpair_confirm: "Unpair? Each keeps their personal lists.",
     partner_code_btn: "I have a code", partner_code_ph: "Partner code", partner_connect: "Connect",
     partner_code_hint: "Or send your partner this code:",
+    pair_empty: "Add films together — your shared stats will show here",
     accept_title: "Pairing invite", accept_sub: "You're invited to track and rate movies together, with shared compatibility stats.",
     accept_yes: "Accept", accept_no: "Not now",
     accept_ok: (name) => `Done! You're now paired${name ? ` with ${name}` : ""}.`,
@@ -362,11 +364,33 @@ async function showStats() {
     ? emptyState("📊", t("stats_empty_t"), t("stats_empty_s"))
     : personalStatsHTML(s);
 
-  const paired = partner.status === "paired";
-  box.innerHTML = partnerCardHTML(partner, pstats)
-    + (paired ? `<div class="sec-label">${esc(t("my_stats"))}</div>` : "")
-    + personal;
+  if (partner.status === "paired" && pstats) {
+    // Пара: полная статистика пары (тот же формат) сверху, «Моя статистика» ниже.
+    const name = esc(pstats.partner.name || t("partner_word"));
+    const pairHasData = pstats.watched || pstats.want || pstats.rated_together;
+    box.innerHTML =
+      `<div class="sec-label">${t("partner_with")} ${name}</div>` +
+      pairHeroHTML(pstats) +
+      (pairHasData ? personalStatsHTML(pstats) : "") +
+      `<div class="sec-label">${esc(t("my_stats"))}</div>` +
+      personal;
+  } else {
+    box.innerHTML = partnerCardHTML(partner, null) + personal;
+  }
   wirePartner(box);
+}
+
+function pairHeroHTML(ps) {
+  const empty = !ps.watched && !ps.want && !ps.rated_together;
+  const body = empty
+    ? `<div class="partner-sub">${esc(t("pair_empty"))}</div>`
+    : `${ps.agreement != null
+        ? `<div class="compat"><div class="compat-num">${ps.agreement}%</div><div class="compat-lbl">${esc(t("partner_compat"))} · ${ps.rated_together} ${esc(t("count_films", ps.rated_together))}</div></div>`
+        : `<div class="partner-sub">${esc(t("partner_no_common"))}</div>`}
+      ${ps.matches ? `<div class="year-line">${esc(t("partner_matches"))}: <b>${ps.matches}</b></div>` : ""}
+      ${ps.best ? `<div class="year-line">${esc(t("partner_best"))}: ${esc(ps.best.title)} <small>(${ps.best.avg})</small></div>` : ""}
+      ${ps.controversial ? `<div class="year-line">${esc(t("partner_controversial"))}: ${esc(ps.controversial.title)} <small>(${ps.controversial.a} / ${ps.controversial.b})</small></div>` : ""}`;
+  return `<div class="chart-card partner">${body}<button class="pbtn danger" id="p-unpair">${esc(t("partner_unpair_btn"))}</button></div>`;
 }
 
 function personalStatsHTML(s) {
