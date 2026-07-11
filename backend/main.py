@@ -9,13 +9,17 @@ community-рейтинг = средняя оценка всех пользова
 import logging
 import os
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
+import aiohttp
 from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import database as db
+import kinopoisk
+import omdb
 import ratelimit
 import search
 from auth import validate_init_data
@@ -34,6 +38,18 @@ async def startup() -> None:
     await db.init_db()
     await search.purge_expired()  # подчистить протухший кэш поиска при старте
     logger.info("Database initialized")
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    for mod in (kinopoisk, omdb):
+        try:
+            await mod.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+    global _img_session
+    if _img_session and not _img_session.closed:
+        await _img_session.close()
 
 
 # ── Авторизация: каждый запрос несёт initData в заголовке ────────────────────
@@ -269,6 +285,44 @@ async def partner_stats(user: dict = Depends(current_user)):
     s = await db.pair_period_stats(user["id"], pair["partner_id"], pair["since"])
     s["partner"] = _partner_brief(await db.get_user(pair["partner_id"]))
     return s
+
+
+# ── Прокси постеров (обходит блокировку CDN на стороне клиента) ───────────────
+# Картинки грузятся через наш домен, а не напрямую с Amazon/Yandex — работает
+# везде, где открывается само приложение. Без авторизации (тег <img> её не шлёт).
+_ALLOWED_IMG_HOSTS = {
+    "m.media-amazon.com", "images-na.ssl-images-amazon.com", "ia.media-imdb.com",
+    "avatars.mds.yandex.net", "st.kp.yandex.net", "image.openmoviedb.com",
+    "imagetmdb.com", "kinopoiskapiunofficial.tech",
+}
+_img_session: aiohttp.ClientSession | None = None
+
+
+async def _img_sess() -> aiohttp.ClientSession:
+    global _img_session
+    if _img_session is None or _img_session.closed:
+        _img_session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=12), headers={"User-Agent": "Mozilla/5.0"})
+    return _img_session
+
+
+@app.get("/img")
+async def img_proxy(u: str):
+    p = urlparse(u)
+    if p.scheme not in ("http", "https") or p.netloc.lower() not in _ALLOWED_IMG_HOSTS:
+        raise HTTPException(status_code=400, detail="Недопустимый источник")  # анти-SSRF
+    try:
+        async with (await _img_sess()).get(u) as resp:
+            if resp.status != 200:
+                raise HTTPException(status_code=404, detail="Постер не найден")
+            data = await resp.read()
+            ctype = resp.headers.get("Content-Type", "image/jpeg")
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail="Не удалось загрузить постер")
+    return Response(content=data, media_type=ctype,
+                    headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 # ── Фронтенд ─────────────────────────────────────────────────────────────────

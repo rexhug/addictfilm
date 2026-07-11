@@ -127,6 +127,8 @@ async function api(path, opts = {}) {
 // ── Утилиты ───────────────────────────────────────────────────────────────────
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
 function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; }
+// Постеры грузим через наш прокси /img — работает даже если CDN блокируется у клиента.
+function posterSrc(u) { return u ? "/img?u=" + encodeURIComponent(u) : ""; }
 function ratingOf(m) {
   const r = m.imdb_rating || m.kp_rating;
   if (r && !isNaN(+r)) return (+r).toFixed(1);
@@ -151,7 +153,7 @@ function posterTile(m, { onClick, badge } = {}) {
   const b = badge !== undefined ? badge : (ratingOf(m) ? `★ ${ratingOf(m)}` : "");
   card.innerHTML = `
     <div class="art">
-      ${m.poster_url ? `<img loading="lazy" src="${esc(m.poster_url)}" alt="">` : `<div class="noposter">${esc(m.title)}</div>`}
+      ${m.poster_url ? `<img loading="lazy" src="${posterSrc(m.poster_url)}" alt="" onerror="this.style.display='none'">` : `<div class="noposter">${esc(m.title)}</div>`}
       ${b ? `<span class="rate">${b}</span>` : ""}
     </div>
     <div class="meta"><div class="t">${esc(m.title)}</div><div class="y">${esc(m.year || "")}</div></div>`;
@@ -277,7 +279,7 @@ async function showDetail(id) {
   screen.innerHTML = `
     <div class="detail">
       <div class="detail-top">${backBtn()}</div>
-      ${m.poster_url ? `<img class="hero" src="${esc(m.poster_url)}" alt="">` : ""}
+      ${m.poster_url ? `<img class="hero" src="${posterSrc(m.poster_url)}" alt="" onerror="this.style.display='none'">` : ""}
       <h2>${esc(m.title)}${m.year ? ` · ${esc(m.year)}` : ""}</h2>
       ${genreChips || m.runtime ? `<div class="meta-chips">${genreChips}${m.runtime ? `<span class="meta-chip">⏱ ${esc(m.runtime)}</span>` : ""}</div>` : ""}
       ${m.directors ? `<div class="meta-line">${esc(t("dir"))}${esc(m.directors)}</div>` : ""}
