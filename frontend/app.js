@@ -153,7 +153,8 @@ function posterTile(m, { onClick, badge } = {}) {
   const b = badge !== undefined ? badge : (ratingOf(m) ? `★ ${ratingOf(m)}` : "");
   card.innerHTML = `
     <div class="art">
-      ${m.poster_url ? `<img loading="lazy" src="${posterSrc(m.poster_url)}" alt="" onerror="this.style.display='none'">` : `<div class="noposter">${esc(m.title)}</div>`}
+      <div class="noposter">${esc(m.title)}</div>
+      ${m.poster_url ? `<img loading="lazy" src="${posterSrc(m.poster_url)}" alt="" onerror="this.remove()">` : ""}
       ${b ? `<span class="rate">${b}</span>` : ""}
     </div>
     <div class="meta"><div class="t">${esc(m.title)}</div><div class="y">${esc(m.year || "")}</div></div>`;
@@ -279,7 +280,7 @@ async function showDetail(id) {
   screen.innerHTML = `
     <div class="detail">
       <div class="detail-top">${backBtn()}</div>
-      ${m.poster_url ? `<img class="hero" src="${posterSrc(m.poster_url)}" alt="" onerror="this.style.display='none'">` : ""}
+      <div class="hero"><span class="hero-fallback">${esc(m.title)}</span>${m.poster_url ? `<img src="${posterSrc(m.poster_url)}" alt="" onerror="this.remove()">` : ""}</div>
       <h2>${esc(m.title)}${m.year ? ` · ${esc(m.year)}` : ""}</h2>
       ${genreChips || m.runtime ? `<div class="meta-chips">${genreChips}${m.runtime ? `<span class="meta-chip">⏱ ${esc(m.runtime)}</span>` : ""}</div>` : ""}
       ${m.directors ? `<div class="meta-line">${esc(t("dir"))}${esc(m.directors)}</div>` : ""}
