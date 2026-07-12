@@ -20,7 +20,14 @@ const DICT = {
   ru: {
     tagline: "Кино, которое ты любишь",
     search_ph: "Поиск фильмов, сериалов, актёров…",
-    chip_popular: "Популярное", chip_top: "Топ сообщества", chip_genres: "Жанры",
+    chip_popular: "Популярное", chip_top: "Топ сообщества", chip_genres: "Жанры", chip_collections: "Подборки",
+    collections_title: "Подборки", collections_empty_t: "Пока нет подборок",
+    collections_empty_s: "Загляни позже", collections_empty_admin_s: "Создай первую подборку",
+    collections_title_ph: "Название подборки", collections_create_btn: "Создать",
+    coll_confirm_add: (t) => `Добавить «${t}» в подборку?`, coll_already_in: "Уже в этой подборке",
+    coll_remove_confirm: (t) => `Убрать «${t}» из подборки?`, coll_add_film_btn: "+ Добавить фильм",
+    coll_edit_hint: "Тап на фильм — убрать из подборки",
+    coll_delete_btn: "Удалить подборку", coll_delete_confirm: (t) => `Удалить подборку «${t}»? Фильмы останутся в каталоге.`,
     tab_home: "Главная", tab_want: "Хочу", tab_watched: "Смотрел", tab_top: "Мой топ", tab_stats: "Статистика",
     list_want: "Хочу посмотреть", list_watched: "Смотрел", list_top: "Мой топ",
     count_films: (n) => pl(n, ["фильм", "фильма", "фильмов"]),
@@ -68,7 +75,14 @@ const DICT = {
   en: {
     tagline: "Movies you'll love",
     search_ph: "Search movies, TV shows, actors…",
-    chip_popular: "Popular", chip_top: "Community Top", chip_genres: "Genres",
+    chip_popular: "Popular", chip_top: "Community Top", chip_genres: "Genres", chip_collections: "Collections",
+    collections_title: "Collections", collections_empty_t: "No collections yet",
+    collections_empty_s: "Check back later", collections_empty_admin_s: "Create your first collection",
+    collections_title_ph: "Collection name", collections_create_btn: "Create",
+    coll_confirm_add: (t) => `Add "${t}" to the collection?`, coll_already_in: "Already in this collection",
+    coll_remove_confirm: (t) => `Remove "${t}" from the collection?`, coll_add_film_btn: "+ Add film",
+    coll_edit_hint: "Tap a film to remove it from the collection",
+    coll_delete_btn: "Delete collection", coll_delete_confirm: (t) => `Delete collection "${t}"? Films stay in the catalog.`,
     tab_home: "Home", tab_want: "Wishlist", tab_watched: "Watched", tab_top: "My Top", tab_stats: "Stats",
     list_want: "Wishlist", list_watched: "Watched", list_top: "My Top",
     count_films: (n) => (n === 1 ? "film" : "films"),
@@ -197,6 +211,7 @@ async function showHome() {
       <span class="chip active" data-to="sec-pop"><span class="e">🔥</span>${esc(t("chip_popular"))}</span>
       <span class="chip" data-to="sec-top"><span class="e">🏆</span>${esc(t("chip_top"))}</span>
       <span class="chip" data-to="sec-gen"><span class="e">🎭</span>${esc(t("chip_genres"))}</span>
+      <span class="chip" id="chip-coll"><span class="e">🎬</span>${esc(t("chip_collections"))}</span>
     </div>
     <section class="rise d3" id="sec-pop"><div class="head"><h2>${esc(t("chip_popular"))}</h2></div><div class="rail" id="rail-pop">${skeletonRail(5)}</div></section>
     <section class="rise d4" id="sec-top"><div class="head"><h2>${esc(t("chip_top"))}</h2></div><div class="rail" id="rail-top">${skeletonRail(5)}</div></section>
@@ -204,10 +219,12 @@ async function showHome() {
 
   document.getElementById("lang-btn").onclick = () => setLang(lang === "ru" ? "en" : "ru");
   document.getElementById("home-search").onclick = () => showSearch();
-  screen.querySelectorAll(".chips .chip").forEach(c => c.onclick = () => {
-    screen.querySelectorAll(".chips .chip").forEach(x => x.classList.toggle("active", x === c));
+  screen.querySelectorAll(".chips .chip[data-to]").forEach(c => c.onclick = () => {
+    screen.querySelectorAll(".chips .chip[data-to]").forEach(x => x.classList.toggle("active", x === c));
     document.getElementById(c.dataset.to)?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
+  // «Подборки» — не якорь на секцию, а переход на отдельный экран.
+  document.getElementById("chip-coll").onclick = () => showCollections();
 
   loadRail("rail-pop", "/api/browse?sort=popular&limit=20");
   loadRail("rail-top", "/api/browse?sort=top&limit=20");
@@ -253,6 +270,104 @@ async function showGenre(name) {
     const back = () => showGenre(name);
     el.replaceChildren(gridOf(items, m => posterTile(m, { onClick: () => openDetail(m.id, back) })));
   } catch (e) { document.getElementById("gg").innerHTML = emptyState("⚠️", t("load_err"), ""); }
+}
+
+// ── Подборки (публичный просмотр + in-app админка для editor/admin) ───────────
+function canEditCollections() { return !!(me && (me.role === "admin" || me.role === "editor")); }
+
+function collectionCard(c) {
+  // Переиспользует ту же карточку/CSS, что и обычный постер — обложка вместо рейтинга
+  // показывает количество фильмов.
+  const card = document.createElement("div");
+  card.className = "poster";
+  card.innerHTML = `
+    <div class="art">
+      <div class="noposter">${esc(c.title)}</div>
+      ${c.cover ? `<img loading="lazy" src="${posterSrc(c.cover)}" alt="" onerror="this.remove()">` : ""}
+      <span class="rate">${c.film_count} ${esc(t("count_films", c.film_count))}</span>
+    </div>
+    <div class="meta"><div class="t">${esc(c.title)}</div></div>`;
+  card.onclick = () => showCollectionDetail(c.id);
+  return card;
+}
+
+async function showCollections() {
+  unwireDetailScroll();
+  window.scrollTo(0, 0);
+  const canEdit = canEditCollections();
+  screen.innerHTML = `<div class="sub-head">${backBtn()}<h1>${esc(t("collections_title"))}</h1>
+    ${canEdit ? `<button class="back" id="coll-add" aria-label="+">+</button>` : ""}</div>
+    <div id="cc">${skeletonGrid(6)}</div>`;
+  wireBack(() => { setActiveTab("home"); showHome(); });
+  if (canEdit) document.getElementById("coll-add").onclick = () => createCollectionFlow();
+  try {
+    const { items } = await api("/api/collections");
+    const el = document.getElementById("cc");
+    if (!items.length) {
+      el.innerHTML = emptyState("🎬", t("collections_empty_t"),
+        canEdit ? t("collections_empty_admin_s") : t("collections_empty_s"));
+      return;
+    }
+    el.replaceChildren(gridOf(items, collectionCard));
+  } catch (e) { document.getElementById("cc").innerHTML = emptyState("⚠️", t("load_err"), ""); }
+}
+
+function createCollectionFlow() {
+  const el = document.getElementById("cc");
+  if (!el) return;
+  el.innerHTML = `<div class="chart-card">
+    <input class="code-input" id="coll-title-input" placeholder="${esc(t("collections_title_ph"))}" autocomplete="off">
+    <button class="pbtn primary" id="coll-create-btn">${esc(t("collections_create_btn"))}</button>
+  </div>`;
+  const input = document.getElementById("coll-title-input");
+  input.focus();
+  document.getElementById("coll-create-btn").onclick = async () => {
+    const title = input.value.trim();
+    if (!title) return;
+    const r = await api("/api/admin/collections", { method: "POST", body: JSON.stringify({ title }) });
+    tg.HapticFeedback?.notificationOccurred("success");
+    showCollectionDetail(r.id);  // сразу открываем — удобно накидать фильмов
+  };
+}
+
+async function showCollectionDetail(id) {
+  unwireDetailScroll();
+  window.scrollTo(0, 0);
+  const canEdit = canEditCollections();
+  screen.innerHTML = `<div class="sub-head">${backBtn()}<h1 id="cd-title">…</h1></div>
+    ${canEdit ? `<div class="partner-sub" style="padding:0 20px 10px;">${esc(t("coll_edit_hint"))}</div>` : ""}
+    <div id="cdg">${skeletonGrid(6)}</div>
+    ${canEdit ? `<div style="padding:14px 20px 4px;">
+        <button class="pbtn primary" id="cd-add">${esc(t("coll_add_film_btn"))}</button>
+        <button class="pbtn danger" id="cd-delete">${esc(t("coll_delete_btn"))}</button>
+      </div>` : ""}`;
+  wireBack(() => showCollections());
+  if (canEdit) {
+    document.getElementById("cd-add").onclick = () => showSearch({ type: "collection", id });
+    document.getElementById("cd-delete").onclick = () => {
+      const title = document.getElementById("cd-title").textContent;
+      tg.showConfirm(t("coll_delete_confirm", title), async ok => {
+        if (!ok) return;
+        await api(`/api/admin/collections/${id}`, { method: "DELETE" });
+        showCollections();
+      });
+    };
+  }
+  try {
+    const c = await api(`/api/collections/${id}`);
+    document.getElementById("cd-title").textContent = c.title;
+    const el = document.getElementById("cdg");
+    if (!c.items.length) { el.innerHTML = emptyState("🎬", t("genre_empty_t"), t("genre_empty_s")); return; }
+    const back = () => showCollectionDetail(id);
+    const onTile = canEdit
+      ? (m) => tg.showConfirm(t("coll_remove_confirm", m.title), async ok => {
+          if (!ok) return;
+          await api(`/api/admin/collections/${id}/films/${m.id}`, { method: "DELETE" });
+          showCollectionDetail(id);
+        })
+      : (m) => openDetail(m.id, back);
+    el.replaceChildren(gridOf(c.items, m => posterTile(m, { onClick: () => onTile(m) })));
+  } catch (e) { document.getElementById("cdg").innerHTML = emptyState("⚠️", t("load_err"), ""); }
 }
 
 // ── Личные списки ─────────────────────────────────────────────────────────────
@@ -523,12 +638,14 @@ function shareMovie(m) {
 }
 
 // ── Поиск ─────────────────────────────────────────────────────────────────────
-function showSearch() {
+function showSearch(mode = null) {
+  // mode: null — обычное добавление в свой список; {type:"collection", id} — тап по
+  // результату добавляет фильм в подборку id (используется showCollectionDetail).
   unwireDetailScroll();
   window.scrollTo(0, 0);
   const start = emptyState("🔍", t("search_start_t"), t("search_start_s"));
   screen.innerHTML = `<div class="search-bar">${backBtn()}<input id="si" placeholder="${esc(t("search_ph"))}" autofocus></div><div id="sr">${start}</div>`;
-  wireBack(() => { setActiveTab("home"); showHome(); });
+  wireBack(mode ? () => showCollectionDetail(mode.id) : () => { setActiveTab("home"); showHome(); });
   const input = document.getElementById("si");
   const results = document.getElementById("sr");
   let timer;
@@ -552,12 +669,22 @@ function showSearch() {
       results.replaceChildren(gridOf(items, it => posterTile(
         { poster_url: it.poster || it.poster_url, title: it.title, year: it.year, imdb_rating: it.rating },
         {
-          onClick: () => tg.showConfirm(t("confirm_add", it.title), async ok => {
-            if (!ok) return;
-            const r = await api("/api/add", { method: "POST", body: JSON.stringify({ src: it.src, ref: it.ref }) });
-            if (r.reason === "exists") tg.showAlert(t("already_in_list"));
-            else { tg.HapticFeedback?.notificationOccurred("success"); setActiveTab("want"); showList("want"); }
-          }),
+          onClick: () => tg.showConfirm(
+            mode ? t("coll_confirm_add", it.title) : t("confirm_add", it.title),
+            async ok => {
+              if (!ok) return;
+              if (mode) {
+                const r = await api(`/api/admin/collections/${mode.id}/films`,
+                  { method: "POST", body: JSON.stringify({ src: it.src, ref: it.ref }) });
+                tg.HapticFeedback?.notificationOccurred("success");
+                if (!r.added) tg.showAlert(t("coll_already_in"), () => showCollectionDetail(mode.id));
+                else showCollectionDetail(mode.id);
+              } else {
+                const r = await api("/api/add", { method: "POST", body: JSON.stringify({ src: it.src, ref: it.ref }) });
+                if (r.reason === "exists") tg.showAlert(t("already_in_list"));
+                else { tg.HapticFeedback?.notificationOccurred("success"); setActiveTab("want"); showList("want"); }
+              }
+            }),
         })));
     }, 400);
   };
