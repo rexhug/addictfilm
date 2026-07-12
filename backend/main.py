@@ -73,7 +73,13 @@ async def current_user(x_init_data: str = Header(default="")) -> dict:
 
 @app.get("/healthz", include_in_schema=False)
 async def healthz():
-    """Для fly.toml http_service.checks — без авторизации, лёгкий."""
+    """Readiness-проверка Fly: процесс и БД должны быть доступны."""
+    try:
+        if not await db.ping():
+            raise RuntimeError("empty database ping response")
+    except Exception:  # noqa: BLE001
+        logger.exception("Health check failed: database is unavailable")
+        raise HTTPException(status_code=503, detail="Database unavailable")
     return {"ok": True}
 
 
@@ -260,6 +266,7 @@ async def random_movie(user: dict = Depends(current_user)):
 async def browse(sort: str = "popular", genre: str = "", limit: int = 30,
                  offset: int = 0, user: dict = Depends(current_user)):
     limit = max(1, min(limit, 60))
+    offset = max(0, min(offset, 10_000))
     if sort == "top":
         items = await db.browse_top(user["id"], limit=limit, offset=offset)
     elif sort == "genre":
@@ -412,14 +419,14 @@ def require_admin(x_admin_token: str = Header(default="")) -> None:
 async def backfill_posters(limit: int = 200, omdb_cap: int = 60):
     """Добрать постеры фильмам без картинки (kinopoisk → OMDb). Идемпотентно;
     вызывать повторно, пока remaining не станет 0."""
-    return await posters.backfill(limit=limit, _omdb_cap=omdb_cap)
+    return await posters.backfill(limit=max(1, min(limit, 500)), _omdb_cap=max(0, min(omdb_cap, 100)))
 
 
 @app.post("/api/admin/upgrade-omdb-posters", dependencies=[Depends(require_admin)])
 async def upgrade_omdb_posters(limit: int = 200, name_cap: int = 60):
     """Заменить постеры Amazon/OMDb на kinopoisk-версии у уже добавленных фильмов.
     Идемпотентно; вызывать повторно, пока kept_omdb не перестанет уменьшаться."""
-    return await posters.upgrade_omdb_posters(limit=limit, _name_cap=name_cap)
+    return await posters.upgrade_omdb_posters(limit=max(1, min(limit, 500)), _name_cap=max(0, min(name_cap, 100)))
 
 
 # ── Прокси постеров (обходит блокировку CDN на стороне клиента) ───────────────
@@ -430,6 +437,8 @@ _ALLOWED_IMG_HOSTS = {
     "avatars.mds.yandex.net", "st.kp.yandex.net", "image.openmoviedb.com",
     "imagetmdb.com", "kinopoiskapiunofficial.tech",
 }
+_ALLOWED_IMG_TYPES = {"image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"}
+_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 _img_session: aiohttp.ClientSession | None = None
 
 
@@ -447,11 +456,19 @@ async def img_proxy(u: str):
     if p.scheme not in ("http", "https") or p.netloc.lower() not in _ALLOWED_IMG_HOSTS:
         raise HTTPException(status_code=400, detail="Недопустимый источник")  # анти-SSRF
     try:
-        async with (await _img_sess()).get(u) as resp:
+        # Редирект не следуем: иначе разрешённый CDN мог бы перенаправить запрос
+        # во внутреннюю сеть и обойти проверку хоста выше.
+        async with (await _img_sess()).get(u, allow_redirects=False) as resp:
             if resp.status != 200:
                 raise HTTPException(status_code=404, detail="Постер не найден")
-            data = await resp.read()
-            ctype = resp.headers.get("Content-Type", "image/jpeg")
+            ctype = resp.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if ctype not in _ALLOWED_IMG_TYPES:
+                raise HTTPException(status_code=415, detail="Неподдерживаемый формат изображения")
+            if resp.content_length is not None and resp.content_length > _MAX_IMAGE_BYTES:
+                raise HTTPException(status_code=413, detail="Изображение слишком большое")
+            data = await resp.content.read(_MAX_IMAGE_BYTES + 1)
+            if len(data) > _MAX_IMAGE_BYTES:
+                raise HTTPException(status_code=413, detail="Изображение слишком большое")
     except HTTPException:
         raise
     except Exception:  # noqa: BLE001

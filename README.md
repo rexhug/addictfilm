@@ -16,7 +16,7 @@ Telegram (кнопка меню бота)
          └─▶ backend/ — FastAPI: раздаёт фронт + JSON API
                ├─ auth.py      — проверка initData (HMAC), регистрируем любого юзера
                ├─ search.py    — поиск: kinopoisk.dev → fallback OMDb+Wikidata
-               ├─ database.py  — SQLite (WAL), мультитенантность:
+               ├─ database.py  — Neon/Postgres у production, SQLite (WAL) локально:
                │                  users / films (общий каталог) / user_films (per-user)
                └─ kinopoisk.py / omdb.py / wikidata.py — клиенты источников
 ```
@@ -82,7 +82,7 @@ Mini App пушить не умеет — уведомления (напомин
       бюджет kinopoisk (атомарный UPSERT), Sentry. Платный тариф kinopoisk
       не нужен — 4 ключа × 200 = 800/сутки хватает с большим запасом.
 - [ ] Веб-логин вне Telegram (сейчас только Telegram initData).
-- [ ] CI (GitHub Actions → Fly deploy) — не подключен, деплой руками.
+- [x] CI: GitHub Actions запускає smoke-тести й лише потім деплоїть `main` на Fly.
 - [ ] Бот-уведомления (напоминания оценить) — есть только БД-заготовка
       (`get_unrated_watched`), сам бот не написан.
 

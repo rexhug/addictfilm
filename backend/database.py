@@ -164,6 +164,13 @@ async def init_db() -> None:
         await db.commit()
 
 
+async def ping() -> bool:
+    """Лёгкая проверка доступности активной БД для readiness health-check."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute("SELECT 1")
+        return await cur.fetchone() is not None
+
+
 # ── Постоянный кэш поиска ─────────────────────────────────────────────────────
 async def search_cache_get(q: str, max_age_sec: int) -> list | None:
     """Свежие (моложе max_age_sec) результаты поиска по нормализованному запросу, либо None."""
@@ -852,8 +859,12 @@ async def accept_invite(token: str, accepting_user: int) -> dict:
     ON CONFLICT DO NOTHING RETURNING — если у user_id уже есть партнёр (PRIMARY
     KEY), вставка молча не пройдёт и мы это увидим по пустому RETURNING.
     """
-    try:
-        async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        # asyncpg выполняет отдельные statements в autocommit-режиме. Явный BEGIN
+        # нужен, чтобы UPDATE приглашения и обе строки partners были одной операцией
+        # и откатывались вместе на любой конфликт.
+        await db.execute("BEGIN")
+        try:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 "UPDATE partner_invites SET status='accepted' WHERE token = ? AND status = 'pending' "
@@ -881,8 +892,12 @@ async def accept_invite(token: str, accepting_user: int) -> dict:
 
             await db.commit()
             return {"ok": True, "partner_id": from_user}
-    except _InviteRejected as e:
-        return {"ok": False, "reason": e.reason}
+        except _InviteRejected as e:
+            await db.rollback()
+            return {"ok": False, "reason": e.reason}
+        except Exception:
+            await db.rollback()
+            raise
 
 
 async def unpair(user_id: int) -> None:
