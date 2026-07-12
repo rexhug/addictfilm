@@ -364,7 +364,14 @@ function renderDetail(id, m) {
   const genres = (m.genres || "").split(",").map(g => g.trim()).filter(Boolean).join(" · ");
   const metaParts = [m.year, m.age_rating, m.runtime].filter(Boolean);
   const bdUrl = m.backdrop_url || m.poster_url;
-  const cast = (m.actors || "").split(",").map(a => a.trim()).filter(Boolean).slice(0, 10);
+  // actors_photos — те же имена, что в actors, но с фото (только с kinopoisk-пути,
+  // см. search.py). Нет фото у конкретного источника/актёра — падаем на инициалы.
+  let cast;
+  try { cast = m.actors_photos ? JSON.parse(m.actors_photos) : null; } catch (e) { cast = null; }
+  if (!cast || !cast.length) {
+    cast = (m.actors || "").split(",").map(a => a.trim()).filter(Boolean).map(name => ({ name, photo_url: null }));
+  }
+  cast = cast.slice(0, 10);
 
   screen.innerHTML = `
     <div class="detail-v2">
@@ -402,7 +409,7 @@ function renderDetail(id, m) {
           <div id="d-comment-zone"></div>
         </div>
         ${cast.length ? `<div class="d-cast"><div class="d-cast-h"><h2>${esc(t("cast_title"))}</h2></div>
-          <div class="d-cast-rail">${cast.map(name => `<div class="d-cast-item"><div class="d-avatar">${esc(initials(name))}</div><div class="n">${esc(name)}</div></div>`).join("")}</div></div>` : ""}
+          <div class="d-cast-rail">${cast.map(a => `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(a.name))}</span>${a.photo_url ? `<img loading="lazy" src="${posterSrc(a.photo_url)}" alt="" onerror="this.remove()">` : ""}</div><div class="n">${esc(a.name)}</div></div>`).join("")}</div></div>` : ""}
       </div>
     </div>`;
 
