@@ -1,23 +1,44 @@
 """Мульти-джерельний резолвер постерів.
 
-Порядок джерел для одного фільму (по imdb_id):
+Порядок джерел для одного фільму:
   1. kinopoisk.dev по externalId.imdb — рідні постери КП (часто якісніші й без
      блокувань), один батч-запит на пачку id.
   2. OMDb по imdb_id — fallback; постер Amazon апскейлимо (SX300 → SX600).
+  3. kinopoisk-пошук за назвою — остання надія, коли imdb-джерела порожні (OMDb
+     часто чіпляє нішевий imdb-запис БЕЗ постера, хоча КП має фільм за назвою).
+     Жорсткий захист: беремо постер лише при точному збігу нормалізованої назви
+     І року ±1 — щоб не влупити постер однойменного чужого фільму.
 
 Синтетичні id виду `kp_<id>` (фільм без imdb) резолвимо прямим запитом до КП.
 
 Бекфіл проходить каталог `films` без постера: спершу масово добирає постери з
-КП одним-двома батчами, лишок домальовує з OMDb поштучно, оновлює БД.
+КП одним-двома батчами, лишок домальовує з OMDb / пошуку за назвою поштучно.
 """
-import asyncio
 import logging
+import re
 
 import database as db
 import kinopoisk
 import omdb
 
 logger = logging.getLogger(__name__)
+
+# Нормализация названий для сравнения: убрать дизамбиг «(фильм, 2025)», пунктуацию,
+# дефисы, схлопнуть пробелы, привести к нижнему регистру.
+_DISAMBIG_RE = re.compile(r"\([^)]*\)")
+_PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
+_YEAR_RE = re.compile(r"(19|20)\d{2}")
+
+
+def _norm_title(t: str | None) -> str:
+    t = _DISAMBIG_RE.sub(" ", (t or "").lower())
+    t = _PUNCT_RE.sub(" ", t)
+    return " ".join(t.split())
+
+
+def _year_int(y) -> int | None:
+    m = _YEAR_RE.search(str(y or ""))
+    return int(m.group(0)) if m else None
 
 
 async def resolve_omdb(imdb_id: str) -> str | None:
@@ -28,61 +49,105 @@ async def resolve_omdb(imdb_id: str) -> str | None:
     return omdb.upscale_poster(data.get("Poster"))
 
 
-async def resolve(imdb_id: str) -> str | None:
-    """Лучший постер для одного фильма. Kinopoisk → OMDb (с апскейлом)."""
-    if not imdb_id:
+async def resolve_by_name(title: str | None, year=None, original: str | None = None) -> str | None:
+    """Последняя надежда: постер по kinopoisk-поиску названия. Возвращает постер
+    только при ТОЧНОМ совпадении нормализованного названия и года ±1 — иначе
+    рискуем взять картинку однофамильца. None — если уверенного совпадения нет."""
+    qn = _norm_title(title)
+    qy = _year_int(year)
+    if not qn:
         return None
+    # Запросы к КП строим из «чистых» названий (без дизамбига «(фильм, 2025)»),
+    # иначе поиск по мусорной строке ничего не найдёт.
+    tried: set[str] = set()
+    queries = []
+    for raw in (title, original):
+        q = " ".join(_DISAMBIG_RE.sub(" ", raw or "").split()).strip()
+        if q and q not in tried:
+            tried.add(q)
+            queries.append(q)
+    for q in queries:
+        for d in await kinopoisk.search_movies(q, limit=5):
+            url = (d.get("poster") or {}).get("url")
+            if not url:
+                continue
+            cand = _norm_title(d.get("name") or d.get("alternativeName"))
+            cy = _year_int(d.get("year"))
+            if cand == qn and qy and cy and abs(cy - qy) <= 1:
+                logger.info("Постер по названию: %r (%s) → kp id=%s", title, year, d.get("id"))
+                return url
+    return None
 
-    # Синтетический id (фильм без imdb) — только прямой запрос к КП по kp-id.
-    if imdb_id.startswith("kp_"):
+
+async def resolve(imdb_id: str, title: str | None = None,
+                  year=None, original: str | None = None) -> str | None:
+    """Лучший постер для одного фильма. Kinopoisk-по-imdb → OMDb (апскейл) →
+    kinopoisk-поиск по названию (если переданы title/year)."""
+    # Синтетический id (фильм без imdb) — прямой запрос к КП по kp-id.
+    if imdb_id and imdb_id.startswith("kp_"):
         doc = await kinopoisk.get_movie(imdb_id[3:])
-        return (doc.get("poster") or {}).get("url") if doc else None
+        url = (doc.get("poster") or {}).get("url") if doc else None
+        if url:
+            return url
+    elif imdb_id:
+        kp = await kinopoisk.posters_by_imdb([imdb_id])
+        if kp.get(imdb_id):
+            return kp[imdb_id]
+        url = await resolve_omdb(imdb_id)
+        if url:
+            return url
 
-    kp = await kinopoisk.posters_by_imdb([imdb_id])
-    if kp.get(imdb_id):
-        return kp[imdb_id]
-    return await resolve_omdb(imdb_id)
+    # Ничего по imdb — пробуем по названию (строгий гард внутри).
+    if title:
+        return await resolve_by_name(title, year, original)
+    return None
 
 
 async def backfill(limit: int = 200, _omdb_cap: int = 60) -> dict:
     """Добрать постеры фильмам каталога без картинки.
 
     Экономно к лимитам: КП добираем массово (батчи по 40 imdb), остаток тянем
-    из OMDb поштучно, но не больше `_omdb_cap` за прогон. Возвращает статистику.
+    поштучно (OMDb + поиск по названию), но не больше `_omdb_cap` фильмов за
+    прогон. Возвращает статистику по источникам.
     """
     films = await db.films_missing_poster(limit)
     if not films:
-        return {"scanned": 0, "kinopoisk": 0, "omdb": 0, "updated": 0, "remaining": 0}
+        return {"scanned": 0, "kinopoisk": 0, "omdb": 0, "by_name": 0, "updated": 0, "remaining": 0}
 
-    real_ids = [f["imdb_id"] for f in films if f["imdb_id"].startswith("tt")]
+    real = [f for f in films if f["imdb_id"].startswith("tt")]
     synthetic = [f for f in films if not f["imdb_id"].startswith("tt")]
 
-    updated = kp_hits = omdb_hits = 0
+    updated = kp_hits = omdb_hits = name_hits = 0
 
     # 1. Массовый добор из Кинопоиска по настоящим imdb id.
-    kp_map = await kinopoisk.posters_by_imdb(real_ids)
+    kp_map = await kinopoisk.posters_by_imdb([f["imdb_id"] for f in real])
     for imdb_id, url in kp_map.items():
         if await db.set_film_poster(imdb_id, url):
             updated += 1
             kp_hits += 1
 
-    # 2. Остаток (КП не дал) домалёвываем из OMDb — поштучно и с лимитом.
-    still_missing = [i for i in real_ids if i not in kp_map]
-    for imdb_id in still_missing[:_omdb_cap]:
-        url = await resolve_omdb(imdb_id)
-        if url and await db.set_film_poster(imdb_id, url):
+    # 2. Остаток (КП по imdb не дал) — поштучно: OMDb, затем поиск по названию.
+    still = [f for f in real if f["imdb_id"] not in kp_map]
+    for f in still[:_omdb_cap]:
+        url = await resolve_omdb(f["imdb_id"])
+        src = "omdb"
+        if not url:
+            url = await resolve_by_name(f["title"], f["year"], f["title_original"])
+            src = "name"
+        if url and await db.set_film_poster(f["imdb_id"], url):
             updated += 1
-            omdb_hits += 1
+            omdb_hits += src == "omdb"
+            name_hits += src == "name"
 
-    # 3. Синтетические (kp_<id>) — прямым запросом к КП.
+    # 3. Синтетические (kp_<id>) — прямым запросом к КП (+ добор по названию).
     for f in synthetic:
-        url = await resolve(f["imdb_id"])
+        url = await resolve(f["imdb_id"], f["title"], f["year"], f["title_original"])
         if url and await db.set_film_poster(f["imdb_id"], url):
             updated += 1
             kp_hits += 1
 
     remaining = len(films) - updated
-    logger.info("Бекфил постеров: просканировано=%d КП=%d OMDb=%d обновлено=%d осталось=%d",
-                len(films), kp_hits, omdb_hits, updated, remaining)
+    logger.info("Бекфил постеров: скан=%d КП=%d OMDb=%d поназв=%d обновлено=%d осталось=%d",
+                len(films), kp_hits, omdb_hits, name_hits, updated, remaining)
     return {"scanned": len(films), "kinopoisk": kp_hits, "omdb": omdb_hits,
-            "updated": updated, "remaining": remaining}
+            "by_name": name_hits, "updated": updated, "remaining": remaining}

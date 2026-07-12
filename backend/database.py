@@ -228,11 +228,12 @@ async def get_film(film_id: int) -> dict | None:
 
 async def films_missing_poster(limit: int = 200) -> list[dict]:
     """Фильмы каталога без постера (poster_url NULL/пусто) — для бекфила.
-    Возвращает [{id, imdb_id, title}]. Свежие сверху (чаще всего нужны первыми)."""
+    Возвращает [{id, imdb_id, title, title_original, year}] (последние два нужны
+    для добора по названию). Свежие сверху (чаще всего нужны первыми)."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "SELECT id, imdb_id, title FROM films "
+            "SELECT id, imdb_id, title, title_original, year FROM films "
             "WHERE poster_url IS NULL OR poster_url = '' "
             "ORDER BY id DESC LIMIT ?", (limit,))
         return [dict(r) for r in await cur.fetchall()]

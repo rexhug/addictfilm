@@ -28,21 +28,22 @@ import omdb  # noqa: E402
 
 async def _run(limit: int, omdb_cap: int, run_all: bool) -> None:
     await db.init_db()
-    total = {"scanned": 0, "kinopoisk": 0, "omdb": 0, "updated": 0}
+    total = {"scanned": 0, "kinopoisk": 0, "omdb": 0, "by_name": 0, "updated": 0}
     try:
         while True:
             stats = await posters.backfill(limit=limit, _omdb_cap=omdb_cap)
             for k in total:
                 total[k] += stats[k]
-            print(f"прогон: просканировано={stats['scanned']} КП={stats['kinopoisk']} "
-                  f"OMDb={stats['omdb']} обновлено={stats['updated']} "
-                  f"осталось={stats['remaining']}")
+            print(f"прогон: скан={stats['scanned']} КП={stats['kinopoisk']} "
+                  f"OMDb={stats['omdb']} поназв={stats['by_name']} "
+                  f"обновлено={stats['updated']} осталось={stats['remaining']}")
             if not run_all or stats["updated"] == 0:
                 break
     finally:
         await kinopoisk.aclose()
         await omdb.aclose()
-    print(f"\nИТОГО: обновлено={total['updated']} (КП={total['kinopoisk']}, OMDb={total['omdb']})")
+    print(f"\nИТОГО: обновлено={total['updated']} "
+          f"(КП={total['kinopoisk']}, OMDb={total['omdb']}, поназв={total['by_name']})")
 
 
 def main() -> None:
