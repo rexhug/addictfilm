@@ -442,9 +442,15 @@ function renderStars(id, m) {
   el.querySelectorAll("button").forEach(b => b.onclick = async () => {
     tg.HapticFeedback?.impactOccurred("light");
     const n = +b.dataset.n;
-    await api(`/api/movie/${id}/rate`, { method: "POST", body: JSON.stringify({ rating: n }) });
-    m.my_rating = n;
-    if (m.status !== "watched") m.status = "watched";  // сервер неявно отмечает «Смотрел» при оценке
+    if (n === m.my_rating) {
+      // Повторный тап по своей же звезде — снять оценку (статус «Смотрел» не трогаем).
+      await api(`/api/movie/${id}/rate`, { method: "DELETE" });
+      m.my_rating = null;
+    } else {
+      await api(`/api/movie/${id}/rate`, { method: "POST", body: JSON.stringify({ rating: n }) });
+      m.my_rating = n;
+      if (m.status !== "watched") m.status = "watched";  // сервер неявно отмечает «Смотрел» при оценке
+    }
     renderStars(id, m);
     renderActions(id, m);
   });

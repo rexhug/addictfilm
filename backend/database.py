@@ -396,6 +396,17 @@ async def set_rating(user_id: int, film_id: int, rating: int) -> None:
         await db.commit()
 
 
+async def clear_rating(user_id: int, film_id: int) -> None:
+    """Убрать оценку (повторный тап по своей звезде) — статус («Смотрел») не трогаем,
+    только сама оценка пропадает. Ничего не создаёт, если записи ещё не было."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute(
+            "UPDATE user_films SET rating = NULL, rated_at = NULL WHERE user_id = ? AND film_id = ?",
+            (user_id, film_id),
+        )
+        await db.commit()
+
+
 async def set_status(user_id: int, film_id: int, status: str) -> None:
     """Сменить статус. Фильм появляется в списке, если его не было. Оценка сохраняется."""
     watched_at = _now() if status == "watched" else None

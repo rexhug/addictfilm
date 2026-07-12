@@ -125,6 +125,13 @@ async def rate(film_id: int, body: RateBody, user: dict = Depends(current_user))
     return {"ok": True}
 
 
+@app.delete("/api/movie/{film_id}/rate")
+async def unrate(film_id: int, user: dict = Depends(current_user)):
+    """Убрать оценку — повторный тап по своей звезде. Статус (списки) не меняется."""
+    await db.clear_rating(user["id"], film_id)
+    return {"ok": True}
+
+
 class StatusBody(BaseModel):
     status: str  # want_to_watch | watched
 
