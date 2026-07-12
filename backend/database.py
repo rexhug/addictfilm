@@ -296,6 +296,29 @@ async def set_film_poster(imdb_id: str, poster_url: str) -> bool:
         return cur.rowcount > 0
 
 
+async def films_with_omdb_poster(limit: int = 200) -> list[dict]:
+    """Фильмы с постером Amazon/OMDb (заметно хуже качеством, чем кинопоиск) —
+    кандидаты на апгрейд. Возвращает [{id, imdb_id, title, title_original, year}]."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT id, imdb_id, title, title_original, year FROM films "
+            "WHERE poster_url LIKE '%media-amazon.com%' "
+            "ORDER BY id DESC LIMIT ?", (limit,))
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def upgrade_film_poster(imdb_id: str, poster_url: str) -> bool:
+    """Заменить постер фильма на лучший (используется только когда нашли
+    kinopoisk-версию взамен OMDb) — в отличие от set_film_poster, ЗАТИРАЕТ
+    существующее значение. True = запись обновлена."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE films SET poster_url = ? WHERE imdb_id = ?", (poster_url, imdb_id))
+        await db.commit()
+        return cur.rowcount > 0
+
+
 async def community_rating(film_id: int) -> dict:
     """Средняя оценка всех пользователей по фильму + количество оценок."""
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:

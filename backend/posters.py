@@ -85,8 +85,9 @@ async def resolve_by_name(title: str | None, year=None, original: str | None = N
 
 async def resolve(imdb_id: str, title: str | None = None,
                   year=None, original: str | None = None) -> str | None:
-    """Лучший постер для одного фильма. Kinopoisk-по-imdb → OMDb (апскейл) →
-    kinopoisk-поиск по названию (если переданы title/year)."""
+    """Лучший постер для одного фильма. Kinopoisk — приоритет (заметно лучше
+    качеством): по imdb, затем поиском по названию. OMDb — последний резерв,
+    только если кинопоиск фильм фактически не знает ни по imdb, ни по названию."""
     # Синтетический id (фильм без imdb) — прямой запрос к КП по kp-id.
     if imdb_id and imdb_id.startswith("kp_"):
         doc = await kinopoisk.get_movie(imdb_id[3:])
@@ -97,13 +98,14 @@ async def resolve(imdb_id: str, title: str | None = None,
         kp = await kinopoisk.posters_by_imdb([imdb_id])
         if kp.get(imdb_id):
             return kp[imdb_id]
-        url = await resolve_omdb(imdb_id)
+
+    if title:
+        url = await resolve_by_name(title, year, original)
         if url:
             return url
 
-    # Ничего по imdb — пробуем по названию (строгий гард внутри).
-    if title:
-        return await resolve_by_name(title, year, original)
+    if imdb_id and imdb_id.startswith("tt"):
+        return await resolve_omdb(imdb_id)
     return None
 
 
@@ -130,14 +132,15 @@ async def backfill(limit: int = 200, _omdb_cap: int = 60) -> dict:
             updated += 1
             kp_hits += 1
 
-    # 2. Остаток (КП по imdb не дал) — поштучно: OMDb, затем поиск по названию.
+    # 2. Остаток (КП по imdb не дал) — поштучно: поиск в кинопоиске по названию
+    # (тоже кинопоисковское качество), OMDb — только если и это не помогло.
     still = [f for f in real if f["imdb_id"] not in kp_map]
     for f in still[:_omdb_cap]:
-        url = await resolve_omdb(f["imdb_id"])
-        src = "omdb"
+        url = await resolve_by_name(f["title"], f["year"], f["title_original"])
+        src = "name"
         if not url:
-            url = await resolve_by_name(f["title"], f["year"], f["title_original"])
-            src = "name"
+            url = await resolve_omdb(f["imdb_id"])
+            src = "omdb"
         if url and await db.set_film_poster(f["imdb_id"], url):
             updated += 1
             omdb_hits += src == "omdb"
@@ -155,3 +158,35 @@ async def backfill(limit: int = 200, _omdb_cap: int = 60) -> dict:
                 len(films), kp_hits, omdb_hits, name_hits, updated, remaining)
     return {"scanned": len(films), "kinopoisk": kp_hits, "omdb": omdb_hits,
             "by_name": name_hits, "updated": updated, "remaining": remaining}
+
+
+async def upgrade_omdb_posters(limit: int = 200, _name_cap: int = 60) -> dict:
+    """Заменить постеры Amazon/OMDb на kinopoisk-версии (заметно лучше качеством)
+    у уже добавленных фильмов — догоняет фильмы, попавшие в каталог до фикса
+    приоритета источников. Затирает только когда находит kinopoisk-замену;
+    если кинопоиск фильм не знает — OMDb-постер остаётся (лучше, чем ничего).
+    """
+    films = await db.films_with_omdb_poster(limit)
+    if not films:
+        return {"scanned": 0, "upgraded": 0, "kept_omdb": 0}
+
+    upgraded = 0
+    real_ids = [f["imdb_id"] for f in films if f["imdb_id"].startswith("tt")]
+
+    # 1. Массовый добор из кинопоиска по imdb.
+    kp_map = await kinopoisk.posters_by_imdb(real_ids)
+    for imdb_id, url in kp_map.items():
+        if await db.upgrade_film_poster(imdb_id, url):
+            upgraded += 1
+
+    # 2. Остаток — поштучно поиском по названию (с лимитом за прогон).
+    still = [f for f in films if f["imdb_id"] not in kp_map][:_name_cap]
+    for f in still:
+        url = await resolve_by_name(f["title"], f["year"], f["title_original"])
+        if url and await db.upgrade_film_poster(f["imdb_id"], url):
+            upgraded += 1
+
+    kept = len(films) - upgraded
+    logger.info("Апгрейд OMDb→kinopoisk: скан=%d апгрейжено=%d осталось на OMDb=%d",
+                len(films), upgraded, kept)
+    return {"scanned": len(films), "upgraded": upgraded, "kept_omdb": kept}

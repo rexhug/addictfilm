@@ -325,6 +325,13 @@ async def backfill_posters(limit: int = 200, omdb_cap: int = 60):
     return await posters.backfill(limit=limit, _omdb_cap=omdb_cap)
 
 
+@app.post("/api/admin/upgrade-omdb-posters", dependencies=[Depends(require_admin)])
+async def upgrade_omdb_posters(limit: int = 200, name_cap: int = 60):
+    """Заменить постеры Amazon/OMDb на kinopoisk-версии у уже добавленных фильмов.
+    Идемпотентно; вызывать повторно, пока kept_omdb не перестанет уменьшаться."""
+    return await posters.upgrade_omdb_posters(limit=limit, _name_cap=name_cap)
+
+
 # ── Прокси постеров (обходит блокировку CDN на стороне клиента) ───────────────
 # Картинки грузятся через наш домен, а не напрямую с Amazon/Yandex — работает
 # везде, где открывается само приложение. Без авторизации (тег <img> её не шлёт).
