@@ -89,6 +89,14 @@ async def init_db() -> None:
                 created_at TEXT NOT NULL
             )
         """)
+        # Дневной бюджет внешних поисковых вызовов — общий на все инстансы (иначе при
+        # 2+ Fly-машинах каждый процесс тратил бы свой отдельный бюджет). 1 строка/день.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS search_budget (
+                day   TEXT PRIMARY KEY,
+                spent INTEGER NOT NULL DEFAULT 0
+            )
+        """)
         # ── Пара (Фаза E): приглашения + активные пары ──────────────────────────
         await db.execute("""
             CREATE TABLE IF NOT EXISTS partner_invites (
@@ -152,6 +160,22 @@ async def purge_search_cache(max_age_sec: int) -> int:
         cur = await db.execute("DELETE FROM search_cache WHERE created_at < ?", (cutoff,))
         await db.commit()
         return cur.rowcount
+
+
+async def try_spend_search_budget(day: str, budget: int) -> bool:
+    """Атомарный инкремент дневного бюджета внешних вызовов kinopoisk/OMDb — общий
+    на все инстансы (важно при 2+ Fly-машинах). True — единица списана, False — бюджет
+    на сегодня исчерпан. UPSERT с условием в WHERE — атомарно и без гонок в обоих движках."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "INSERT INTO search_budget (day, spent) VALUES (?, 1) "
+            "ON CONFLICT(day) DO UPDATE SET spent = search_budget.spent + 1 "
+            "WHERE search_budget.spent < ? "
+            "RETURNING spent",
+            (day, budget))
+        row = await cur.fetchone()
+        await db.commit()
+        return row is not None
 
 
 async def backup_db(keep: int = 7) -> str | None:

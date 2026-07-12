@@ -1,53 +1,39 @@
 """Защита лимита kinopoisk.dev (~200 запросов/сутки на free-тарифе).
 
 Два механизма:
-  1. Дневной бюджет ВНЕШНИХ поисковых вызовов — жёсткий предохранитель под 200/сутки.
-  2. Per-user throttle — один пользователь не выжжет общую квоту.
-
-Всё in-memory: сбрасывается при рестарте. Для масштаба (несколько инстансов)
-заменить на Redis/БД — сейчас достаточно одного процесса. См. docs/LESSONS.md.
+  1. Дневной бюджет ВНЕШНИХ поисковых вызовов — жёсткий предохранитель под
+     ~800/сутки (4 ключа × 200). Хранится в Postgres (database.try_spend_search_budget) —
+     общий на все Fly-инстансы, атомарный инкремент без гонок при масштабировании.
+  2. Per-user throttle — один пользователь не выжжет общую квоту. Остаётся
+     in-memory (per-instance): при 2+ машинах даёт мягкую деградацию (эффективный
+     лимит на юзера кратно числу машин), но это не проблема — жёсткий бюджет (п.1)
+     всё равно останавливает суммарный расход вне зависимости от throttle.
 """
 import os
 import time
 from collections import defaultdict, deque
-from datetime import datetime, timezone
 
-# Бюджет внешних поисковых вызовов в сутки. С пулом токенов kinopoisk (ротация в
-# kinopoisk.py суммирует лимиты, ~2k на ключ) запас большой; оставляем headroom
-# под добавления/детали. Настраивается через .env (DAILY_SEARCH_BUDGET).
+import database as db
+
+# Бюджет внешних поисковых вызовов в сутки. Настраивается через .env (DAILY_SEARCH_BUDGET).
 DAILY_SEARCH_BUDGET: int = int(os.getenv("DAILY_SEARCH_BUDGET", "2000"))
 
 # Per-user throttle: не более USER_MAX запросов за USER_WINDOW секунд.
 USER_MAX: int = int(os.getenv("USER_SEARCH_MAX", "20"))
 USER_WINDOW: int = int(os.getenv("USER_SEARCH_WINDOW", "60"))
 
-_day: str | None = None
-_spent: int = 0
 _hits: dict[int, deque] = defaultdict(deque)
 _calls: int = 0  # счётчик обращений для периодической уборки _hits
 
 
 def _today() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return time.strftime("%Y-%m-%d", time.gmtime())
 
 
-def try_spend_search() -> bool:
-    """True — можно сделать внешний поисковый вызов (единица списана из бюджета).
+async def try_spend_search() -> bool:
+    """True — можно сделать внешний поисковый вызов (единица списана из общего бюджета).
     False — дневной бюджет исчерпан, внешний вызов делать нельзя."""
-    global _day, _spent
-    today = _today()
-    if today != _day:  # новый день — сброс
-        _day, _spent = today, 0
-    if _spent >= DAILY_SEARCH_BUDGET:
-        return False
-    _spent += 1
-    return True
-
-
-def search_budget_left() -> int:
-    if _today() != _day:
-        return DAILY_SEARCH_BUDGET
-    return max(0, DAILY_SEARCH_BUDGET - _spent)
+    return await db.try_spend_search_budget(_today(), DAILY_SEARCH_BUDGET)
 
 
 def _sweep(now: float) -> None:
@@ -77,7 +63,7 @@ def allow_user(user_id: int) -> bool:
 
 
 def _reset_for_tests() -> None:
-    """Только для тестов: обнулить состояние."""
-    global _day, _spent, _calls
-    _day, _spent, _calls = None, 0, 0
+    """Только для тестов: обнулить in-memory состояние (per-user throttle)."""
+    global _calls
+    _calls = 0
     _hits.clear()

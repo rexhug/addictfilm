@@ -67,6 +67,12 @@ async def current_user(x_init_data: str = Header(default="")) -> dict:
     return user
 
 
+@app.get("/healthz", include_in_schema=False)
+async def healthz():
+    """Для fly.toml http_service.checks — без авторизации, лёгкий."""
+    return {"ok": True}
+
+
 # ── API: список пользователя ──────────────────────────────────────────────────
 @app.get("/api/me")
 async def me(user: dict = Depends(current_user)):

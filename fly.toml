@@ -15,9 +15,16 @@ primary_region = "fra"   # Франкфурт — ближайший досту�
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "suspend"
+  auto_stop_machines = false   # держим тёплой — сплеск трафика не должен будить машину
   auto_start_machines = true
-  min_machines_running = 1   # SQLite = одна машина, не масштабировать горизонтально
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/healthz"
 
 [[vm]]
   size = "shared-cpu-1x"

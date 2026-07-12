@@ -198,7 +198,7 @@ async def cached_search(query: str, user_id: int | None = None) -> dict:
     if user_id is not None and not ratelimit.allow_user(user_id):
         return {"items": [], "cached": False, "limited": False, "throttled": True}
 
-    if not ratelimit.try_spend_search():
+    if not await ratelimit.try_spend_search():
         if hit:  # бюджета нет — отдаём устаревший L1-кэш, лучше чем ничего
             return {"items": hit[1], "cached": True, "limited": False, "throttled": False}
         logger.warning("Search budget exhausted, query %r not cached", query)
@@ -246,7 +246,7 @@ async def fetch_details(src: str, ref: str) -> dict | None:
         poster_url = (doc.get("poster") or {}).get("url")
         # У КП постера нет — добираем из OMDb (с апскейлом), если есть настоящий imdb.
         # Под дневным бюджетом: при исчерпании — не добираем (бекфил закроет позже).
-        if not poster_url and imdb_id.startswith("tt") and ratelimit.try_spend_search():
+        if not poster_url and imdb_id.startswith("tt") and await ratelimit.try_spend_search():
             poster_url = await posters.resolve_omdb(imdb_id)
         return {
             "imdb_id": imdb_id,
@@ -276,7 +276,7 @@ async def fetch_details(src: str, ref: str) -> dict | None:
     # нишевый imdb-запись без постера, хотя КП знает фильм). Иначе — без картинки.
     # Под дневным бюджетом kinopoisk: при исчерпании пропускаем добор (бекфил позже).
     poster_url = omdb.upscale_poster(data.get("Poster"))
-    if not poster_url and ratelimit.try_spend_search():
+    if not poster_url and await ratelimit.try_spend_search():
         kp = await kinopoisk.posters_by_imdb([data["imdbID"]])
         poster_url = kp.get(data["imdbID"])
         if not poster_url:
