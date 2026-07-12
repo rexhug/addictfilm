@@ -56,6 +56,21 @@ def extract_credits(persons: list[dict], max_actors: int = 5) -> tuple[str | Non
     return (", ".join(directors) or None), (", ".join(actors) or None)
 
 
+def extract_actor_photos(persons: list[dict], max_actors: int = 5) -> list[dict]:
+    """Те же актёры, что и extract_credits (тот же порядок/лимит) — но с фото,
+    под карточки в UI. photo_url может быть None у конкретного актёра (фронтенд
+    тогда падает на аватар-заглушку с инициалами)."""
+    out = []
+    for p in persons or []:
+        name = p.get("name")
+        if not name or p.get("enProfession") != "actor":
+            continue
+        out.append({"name": name, "photo_url": p.get("photo")})
+        if len(out) >= max_actors:
+            break
+    return out
+
+
 async def _get_session() -> aiohttp.ClientSession:
     global _session
     if _session is None or _session.closed:
@@ -204,6 +219,31 @@ async def artwork_by_imdb(imdb_ids: list[str]) -> dict[str, dict]:
                 "backdrop_url": (m.get("backdrop") or {}).get("url"),
                 "age_rating": age_rating_of(m),
             }
+    return out
+
+
+async def actor_photos_by_imdb(imdb_ids: list[str]) -> dict[str, list[dict]]:
+    """Фото актёров по списку IMDb ID: {imdb_id: [{name, photo_url}]}. Батчами
+    (для бекфила). persons — «тяжёлое» поле, батч мельче, чем у остальных."""
+    ids = [i for i in imdb_ids if i and i.startswith("tt")]
+    if not KINOPOISK_TOKENS or not ids:
+        return {}
+    out: dict[str, list[dict]] = {}
+    for start in range(0, len(ids), 20):
+        chunk = ids[start:start + 20]
+        params = [("externalId.imdb", x) for x in chunk]
+        params += [("selectFields", "externalId"), ("selectFields", "persons"),
+                   ("limit", "250"), ("page", "1")]
+        data = await _request("/movie", params)
+        if not data:
+            continue
+        for m in data.get("docs", []):
+            imdb = (m.get("externalId") or {}).get("imdb")
+            if not imdb:
+                continue
+            photos = extract_actor_photos(m.get("persons") or [])
+            if photos:
+                out[imdb] = photos
     return out
 
 

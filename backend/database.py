@@ -43,10 +43,11 @@ async def _add_column_if_missing(table: str, col_def: str) -> None:
 
 # ── Инициализация ────────────────────────────────────────────────────────────
 async def init_db() -> None:
-    # Миграция для БД, созданных до backdrop_url/age_rating — до основного блока
-    # и в изолированных транзакциях (см. _add_column_if_missing).
+    # Миграция для БД, созданных до backdrop_url/age_rating/actors_photos — до
+    # основного блока и в изолированных транзакциях (см. _add_column_if_missing).
     await _add_column_if_missing("films", "backdrop_url TEXT")
     await _add_column_if_missing("films", "age_rating TEXT")
+    await _add_column_if_missing("films", "actors_photos TEXT")
 
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         # WAL: чтение не блокирует запись — публичный трафик без «database is locked».
@@ -83,6 +84,7 @@ async def init_db() -> None:
                 poster_url     TEXT,
                 backdrop_url   TEXT,
                 age_rating     TEXT,
+                actors_photos  TEXT,   -- JSON-массив name/photo_url под тех же актёров, что в actors
                 created_at     TEXT
             )
         """)
@@ -243,7 +245,7 @@ async def get_or_create_film(
     runtime: str | None = None, imdb_rating: str | None = None, imdb_votes: str | None = None,
     plot: str | None = None, poster_url: str | None = None, title_original: str | None = None,
     kp_rating: str | None = None, directors: str | None = None, actors: str | None = None,
-    backdrop_url: str | None = None, age_rating: str | None = None,
+    backdrop_url: str | None = None, age_rating: str | None = None, actors_photos: str | None = None,
 ) -> int:
     """Возвращает id фильма в общем каталоге, создавая запись при первом появлении
     (dedup по imdb_id). Идемпотентно — один фильм на всех пользователей."""
@@ -258,13 +260,15 @@ async def get_or_create_film(
             """
             INSERT INTO films
                 (imdb_id, title, title_original, year, genres, directors, actors, runtime,
-                 imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
+                 actors_photos, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(imdb_id) DO NOTHING
             RETURNING id
             """,
             (imdb_id, title, title_original, year, genres, directors, actors, runtime,
-             imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating, _now()),
+             imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
+             actors_photos, _now()),
         )
         inserted = await cur.fetchone()
         await db.commit()
@@ -336,6 +340,28 @@ async def upgrade_film_poster(imdb_id: str, poster_url: str) -> bool:
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute(
             "UPDATE films SET poster_url = ? WHERE imdb_id = ?", (poster_url, imdb_id))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def films_missing_actor_photos(limit: int = 200) -> list[dict]:
+    """Фильмы каталога без фото актёров (для бекфила). [{id, imdb_id}]."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT id, imdb_id FROM films WHERE imdb_id LIKE 'tt%' "
+            "AND (actors_photos IS NULL OR actors_photos = '') "
+            "ORDER BY id DESC LIMIT ?", (limit,))
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def set_actor_photos(imdb_id: str, photos_json: str) -> bool:
+    """Проставить JSON фото актёров, только если ещё не было. True = обновлено."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE films SET actors_photos = ? "
+            "WHERE imdb_id = ? AND (actors_photos IS NULL OR actors_photos = '')",
+            (photos_json, imdb_id))
         await db.commit()
         return cur.rowcount > 0
 

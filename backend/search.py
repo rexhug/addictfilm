@@ -8,6 +8,7 @@
   {src: "k"|"i", ref, title, year, poster, rating, genres, type}
 """
 import asyncio
+import json
 import logging
 import os
 import re
@@ -242,6 +243,7 @@ async def fetch_details(src: str, ref: str) -> dict | None:
         original = doc.get("alternativeName")
         length = doc.get("movieLength") or doc.get("seriesLength")
         directors, actors = kinopoisk.extract_credits(doc.get("persons") or [])
+        photos = kinopoisk.extract_actor_photos(doc.get("persons") or [])
         imdb_id = kinopoisk.imdb_id_of(doc)
         poster_url = (doc.get("poster") or {}).get("url")
         # У КП постера нет — добираем из OMDb (с апскейлом), если есть настоящий imdb.
@@ -264,6 +266,7 @@ async def fetch_details(src: str, ref: str) -> dict | None:
             "poster_url": poster_url,
             "backdrop_url": (doc.get("backdrop") or {}).get("url"),
             "age_rating": kinopoisk.age_rating_of(doc),
+            "actors_photos": json.dumps(photos, ensure_ascii=False) if photos else None,
         }
 
     # src == "i": OMDb + официальное русское название из Wikidata.
