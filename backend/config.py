@@ -23,3 +23,7 @@ SENTRY_DSN: str = os.getenv("SENTRY_DSN", "").strip()
 
 # Токен обслуживания (бекфил постеров и т.п.). Пусто → админ-эндпоинты выключены.
 ADMIN_TOKEN: str = os.getenv("ADMIN_TOKEN", "")
+
+# Telegram user id, которым ВСЕГДА доступна in-app админка подборок (независимо от
+# users.role в БД) — bootstrap без риска самозаблокироваться. Через запятую.
+ADMIN_USER_IDS: set[int] = {int(x) for x in os.getenv("ADMIN_USER_IDS", "").split(",") if x.strip()}
