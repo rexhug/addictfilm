@@ -270,6 +270,12 @@ async def fetch_details(src: str, ref: str) -> dict | None:
     original = data.get("Title", "")
     ru_titles = await wikidata.get_titles_by_imdb([data["imdbID"]], "ru")
     title = best_title(ru_titles.get(data["imdbID"]), original)
+    # У OMDb постера нет (частый N/A на нишевых/новых тайтлах) — добираем из
+    # Кинопоиска по imdb. Иначе фильм останется без картинки навсегда.
+    poster_url = omdb.upscale_poster(data.get("Poster"))
+    if not poster_url:
+        kp = await kinopoisk.posters_by_imdb([data["imdbID"]])
+        poster_url = kp.get(data["imdbID"])
     return {
         "imdb_id": data["imdbID"],
         "title": title,
@@ -283,5 +289,5 @@ async def fetch_details(src: str, ref: str) -> dict | None:
         "kp_rating": None,
         "imdb_votes": _clean(data.get("imdbVotes")),
         "plot": _clean(data.get("Plot")),
-        "poster_url": omdb.upscale_poster(data.get("Poster")),
+        "poster_url": poster_url,
     }
