@@ -210,7 +210,7 @@ async function showHome() {
     <div class="chips rise d2">
       <span class="chip active" data-to="sec-pop"><span class="e">🔥</span>${esc(t("chip_popular"))}</span>
       <span class="chip" data-to="sec-top"><span class="e">🏆</span>${esc(t("chip_top"))}</span>
-      <span class="chip" data-to="sec-coll"><span class="e">🎬</span>${esc(t("chip_collections"))}</span>
+      <span class="chip" id="chip-coll"><span class="e">🎬</span>${esc(t("chip_collections"))}</span>
       <span class="chip" data-to="sec-gen"><span class="e">🎭</span>${esc(t("chip_genres"))}</span>
     </div>
     <section class="rise d3" id="sec-pop"><div class="head"><h2>${esc(t("chip_popular"))}</h2></div><div class="rail" id="rail-pop">${skeletonRail(5)}</div></section>
@@ -224,6 +224,9 @@ async function showHome() {
     screen.querySelectorAll(".chips .chip[data-to]").forEach(x => x.classList.toggle("active", x === c));
     document.getElementById(c.dataset.to)?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
+  // На головній показуємо стрічку підбірок, а цей чіп лишає повний
+  // адмін-екран для створення, редагування та видалення підбірок.
+  document.getElementById("chip-coll").onclick = () => showCollections();
   loadRail("rail-pop", "/api/browse?sort=popular&limit=20");
   loadRail("rail-top", "/api/browse?sort=top&limit=20");
   loadCollectionsRail();
