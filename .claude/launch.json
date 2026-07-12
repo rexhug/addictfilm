@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "/Users/denyszapriahailo/movie_miniapp/.venv/bin/uvicorn",
+      "runtimeArgs": ["main:app", "--port", "8077", "--reload"],
+      "cwd": "backend",
+      "port": 8077
+    }
+  ]
+}

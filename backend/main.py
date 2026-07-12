@@ -105,6 +105,7 @@ async def movie(film_id: int, user: dict = Depends(current_user)):
     f["status"] = mine["status"] if mine else None
     f["my_rating"] = mine["rating"] if mine else None
     f["my_comment"] = mine["comment"] if mine else None
+    f["share_link"] = _movie_link(film_id)
     return f
 
 
@@ -253,6 +254,11 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "addictfilmbot")
 
 def _invite_link(token: str) -> str:
     return f"https://t.me/{BOT_USERNAME}?startapp=inv_{token}"
+
+
+def _movie_link(film_id: int) -> str:
+    """Диплинк на конкретный фильм (startapp) — для кнопки «Поделиться»."""
+    return f"https://t.me/{BOT_USERNAME}?startapp=film_{film_id}"
 
 
 def _partner_brief(u: dict | None) -> dict:

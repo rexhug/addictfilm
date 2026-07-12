@@ -11,6 +11,8 @@ if (tg) {
 const screen = document.getElementById("screen");
 let me = null;
 let _returnTo = () => { setActiveTab("home"); showHome(); };
+let _heroSource = null;      // {rect, src} стартовой точки hero-transition, захватывается в posterTile()
+let _detailScrollHandler = null;  // текущий scroll-listener страницы фильма (снимается при уходе)
 
 // ── Локализация ───────────────────────────────────────────────────────────────
 function pl(n, f) { const a = Math.abs(n) % 100, b = a % 10; if (a > 10 && a < 20) return f[2]; if (b > 1 && b < 5) return f[1]; if (b === 1) return f[0]; return f[2]; }
@@ -28,8 +30,11 @@ const DICT = {
     want_empty_t: "Список пуст", want_empty_s: "Добавь фильмы через поиск",
     watched_empty_t: "Пока ничего не просмотрено", watched_empty_s: "Отмечай фильмы «Смотрел»",
     top_empty_t: "Твой топ пуст", top_empty_s: "Оцени просмотренные фильмы",
-    my_rating: "Моя оценка", rate_hint: " · тап = «Смотрел(а)»", dir: "реж. ",
-    act_want: "🔖 Хочу посмотреть", act_watched: "✅ Смотрел(а)", act_to_want: "↩️ В «Хочу»", act_remove: "🗑 Убрать",
+    my_rating: "Моя оценка", rate_hint: " · тап = «Смотрел(а)»", dir: "Режиссёр ",
+    act_want: "Хочу посмотреть", act_watched: "Отметить как просмотрено", act_to_want: "В «Хочу»", act_remove: "Убрать из списка",
+    already_watched_link: "Уже смотрел? Отметить",
+    my_review: "Мой отзыв", comment_ph: "Написать отзыв…",
+    cast_title: "Актёры", share_text: (title) => `Смотри «${title}» в Addict Film`,
     confirm_remove: (t) => `Убрать «${t}» из своего списка?`,
     search_start_t: "Что смотрим?", search_start_s: "Введи название — минимум 2 буквы",
     search_toomany_t: "Слишком часто", search_toomany_s: "Подожди минуту и попробуй снова",
@@ -73,8 +78,11 @@ const DICT = {
     want_empty_t: "List is empty", want_empty_s: "Add films via search",
     watched_empty_t: "Nothing watched yet", watched_empty_s: "Mark films as Watched",
     top_empty_t: "Your top is empty", top_empty_s: "Rate the films you've watched",
-    my_rating: "My rating", rate_hint: " · tap = Watched", dir: "dir. ",
-    act_want: "🔖 Add to wishlist", act_watched: "✅ Watched", act_to_want: "↩️ To wishlist", act_remove: "🗑 Remove",
+    my_rating: "My rating", rate_hint: " · tap = Watched", dir: "Director ",
+    act_want: "Want to watch", act_watched: "Mark as watched", act_to_want: "To wishlist", act_remove: "Remove from list",
+    already_watched_link: "Already seen it? Mark watched",
+    my_review: "My review", comment_ph: "Write a review…",
+    cast_title: "Cast", share_text: (title) => `Watch "${title}" on Addict Film`,
     confirm_remove: (t) => `Remove "${t}" from your list?`,
     search_start_t: "What are we watching?", search_start_s: "Type a title — at least 2 letters",
     search_toomany_t: "Too many requests", search_toomany_s: "Wait a minute and try again",
@@ -158,7 +166,12 @@ function posterTile(m, { onClick, badge } = {}) {
       ${b ? `<span class="rate">${b}</span>` : ""}
     </div>
     <div class="meta"><div class="t">${esc(m.title)}</div><div class="y">${esc(m.year || "")}</div></div>`;
-  if (onClick) card.onclick = onClick;
+  if (onClick) card.onclick = () => {
+    // Захватываем стартовую точку для hero-transition ДО того, как экран будет уничтожен.
+    const img = card.querySelector(".art img");
+    _heroSource = img && img.currentSrc ? { rect: card.querySelector(".art").getBoundingClientRect(), src: img.currentSrc } : null;
+    onClick();
+  };
   return card;
 }
 function gridOf(items, toCard) { const g = document.createElement("div"); g.className = "grid"; for (const it of items) g.appendChild(toCard(it)); return g; }
@@ -166,6 +179,7 @@ function openDetail(id, back) { if (back) _returnTo = back; showDetail(id); }
 
 // ── Главная ───────────────────────────────────────────────────────────────────
 async function showHome() {
+  unwireDetailScroll();
   window.scrollTo(0, 0);
   screen.innerHTML = `
     <header class="app-head rise d1">
@@ -228,6 +242,7 @@ function genreCard(g) {
   return card;
 }
 async function showGenre(name) {
+  unwireDetailScroll();
   window.scrollTo(0, 0);
   screen.innerHTML = `<div class="sub-head">${backBtn()}<h1>${esc(name)}</h1></div><div id="gg">${skeletonGrid(6)}</div>`;
   wireBack(() => { setActiveTab("home"); showHome(); });
@@ -243,6 +258,7 @@ async function showGenre(name) {
 // ── Личные списки ─────────────────────────────────────────────────────────────
 const STATUS_MAP = { want: "want_to_watch", watched: "watched", top: "top" };
 async function showList(tab) {
+  unwireDetailScroll();
   window.scrollTo(0, 0);
   const title = tab === "want" ? t("list_want") : tab === "watched" ? t("list_watched") : t("list_top");
   screen.innerHTML = `<div class="page-head"><h1>${esc(title)}</h1></div><div id="list">${skeletonGrid(6)}</div>`;
@@ -259,58 +275,243 @@ async function showList(tab) {
 }
 
 // ── Карточка фильма ───────────────────────────────────────────────────────────
+function initials(name) {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase() || "?";
+}
+function shareSvg() { return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v14"/></svg>`; }
+
+function unwireDetailScroll() {
+  if (_detailScrollHandler) { window.removeEventListener("scroll", _detailScrollHandler); _detailScrollHandler = null; }
+}
+function wireDetailScroll(backdropH) {
+  const backdrop = document.getElementById("d-backdrop-img");
+  const posterWrap = document.getElementById("d-poster-wrap");
+  const sticky = document.getElementById("d-sticky");
+  let ticking = false;
+  const onScroll = () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => {
+      const y = Math.max(0, window.scrollY);
+      const p = Math.min(1, y / backdropH);
+      if (backdrop) { backdrop.style.opacity = String(1 - p); backdrop.style.transform = `scale(${1 + p * 0.06})`; }
+      if (posterWrap) posterWrap.style.transform = `scale(${Math.max(.78, 1 - p * 0.22)})`;
+      if (sticky) sticky.classList.toggle("show", y > backdropH - 44);
+      ticking = false;
+    });
+  };
+  window.addEventListener("scroll", onScroll, { passive: true });
+  _detailScrollHandler = onScroll;
+}
+
+// Hero-transition: конкретный тайл каталога «превращается» в постер карточки.
+// Ghost-элемент — обычный <img>, летит transform-ом (только translate+scale) поверх
+// уже отрендеренного экрана; реальный постер на это время скрыт (opacity), чтобы
+// не было двойного изображения. Закрытие — см. closeDetailThen ниже.
+function runHeroTransition() {
+  if (!_heroSource) return;
+  const target = document.querySelector(".d-poster");
+  if (!target) { _heroSource = null; return; }
+  const endRect = target.getBoundingClientRect();
+  const startRect = _heroSource.rect;
+  const ghost = document.createElement("div");
+  ghost.className = "hero-ghost";
+  ghost.style.width = `${startRect.width}px`;
+  ghost.style.height = `${startRect.height}px`;
+  ghost.style.transform = `translate(${startRect.left}px,${startRect.top}px)`;
+  ghost.innerHTML = `<img src="${_heroSource.src}">`;
+  document.body.appendChild(ghost);
+  target.style.opacity = "0";
+  const sx = endRect.width / startRect.width, sy = endRect.height / startRect.height;
+  requestAnimationFrame(() => {
+    ghost.style.transition = "transform .32s cubic-bezier(.2,.8,.2,1)";
+    ghost.style.transform = `translate(${endRect.left}px,${endRect.top}px) scale(${sx},${sy})`;
+    ghost.addEventListener("transitionend", () => { ghost.remove(); target.style.opacity = "1"; }, { once: true });
+  });
+  _heroSource = null;
+}
+// Закрытие карточки: экран целиком уходит вниз со сжатием — архитектура приложения
+// не хранит предыдущий экран в DOM (полная перерисовка на каждой навигации), поэтому
+// точный обратный shared-element недостижим без переписывания роутинга; symmetric
+// по ощущению «сжатие в точку выхода» — тот же transform/opacity словарь, что и открытие.
+function closeDetailThen(fn) {
+  unwireDetailScroll();
+  const el = screen.querySelector(".detail-v2");
+  if (!el) { fn(); return; }
+  el.style.transition = "transform .22s cubic-bezier(.2,.8,.2,1), opacity .22s";
+  el.style.transformOrigin = "center top";
+  el.style.transform = "scale(.96) translateY(10px)";
+  el.style.opacity = "0";
+  setTimeout(fn, 190);
+}
+
 async function showDetail(id) {
+  unwireDetailScroll();
   window.scrollTo(0, 0);
-  screen.innerHTML = `<div class="detail"><div class="detail-top">${backBtn()}</div><div class="hero sk"></div><div class="sk sk-line wide"></div><div class="sk sk-line"></div></div>`;
-  wireBack(_returnTo);
+  screen.innerHTML = `<div class="detail-v2">
+    <div class="d-backdrop sk"></div>
+    <div class="d-body"><div class="d-poster-wrap"><div class="d-poster sk"></div></div>
+      <div class="sk sk-line wide"></div><div class="sk sk-line"></div></div>
+    <div class="d-floatctrls" style="position:fixed;top:0;left:0;right:0;padding:calc(10px + env(safe-area-inset-top)) 14px 0;z-index:41;">${backBtn()}</div>
+  </div>`;
+  wireBack(() => closeDetailThen(_returnTo));
   const m = await api(`/api/movie/${id}`);
-  const myRating = m.my_rating;
-  const inList = m.status != null;
-  const rateBtns = Array.from({ length: 10 }, (_, i) => i + 1).map(n => `<button data-n="${n}" class="${n === myRating ? "mine" : ""}">${n}</button>`).join("");
-  let actions;
-  if (m.status == null) actions = `<button data-set="want_to_watch" class="primary">${t("act_want")}</button><button data-set="watched">${t("act_watched")}</button>`;
-  else if (m.status === "want_to_watch") actions = `<button data-set="watched" class="primary">${t("act_watched")}</button><button id="del" class="danger">${t("act_remove")}</button>`;
-  else actions = `<button data-set="want_to_watch">${t("act_to_want")}</button><button id="del" class="danger">${t("act_remove")}</button>`;
-  const genreChips = (m.genres || "").split(",").map(g => g.trim()).filter(Boolean).map(g => `<span class="meta-chip">${esc(g)}</span>`).join("");
-  const ratingChips = [
-    m.kp_rating ? `<span class="rating-chip">КП <b>${esc(m.kp_rating)}</b></span>` : "",
-    m.imdb_rating ? `<span class="rating-chip">IMDb <b>${esc(m.imdb_rating)}</b></span>` : "",
-    (m.community && m.community.count) ? `<span class="rating-chip community">👥 <b>${m.community.avg}</b> <small>${m.community.count}</small></span>` : "",
-  ].join("");
+  renderDetail(id, m);
+}
+
+function renderDetail(id, m) {
+  const genres = (m.genres || "").split(",").map(g => g.trim()).filter(Boolean).join(" · ");
+  const metaParts = [m.year, m.age_rating, m.runtime].filter(Boolean);
+  const bdUrl = m.backdrop_url || m.poster_url;
+  const cast = (m.actors || "").split(",").map(a => a.trim()).filter(Boolean).slice(0, 10);
+
   screen.innerHTML = `
-    <div class="detail">
-      <div class="detail-top">${backBtn()}</div>
-      <div class="hero"><span class="hero-fallback">${esc(m.title)}</span>${m.poster_url ? `<img src="${posterSrc(m.poster_url)}" alt="" onerror="this.remove()">` : ""}</div>
-      <h2>${esc(m.title)}${m.year ? ` · ${esc(m.year)}` : ""}</h2>
-      ${genreChips || m.runtime ? `<div class="meta-chips">${genreChips}${m.runtime ? `<span class="meta-chip">⏱ ${esc(m.runtime)}</span>` : ""}</div>` : ""}
-      ${m.directors ? `<div class="meta-line">${esc(t("dir"))}${esc(m.directors)}</div>` : ""}
-      ${ratingChips ? `<div class="rating-chips">${ratingChips}</div>` : ""}
-      ${m.plot ? `<p class="plot">${esc(m.plot)}</p>` : ""}
-      <div class="rate-label">${esc(t("my_rating"))}${inList ? "" : esc(t("rate_hint"))}</div>
-      <div class="rate-row">${rateBtns}</div>
-      <div class="actions">${actions}</div>
+    <div class="detail-v2">
+      <div class="d-sticky" id="d-sticky">
+        <button class="d-ctrl" id="d-back-sticky" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
+        <span class="t">${esc(m.title)}</span>
+        <button class="d-ctrl" id="d-more-sticky" aria-label="Share">${shareSvg()}</button>
+      </div>
+      <div class="d-backdrop${bdUrl ? "" : " no-bd"}" id="d-backdrop">
+        ${bdUrl ? `<img id="d-backdrop-img" src="${posterSrc(bdUrl)}" alt="">` : ""}
+        <div class="d-scrim-t"></div><div class="d-scrim-b"></div>
+        <div class="d-floatctrls">
+          <button class="d-ctrl" id="d-back-top" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
+          <button class="d-ctrl" id="d-more-top" aria-label="Share">${shareSvg()}</button>
+        </div>
+      </div>
+      <div class="d-body">
+        <div class="d-poster-wrap" id="d-poster-wrap">
+          <div class="d-poster">
+            <span class="fb">${esc(m.title)}</span>
+            ${m.poster_url ? `<img src="${posterSrc(m.poster_url)}" alt="" onerror="this.remove()">` : ""}
+          </div>
+        </div>
+        <h1 class="d-title">${esc(m.title)}</h1>
+        ${m.title_original && m.title_original !== m.title ? `<div class="d-original">${esc(m.title_original)}</div>` : ""}
+        ${metaParts.length ? `<div class="d-meta">${metaParts.map(esc).join(" · ")}</div>` : ""}
+        ${genres ? `<div class="d-genres">${esc(genres)}</div>` : ""}
+        ${m.directors ? `<div class="d-director">${esc(t("dir"))}<b>${esc(m.directors)}</b></div>` : ""}
+        ${ratingsHTML(m)}
+        ${m.plot ? `<p class="d-overview">${esc(m.plot)}</p>` : ""}
+        <div id="d-actions"></div>
+        <div class="d-review" id="d-review">
+          <div class="d-review-h">${esc(t("my_review"))}</div>
+          <div class="d-stars" id="d-stars"></div>
+          <div id="d-comment-zone"></div>
+        </div>
+        ${cast.length ? `<div class="d-cast"><div class="d-cast-h"><h2>${esc(t("cast_title"))}</h2></div>
+          <div class="d-cast-rail">${cast.map(name => `<div class="d-cast-item"><div class="d-avatar">${esc(initials(name))}</div><div class="n">${esc(name)}</div></div>`).join("")}</div></div>` : ""}
+      </div>
     </div>`;
-  wireBack(_returnTo);
-  screen.querySelectorAll(".rate-row button").forEach(b => b.onclick = async () => {
+
+  renderStars(id, m);
+  renderComment(id, m);
+  renderActions(id, m);
+
+  const back = () => closeDetailThen(_returnTo);
+  document.getElementById("d-back-top").onclick = back;
+  document.getElementById("d-back-sticky").onclick = back;
+  document.getElementById("d-more-top").onclick = () => shareMovie(m);
+  document.getElementById("d-more-sticky").onclick = () => shareMovie(m);
+
+  const bdImg = document.getElementById("d-backdrop-img");
+  const startScroll = () => {
+    const h = document.getElementById("d-backdrop").getBoundingClientRect().height;
+    wireDetailScroll(h);
+    runHeroTransition();
+  };
+  if (bdImg && !bdImg.complete) bdImg.addEventListener("load", startScroll, { once: true });
+  else requestAnimationFrame(startScroll);
+}
+
+function ratingsHTML(m) {
+  const pills = [];
+  if (m.kp_rating) pills.push(`<div class="d-rpill"><div class="v">${esc(m.kp_rating)}</div><div class="l">КП</div></div>`);
+  if (m.imdb_rating) pills.push(`<div class="d-rpill"><div class="v">${esc(m.imdb_rating)}</div><div class="l">IMDb</div></div>`);
+  if (m.community && m.community.count) pills.push(`<div class="d-rpill accent"><div class="v">${esc(m.community.avg)}</div><div class="l">${lang === "ru" ? "Комьюнити" : "Community"}</div><div class="c">${m.community.count} ${lang === "ru" ? pl(m.community.count, ["оценка", "оценки", "оценок"]) : (m.community.count === 1 ? "rating" : "ratings")}</div></div>`);
+  return pills.length ? `<div class="d-ratings">${pills.join("")}</div>` : "";
+}
+
+function renderStars(id, m) {
+  const el = document.getElementById("d-stars");
+  if (!el) return;
+  el.innerHTML = Array.from({ length: 10 }, (_, i) => i + 1)
+    .map(n => `<button data-n="${n}" class="${n === m.my_rating ? "on" : ""}">${n}</button>`).join("");
+  el.querySelectorAll("button").forEach(b => b.onclick = async () => {
     tg.HapticFeedback?.impactOccurred("light");
-    await api(`/api/movie/${id}/rate`, { method: "POST", body: JSON.stringify({ rating: +b.dataset.n }) });
-    showDetail(id);
+    const n = +b.dataset.n;
+    await api(`/api/movie/${id}/rate`, { method: "POST", body: JSON.stringify({ rating: n }) });
+    m.my_rating = n;
+    if (m.status !== "watched") m.status = "watched";  // сервер неявно отмечает «Смотрел» при оценке
+    renderStars(id, m);
+    renderActions(id, m);
   });
-  screen.querySelectorAll(".actions button[data-set]").forEach(b => b.onclick = async () => {
+}
+
+function renderComment(id, m) {
+  const zone = document.getElementById("d-comment-zone");
+  if (!zone) return;
+  const has = !!(m.my_comment && m.my_comment.trim());
+  zone.innerHTML = `<div class="d-comment${has ? "" : " ph"}" id="d-comment-view">${has ? esc(m.my_comment) : esc(t("comment_ph"))}</div>`;
+  document.getElementById("d-comment-view").onclick = () => {
+    zone.innerHTML = `<textarea class="d-comment-input" id="d-comment-input" rows="1" placeholder="${esc(t("comment_ph"))}">${esc(m.my_comment || "")}</textarea>`;
+    const ta = document.getElementById("d-comment-input");
+    const grow = () => { ta.style.height = "auto"; ta.style.height = ta.scrollHeight + "px"; };
+    ta.addEventListener("input", grow); grow(); ta.focus();
+    const place = ta.value.length; ta.setSelectionRange(place, place);
+    ta.onblur = async () => {
+      const text = ta.value.trim();
+      if (text !== (m.my_comment || "").trim()) {
+        await api(`/api/movie/${id}/comment`, { method: "POST", body: JSON.stringify({ text }) });
+        m.my_comment = text;
+      }
+      renderComment(id, m);
+    };
+  };
+}
+
+function renderActions(id, m) {
+  const el = document.getElementById("d-actions");
+  if (!el) return;
+  // Share живёт только в плавающем контроле (виден на любой прокрутке) — не дублируем здесь.
+  if (m.status == null) {
+    el.innerHTML = `<div class="d-actions"><button class="d-cta primary" id="d-primary">${esc(t("act_want"))}</button></div>
+      <div class="d-status-links"><button id="d-quick-watched">${esc(t("already_watched_link"))}</button></div>`;
+  } else if (m.status === "want_to_watch") {
+    el.innerHTML = `<div class="d-actions"><button class="d-cta primary" id="d-primary">${esc(t("act_watched"))}</button></div>
+      <div class="d-status-links"><button class="danger" id="d-remove">${esc(t("act_remove"))}</button></div>`;
+  } else {
+    // status === "watched": ни одной filled-кнопки — звёздный рейтинг ниже становится
+    // единственным акцентным элементом (первичное взаимодействие сместилось на оценку).
+    el.innerHTML = `<div class="d-status-links"><button id="d-to-want">${esc(t("act_to_want"))}</button><button class="danger" id="d-remove">${esc(t("act_remove"))}</button></div>`;
+  }
+  const setStatus = async (status) => {
     tg.HapticFeedback?.impactOccurred("light");
-    await api(`/api/movie/${id}/status`, { method: "POST", body: JSON.stringify({ status: b.dataset.set }) });
-    showDetail(id);
-  });
-  const del = document.getElementById("del");
-  if (del) del.onclick = () => tg.showConfirm(t("confirm_remove", m.title), async ok => {
+    await api(`/api/movie/${id}/status`, { method: "POST", body: JSON.stringify({ status }) });
+    m.status = status;
+    renderActions(id, m);
+  };
+  document.getElementById("d-primary")?.addEventListener("click", () => setStatus(m.status == null ? "want_to_watch" : "watched"));
+  document.getElementById("d-quick-watched")?.addEventListener("click", () => setStatus("watched"));
+  document.getElementById("d-to-want")?.addEventListener("click", () => setStatus("want_to_watch"));
+  document.getElementById("d-remove")?.addEventListener("click", () => tg.showConfirm(t("confirm_remove", m.title), async ok => {
     if (!ok) return;
     await api(`/api/movie/${id}`, { method: "DELETE" });
-    showDetail(id);
-  });
+    m.status = null; m.my_rating = null; m.my_comment = null;
+    renderActions(id, m); renderStars(id, m); renderComment(id, m);
+  }));
+}
+
+function shareMovie(m) {
+  const url = "https://t.me/share/url?url=" + encodeURIComponent(m.share_link || "") + "&text=" + encodeURIComponent(t("share_text", m.title));
+  if (tg.openTelegramLink) tg.openTelegramLink(url); else window.open(url, "_blank");
 }
 
 // ── Поиск ─────────────────────────────────────────────────────────────────────
 function showSearch() {
+  unwireDetailScroll();
   window.scrollTo(0, 0);
   const start = emptyState("🔍", t("search_start_t"), t("search_start_s"));
   screen.innerHTML = `<div class="search-bar">${backBtn()}<input id="si" placeholder="${esc(t("search_ph"))}" autofocus></div><div id="sr">${start}</div>`;
@@ -352,6 +553,7 @@ function showSearch() {
 
 // ── Статистика (пара в приоритете сверху, личная — ниже) ──────────────────────
 async function showStats() {
+  unwireDetailScroll();
   window.scrollTo(0, 0);
   screen.innerHTML = `<div class="page-head"><h1>${esc(t("stats_title"))}</h1></div><div id="stats"><div class="empty"><div class="empty-sub">${esc(t("calc"))}</div></div></div>`;
   const box = document.getElementById("stats");
@@ -495,6 +697,7 @@ function sharePartnerLink(link) {
 }
 
 async function showAcceptInvite(param) {
+  unwireDetailScroll();
   window.scrollTo(0, 0);
   screen.innerHTML = `<div class="accept">
     <div class="accept-icon">💞</div>
@@ -537,6 +740,7 @@ if (!tg) {
       me = await api("/api/me");
       const sp = tg.initDataUnsafe?.start_param || "";
       if (sp.startsWith("inv_")) showAcceptInvite(sp);  // пришли по инвайт-ссылке
+      else if (sp.startsWith("film_")) openDetail(+sp.slice(5));  // пришли по ссылке «Поделиться» фильмом
       else showHome();
     } catch (e) {
       screen.innerHTML = emptyState("⛔", esc(e.message), t("auth_err_s"));
