@@ -245,7 +245,8 @@ async def fetch_details(src: str, ref: str) -> dict | None:
         imdb_id = kinopoisk.imdb_id_of(doc)
         poster_url = (doc.get("poster") or {}).get("url")
         # У КП постера нет — добираем из OMDb (с апскейлом), если есть настоящий imdb.
-        if not poster_url and imdb_id.startswith("tt"):
+        # Под дневным бюджетом: при исчерпании — не добираем (бекфил закроет позже).
+        if not poster_url and imdb_id.startswith("tt") and ratelimit.try_spend_search():
             poster_url = await posters.resolve_omdb(imdb_id)
         return {
             "imdb_id": imdb_id,
@@ -273,12 +274,13 @@ async def fetch_details(src: str, ref: str) -> dict | None:
     # У OMDb постера нет (частый N/A на нишевых/новых тайтлах) — добираем из
     # Кинопоиска: сперва по imdb, затем поиском по названию (OMDb порой чепляет
     # нишевый imdb-запись без постера, хотя КП знает фильм). Иначе — без картинки.
+    # Под дневным бюджетом kinopoisk: при исчерпании пропускаем добор (бекфил позже).
     poster_url = omdb.upscale_poster(data.get("Poster"))
-    if not poster_url:
+    if not poster_url and ratelimit.try_spend_search():
         kp = await kinopoisk.posters_by_imdb([data["imdbID"]])
         poster_url = kp.get(data["imdbID"])
-    if not poster_url:
-        poster_url = await posters.resolve_by_name(title, data.get("Year"), original)
+        if not poster_url:
+            poster_url = await posters.resolve_by_name(title, data.get("Year"), original)
     return {
         "imdb_id": data["imdbID"],
         "title": title,

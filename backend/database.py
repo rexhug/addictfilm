@@ -226,6 +226,15 @@ async def get_film(film_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+async def get_film_id_by_imdb(imdb_id: str) -> int | None:
+    """id фильма в каталоге по imdb_id, если уже есть (без вставки). Нужно, чтобы
+    /api/add не ходил в внешние API за фильмом, который уже в каталоге."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id FROM films WHERE imdb_id = ?", (imdb_id,))
+        row = await cur.fetchone()
+        return row[0] if row else None
+
+
 async def films_missing_poster(limit: int = 200) -> list[dict]:
     """Фильмы каталога без постера (poster_url NULL/пусто) — для бекфила.
     Возвращает [{id, imdb_id, title, title_original, year}] (последние два нужны

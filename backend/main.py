@@ -179,10 +179,18 @@ async def add(body: AddBody, user: dict = Depends(current_user)):
         raise HTTPException(status_code=422, detail="Неизвестный источник")
     if body.status not in ("want_to_watch", "watched"):
         raise HTTPException(status_code=422, detail="Неизвестный статус")
-    details = await search.fetch_details(body.src, body.ref)
-    if not details or not details.get("imdb_id"):
-        raise HTTPException(status_code=502, detail="Не удалось получить данные")
-    film_id = await db.get_or_create_film(**details)  # общий каталог, dedup по imdb_id
+    # Дедуп до внешних API: для src="i" ref == imdb_id, и если фильм уже в общем
+    # каталоге — линкуем сразу, не тратя лимит kinopoisk/OMDb (важно на публике,
+    # где один и тот же фильм добавляют многие). src="k" дешевле сам по себе
+    # (kinopoisk.get_movie отдаёт из in-memory кэша поиска).
+    film_id = None
+    if body.src == "i":
+        film_id = await db.get_film_id_by_imdb(body.ref)
+    if film_id is None:
+        details = await search.fetch_details(body.src, body.ref)
+        if not details or not details.get("imdb_id"):
+            raise HTTPException(status_code=502, detail="Не удалось получить данные")
+        film_id = await db.get_or_create_film(**details)  # общий каталог, dedup по imdb_id
     watched_at = datetime.now(timezone.utc).isoformat() if body.status == "watched" else None
     added = await db.add_to_list(user["id"], film_id, body.status, watched_at)
     await db.sync_film_to_partner(user["id"], film_id)  # пара: партнёру фильм в «Хочу»
