@@ -1,5 +1,6 @@
 fastapi
 uvicorn
 aiosqlite
+asyncpg
 aiohttp
 python-dotenv

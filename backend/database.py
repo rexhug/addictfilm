@@ -14,10 +14,14 @@ import os
 import re
 import secrets
 import aiosqlite
+import db_runtime
 from datetime import datetime, timezone, timedelta
+from config import DATABASE_URL
 
-# В облаке БД живёт на постоянном томе (DB_PATH=/data/movies.db), локально — рядом с проектом.
+# SQLite локально (DB_PATH=movies.db рядом с проектом); в облаке — Postgres (Neon)
+# через DATABASE_URL, см. db_runtime.py. DB_PATH используется только для SQLite-режима.
 DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "movies.db"))
+_PG = db_runtime.uses_postgres(DATABASE_URL)
 
 
 def _now() -> str:
@@ -26,14 +30,14 @@ def _now() -> str:
 
 # ── Инициализация ────────────────────────────────────────────────────────────
 async def init_db() -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         # WAL: чтение не блокирует запись — публичный трафик без «database is locked».
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA synchronous=NORMAL")
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                id         INTEGER PRIMARY KEY,          -- telegram user id
+                id         BIGINT PRIMARY KEY,          -- telegram user id (>int32, нужен BIGINT)
                 first_name TEXT,
                 username   TEXT,
                 created_at TEXT,
@@ -41,9 +45,11 @@ async def init_db() -> None:
             )
         """)
         # Общий каталог фильмов (кэш источников). Заполняется при добавлении/поиске.
-        await db.execute("""
+        # AUTOINCREMENT — SQLite-синтаксис; в Postgres автоинкремент даёт SERIAL.
+        _film_id_col = "SERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
+        await db.execute(f"""
             CREATE TABLE IF NOT EXISTS films (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                id             {_film_id_col},
                 imdb_id        TEXT UNIQUE NOT NULL,
                 title          TEXT NOT NULL,
                 title_original TEXT,
@@ -63,7 +69,7 @@ async def init_db() -> None:
         # Состояние фильма у пользователя. Одна оценка на пару (user, film).
         await db.execute("""
             CREATE TABLE IF NOT EXISTS user_films (
-                user_id    INTEGER NOT NULL,
+                user_id    BIGINT NOT NULL,               -- telegram user id (>int32)
                 film_id    INTEGER NOT NULL,
                 status     TEXT NOT NULL DEFAULT 'want_to_watch',  -- want_to_watch | watched
                 rating     INTEGER,                                 -- 1..10, NULL пока не оценил
@@ -87,7 +93,7 @@ async def init_db() -> None:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS partner_invites (
                 token      TEXT PRIMARY KEY,
-                from_user  INTEGER NOT NULL,
+                from_user  BIGINT NOT NULL,               -- telegram user id (>int32)
                 status     TEXT NOT NULL DEFAULT 'pending',  -- pending | accepted
                 created_at TEXT NOT NULL
             )
@@ -95,8 +101,8 @@ async def init_db() -> None:
         # Симметрично: для пары (a,b) две строки — a→b и b→a (лукап по user_id O(1)).
         await db.execute("""
             CREATE TABLE IF NOT EXISTS partners (
-                user_id    INTEGER PRIMARY KEY,
-                partner_id INTEGER NOT NULL,
+                user_id    BIGINT PRIMARY KEY,           -- telegram user id (>int32)
+                partner_id BIGINT NOT NULL,
                 since      TEXT NOT NULL
             )
         """)
@@ -111,7 +117,7 @@ async def init_db() -> None:
 # ── Постоянный кэш поиска ─────────────────────────────────────────────────────
 async def search_cache_get(q: str, max_age_sec: int) -> list | None:
     """Свежие (моложе max_age_sec) результаты поиска по нормализованному запросу, либо None."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT results, created_at FROM search_cache WHERE q = ?", (q,))
         row = await cur.fetchone()
@@ -130,7 +136,7 @@ async def search_cache_get(q: str, max_age_sec: int) -> list | None:
 
 
 async def search_cache_put(q: str, results: list) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         await db.execute(
             "INSERT INTO search_cache (q, results, created_at) VALUES (?,?,?) "
             "ON CONFLICT(q) DO UPDATE SET results = excluded.results, created_at = excluded.created_at",
@@ -142,19 +148,22 @@ async def purge_search_cache(max_age_sec: int) -> int:
     """Удалить протухшие записи кэша поиска (иначе таблица растёт без границы).
     Возвращает число удалённых строк."""
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_sec)).isoformat()
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute("DELETE FROM search_cache WHERE created_at < ?", (cutoff,))
         await db.commit()
         return cur.rowcount
 
 
 async def backup_db(keep: int = 7) -> str | None:
-    """Консистентный бэкап (VACUUM INTO) рядом с базой; храним последние `keep`."""
+    """Консистентный бэкап (VACUUM INTO) рядом с базой; храним последние `keep`.
+    SQLite-only — в Postgres (Neon) бэкапы делает сам провайдер (point-in-time restore)."""
+    if _PG:
+        return None
     dirname = os.path.dirname(os.path.abspath(DB_PATH))
     path = os.path.join(dirname, f"movies.backup-{datetime.now(timezone.utc):%Y%m%d}.db")
     if not os.path.exists(path):
         try:
-            async with aiosqlite.connect(DB_PATH) as db:
+            async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
                 await db.execute("VACUUM INTO ?", (path,))
         except Exception:
             return None
@@ -169,7 +178,7 @@ async def backup_db(keep: int = 7) -> str | None:
 # ── Пользователи ─────────────────────────────────────────────────────────────
 async def upsert_user(user: dict) -> None:
     """Регистрация/обновление любого пользователя Telegram (белого списка нет)."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         await db.execute(
             """
             INSERT INTO users (id, first_name, username, created_at, last_seen)
@@ -193,12 +202,13 @@ async def get_or_create_film(
 ) -> int:
     """Возвращает id фильма в общем каталоге, создавая запись при первом появлении
     (dedup по imdb_id). Идемпотентно — один фильм на всех пользователей."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT id FROM films WHERE imdb_id = ?", (imdb_id,))
         row = await cur.fetchone()
         if row:
             return row["id"]
+        # RETURNING id вместо lastrowid — портируемо (SQLite 3.35+ и Postgres одинаково).
         cur = await db.execute(
             """
             INSERT INTO films
@@ -206,20 +216,22 @@ async def get_or_create_film(
                  imdb_rating, kp_rating, imdb_votes, plot, poster_url, created_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(imdb_id) DO NOTHING
+            RETURNING id
             """,
             (imdb_id, title, title_original, year, genres, directors, actors, runtime,
              imdb_rating, kp_rating, imdb_votes, plot, poster_url, _now()),
         )
+        inserted = await cur.fetchone()
         await db.commit()
-        if cur.lastrowid:
-            return cur.lastrowid
+        if inserted:
+            return inserted["id"]
         # Гонка: кто-то вставил параллельно — перечитываем.
         cur = await db.execute("SELECT id FROM films WHERE imdb_id = ?", (imdb_id,))
         return (await cur.fetchone())["id"]
 
 
 async def get_film(film_id: int) -> dict | None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT * FROM films WHERE id = ?", (film_id,))
         row = await cur.fetchone()
@@ -229,7 +241,7 @@ async def get_film(film_id: int) -> dict | None:
 async def get_film_id_by_imdb(imdb_id: str) -> int | None:
     """id фильма в каталоге по imdb_id, если уже есть (без вставки). Нужно, чтобы
     /api/add не ходил в внешние API за фильмом, который уже в каталоге."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute("SELECT id FROM films WHERE imdb_id = ?", (imdb_id,))
         row = await cur.fetchone()
         return row[0] if row else None
@@ -239,7 +251,7 @@ async def films_missing_poster(limit: int = 200) -> list[dict]:
     """Фильмы каталога без постера (poster_url NULL/пусто) — для бекфила.
     Возвращает [{id, imdb_id, title, title_original, year}] (последние два нужны
     для добора по названию). Свежие сверху (чаще всего нужны первыми)."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, imdb_id, title, title_original, year FROM films "
@@ -251,7 +263,7 @@ async def films_missing_poster(limit: int = 200) -> list[dict]:
 async def set_film_poster(imdb_id: str, poster_url: str) -> bool:
     """Проставить постер фильму по imdb_id. Только если его ещё нет (бекфил не
     затирает уже найденное). True = запись обновлена."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute(
             "UPDATE films SET poster_url = ? "
             "WHERE imdb_id = ? AND (poster_url IS NULL OR poster_url = '')",
@@ -262,7 +274,7 @@ async def set_film_poster(imdb_id: str, poster_url: str) -> bool:
 
 async def community_rating(film_id: int) -> dict:
     """Средняя оценка всех пользователей по фильму + количество оценок."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute(
             "SELECT AVG(rating) AS avg, COUNT(rating) AS cnt FROM user_films "
             "WHERE film_id = ? AND rating IS NOT NULL", (film_id,))
@@ -275,7 +287,7 @@ async def community_rating(film_id: int) -> dict:
 async def add_to_list(user_id: int, film_id: int, status: str = "want_to_watch",
                       watched_at: str | None = None) -> bool:
     """Добавить фильм в свой список. False = уже был у этого пользователя."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute(
             """
             INSERT INTO user_films (user_id, film_id, status, added_at, watched_at)
@@ -289,7 +301,7 @@ async def add_to_list(user_id: int, film_id: int, status: str = "want_to_watch",
 
 
 async def get_user_film(user_id: int, film_id: int) -> dict | None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT * FROM user_films WHERE user_id = ? AND film_id = ?", (user_id, film_id))
@@ -300,7 +312,7 @@ async def get_user_film(user_id: int, film_id: int) -> dict | None:
 async def set_rating(user_id: int, film_id: int, rating: int) -> None:
     """Тап по оценке = «просмотрено» (урок). Оценка автоматически добавляет фильм
     в список пользователя, если его там ещё не было."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         await db.execute(
             """
             INSERT INTO user_films (user_id, film_id, status, rating, added_at, watched_at, rated_at)
@@ -319,7 +331,7 @@ async def set_rating(user_id: int, film_id: int, rating: int) -> None:
 async def set_status(user_id: int, film_id: int, status: str) -> None:
     """Сменить статус. Фильм появляется в списке, если его не было. Оценка сохраняется."""
     watched_at = _now() if status == "watched" else None
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         await db.execute(
             """
             INSERT INTO user_films (user_id, film_id, status, added_at, watched_at)
@@ -336,7 +348,7 @@ async def set_status(user_id: int, film_id: int, status: str) -> None:
 
 
 async def set_comment(user_id: int, film_id: int, text: str) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         await db.execute(
             """
             INSERT INTO user_films (user_id, film_id, status, comment, added_at)
@@ -349,7 +361,7 @@ async def set_comment(user_id: int, film_id: int, text: str) -> None:
 
 
 async def delete_comment(user_id: int, film_id: int) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         await db.execute(
             "UPDATE user_films SET comment = NULL WHERE user_id = ? AND film_id = ?",
             (user_id, film_id))
@@ -358,7 +370,7 @@ async def delete_comment(user_id: int, film_id: int) -> None:
 
 async def remove_from_list(user_id: int, film_id: int) -> None:
     """Убрать фильм из СВОЕГО списка. В общем каталоге films он остаётся."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         await db.execute(
             "DELETE FROM user_films WHERE user_id = ? AND film_id = ?", (user_id, film_id))
         await db.commit()
@@ -368,7 +380,7 @@ async def get_user_films(user_id: int, status: str, limit: int = 50, offset: int
                          sort: str = "date") -> list[dict]:
     """Список фильмов пользователя. status: want_to_watch | watched | top.
     top = просмотренные и оценённые этим юзером, по убыванию его оценки."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         base = """
             SELECT f.*, uf.status AS status, uf.rating AS my_rating,
@@ -394,7 +406,7 @@ async def get_user_films(user_id: int, status: str, limit: int = 50, offset: int
 
 
 async def count_user_films(user_id: int, status: str) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         if status == "top":
             cur = await db.execute(
                 "SELECT COUNT(*) FROM user_films WHERE user_id=? AND status='watched' "
@@ -406,7 +418,7 @@ async def count_user_films(user_id: int, status: str) -> int:
 
 
 async def get_random_want(user_id: int) -> dict | None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
@@ -420,7 +432,7 @@ async def get_random_want(user_id: int) -> dict | None:
 async def get_unrated_watched(user_id: int, since_days: int = 30, limit: int = 10) -> list[dict]:
     """Просмотренные за N дней, не оценённые пользователем (для напоминаний ботом)."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=since_days)).isoformat()
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
@@ -436,7 +448,7 @@ async def get_unrated_watched(user_id: int, since_days: int = 30, limit: int = 1
 async def get_user_stats(user_id: int) -> dict:
     """Личная статистика пользователя: счётчики, экранное время, средняя оценка,
     топ жанров/актёров/режиссёров (ничьи честно), итоги года."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
 
         watched = (await (await db.execute(
@@ -516,7 +528,7 @@ async def get_year_stats(user_id: int, year: int) -> dict:
     """Личные итоги года. Ничьи — честно: список лучших, «актёр года» только при
     единоличном лидерстве (урок: случайный «первый из пяти» — это ложь)."""
     like = f"{year}-%"
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
@@ -594,7 +606,7 @@ _BROWSE_COLS = """
 
 async def browse_popular(user_id: int, limit: int = 30, offset: int = 0) -> list[dict]:
     """Популярное: по числу пользователей, добавивших фильм."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             f"""
@@ -611,7 +623,7 @@ async def browse_top(user_id: int, limit: int = 30, offset: int = 0,
                      min_votes: int | None = None) -> list[dict]:
     """Топ спильноты: по средней оценке всех пользователей (min_votes — честный порог)."""
     mv = MIN_COMMUNITY_VOTES if min_votes is None else min_votes
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
@@ -633,7 +645,7 @@ async def browse_top(user_id: int, limit: int = 30, offset: int = 0,
 
 async def browse_by_genre(user_id: int, genre: str, limit: int = 30, offset: int = 0) -> list[dict]:
     """Каталог по жанру (подстрока в поле genres), по популярности."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             f"""
@@ -649,7 +661,7 @@ async def browse_by_genre(user_id: int, genre: str, limit: int = 30, offset: int
 
 async def list_genres() -> list[dict]:
     """Жанры, присутствующие в каталоге, по убыванию частоты: [{name, count}]."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT genres FROM films")
         counts: dict[str, int] = {}
@@ -663,7 +675,7 @@ async def list_genres() -> list[dict]:
 
 # ── Пара (Фаза E): приглашения, пары, совместная статистика ───────────────────
 async def get_user(user_id: int) -> dict | None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT id, first_name, username FROM users WHERE id = ?", (user_id,))
         row = await cur.fetchone()
@@ -671,7 +683,7 @@ async def get_user(user_id: int) -> dict | None:
 
 
 async def get_partner(user_id: int) -> int | None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute("SELECT partner_id FROM partners WHERE user_id = ?", (user_id,))
         row = await cur.fetchone()
         return row[0] if row else None
@@ -679,7 +691,7 @@ async def get_partner(user_id: int) -> int | None:
 
 async def get_pending_invite(from_user: int) -> str | None:
     """Токен своего активного (неиспользованного) приглашения, если есть."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute(
             "SELECT token FROM partner_invites WHERE from_user = ? AND status = 'pending' "
             "ORDER BY created_at DESC LIMIT 1", (from_user,))
@@ -693,7 +705,7 @@ async def create_invite(from_user: int) -> str:
     if existing:
         return existing
     token = secrets.token_urlsafe(12)
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         await db.execute(
             "INSERT INTO partner_invites (token, from_user, status, created_at) VALUES (?,?, 'pending', ?)",
             (token, from_user, _now()))
@@ -703,7 +715,7 @@ async def create_invite(from_user: int) -> str:
 
 async def accept_invite(token: str, accepting_user: int) -> dict:
     """Принять приглашение. reason: invalid | self | inviter_taken | already_paired | ok."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         inv = await (await db.execute(
             "SELECT from_user, status FROM partner_invites WHERE token = ?", (token,))).fetchone()
@@ -728,7 +740,7 @@ async def accept_invite(token: str, accepting_user: int) -> dict:
 
 async def unpair(user_id: int) -> None:
     partner = await get_partner(user_id)
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         ids = [user_id] + ([partner] if partner is not None else [])
         await db.execute(
             f"DELETE FROM partners WHERE user_id IN ({','.join('?' * len(ids))})", ids)
@@ -740,7 +752,7 @@ async def unpair(user_id: int) -> None:
 
 async def get_pair(user_id: int) -> dict | None:
     """Партнёр + момент создания пары (since) — граница «пар-периода»."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT partner_id, since FROM partners WHERE user_id = ?", (user_id,))
         row = await cur.fetchone()
@@ -761,7 +773,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
     посмотрели; оценки/гистограмма = оценки обоих; жанры/актёры — из оба-просмотренных."""
     year_now = datetime.now(timezone.utc).year
     like = f"{year_now}-%"
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             """

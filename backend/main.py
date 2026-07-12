@@ -18,13 +18,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import database as db
+import db_runtime
 import kinopoisk
 import omdb
 import posters
 import ratelimit
 import search
 from auth import validate_init_data
-from config import ADMIN_TOKEN, BOT_TOKEN
+from config import ADMIN_TOKEN, BOT_TOKEN, DATABASE_URL
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)  # урок: иначе лог распухает
@@ -36,9 +37,10 @@ FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 
 @app.on_event("startup")
 async def startup() -> None:
+    await db_runtime.start(DATABASE_URL)  # пул Postgres; для SQLite — no-op
     await db.init_db()
     await search.purge_expired()  # подчистить протухший кэш поиска при старте
-    logger.info("Database initialized")
+    logger.info("Database initialized (%s)", "Postgres" if DATABASE_URL else "SQLite")
 
 
 @app.on_event("shutdown")
@@ -48,6 +50,7 @@ async def shutdown() -> None:
             await mod.aclose()
         except Exception:  # noqa: BLE001
             pass
+    await db_runtime.close()
     global _img_session
     if _img_session and not _img_session.closed:
         await _img_session.close()
