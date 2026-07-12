@@ -18,5 +18,8 @@ OMDB_API_KEY: str = os.getenv("OMDB_API_KEY", "")
 # Postgres в проде (Neon), SQLite локально — см. db_runtime.py. Пусто → SQLite.
 DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip()
 
+# Мониторинг ошибок (Sentry, провижн через `fly ext sentry`). Пусто → выключен (локально).
+SENTRY_DSN: str = os.getenv("SENTRY_DSN", "").strip()
+
 # Токен обслуживания (бекфил постеров и т.п.). Пусто → админ-эндпоинты выключены.
 ADMIN_TOKEN: str = os.getenv("ADMIN_TOKEN", "")

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import aiohttp
+import sentry_sdk
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -25,11 +26,14 @@ import posters
 import ratelimit
 import search
 from auth import validate_init_data
-from config import ADMIN_TOKEN, BOT_TOKEN, DATABASE_URL
+from config import ADMIN_TOKEN, BOT_TOKEN, DATABASE_URL, SENTRY_DSN
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)  # урок: иначе лог распухает
 logger = logging.getLogger(__name__)
+
+if SENTRY_DSN:
+    sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=0.0, send_default_pii=False)
 
 app = FastAPI(title="Movie Mini App")
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")

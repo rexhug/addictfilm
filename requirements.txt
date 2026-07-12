@@ -4,3 +4,4 @@ aiosqlite
 asyncpg
 aiohttp
 python-dotenv
+sentry-sdk[fastapi]
