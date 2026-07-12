@@ -26,7 +26,7 @@ import posters
 import ratelimit
 import search
 from auth import validate_init_data
-from config import ADMIN_TOKEN, BOT_TOKEN, DATABASE_URL, SENTRY_DSN
+from config import ADMIN_TOKEN, ADMIN_USER_IDS, BOT_TOKEN, DATABASE_URL, SENTRY_DSN
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)  # урок: иначе лог распухает
@@ -77,11 +77,28 @@ async def healthz():
     return {"ok": True}
 
 
+async def _effective_role(user_id: int) -> str | None:
+    """"admin" — если id в ADMIN_USER_IDS (bootstrap-секрет, всегда есть, не зависит
+    от БД); иначе — роль из users.role ("editor"/"admin", назначается вручную)."""
+    if user_id in ADMIN_USER_IDS:
+        return "admin"
+    return await db.get_user_role(user_id)
+
+
+async def require_editor(user: dict = Depends(current_user)) -> dict:
+    """Гейт для in-app админки подборок — по самому Telegram-юзеру (не по токену,
+    как require_admin ниже — тот для curl/скриптов обслуживания)."""
+    role = await _effective_role(user["id"])
+    if role not in ("editor", "admin"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    return user
+
+
 # ── API: список пользователя ──────────────────────────────────────────────────
 @app.get("/api/me")
 async def me(user: dict = Depends(current_user)):
     return {"id": user["id"], "label": user.get("first_name", ""),
-            "username": user.get("username")}
+            "username": user.get("username"), "role": await _effective_role(user["id"])}
 
 
 @app.get("/api/movies")
@@ -188,6 +205,21 @@ async def api_search(q: str, user: dict = Depends(current_user)):
     return {"items": res["items"], "limited": res["limited"]}
 
 
+async def _resolve_film_id(src: str, ref: str) -> int:
+    """Дедуп до внешних API + fetch_details + get_or_create_film — общий путь для
+    /api/add и /api/admin/collections/{id}/films. Для src="i" ref == imdb_id, и если
+    фильм уже в общем каталоге — линкуем сразу, не тратя лимит kinopoisk/OMDb."""
+    film_id = None
+    if src == "i":
+        film_id = await db.get_film_id_by_imdb(ref)
+    if film_id is None:
+        details = await search.fetch_details(src, ref)
+        if not details or not details.get("imdb_id"):
+            raise HTTPException(status_code=502, detail="Не удалось получить данные")
+        film_id = await db.get_or_create_film(**details)  # общий каталог, dedup по imdb_id
+    return film_id
+
+
 class AddBody(BaseModel):
     src: str
     ref: str
@@ -200,18 +232,7 @@ async def add(body: AddBody, user: dict = Depends(current_user)):
         raise HTTPException(status_code=422, detail="Неизвестный источник")
     if body.status not in ("want_to_watch", "watched"):
         raise HTTPException(status_code=422, detail="Неизвестный статус")
-    # Дедуп до внешних API: для src="i" ref == imdb_id, и если фильм уже в общем
-    # каталоге — линкуем сразу, не тратя лимит kinopoisk/OMDb (важно на публике,
-    # где один и тот же фильм добавляют многие). src="k" дешевле сам по себе
-    # (kinopoisk.get_movie отдаёт из in-memory кэша поиска).
-    film_id = None
-    if body.src == "i":
-        film_id = await db.get_film_id_by_imdb(body.ref)
-    if film_id is None:
-        details = await search.fetch_details(body.src, body.ref)
-        if not details or not details.get("imdb_id"):
-            raise HTTPException(status_code=502, detail="Не удалось получить данные")
-        film_id = await db.get_or_create_film(**details)  # общий каталог, dedup по imdb_id
+    film_id = await _resolve_film_id(body.src, body.ref)
     watched_at = datetime.now(timezone.utc).isoformat() if body.status == "watched" else None
     added = await db.add_to_list(user["id"], film_id, body.status, watched_at)
     await db.sync_film_to_partner(user["id"], film_id)  # пара: партнёру фильм в «Хочу»
@@ -253,6 +274,62 @@ async def browse(sort: str = "popular", genre: str = "", limit: int = 30,
 @app.get("/api/genres")
 async def genres(user: dict = Depends(current_user)):
     return {"items": await db.list_genres()}
+
+
+# ── API: подборки (кураторские коллекции — публичный просмотр + in-app админка) ─
+@app.get("/api/collections")
+async def collections_list(user: dict = Depends(current_user)):
+    return {"items": await db.list_collections()}
+
+
+@app.get("/api/collections/{collection_id}")
+async def collection_detail(collection_id: int, user: dict = Depends(current_user)):
+    c = await db.get_collection(collection_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Подборка не найдена")
+    c["items"] = await db.get_collection_films(collection_id, user["id"])
+    return c
+
+
+class CollectionBody(BaseModel):
+    title: str
+
+
+@app.post("/api/admin/collections", dependencies=[Depends(require_editor)])
+async def collection_create(body: CollectionBody, user: dict = Depends(current_user)):
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Пустое название")
+    return {"id": await db.create_collection(title[:80], user["id"])}
+
+
+@app.delete("/api/admin/collections/{collection_id}", dependencies=[Depends(require_editor)])
+async def collection_delete(collection_id: int):
+    await db.delete_collection(collection_id)
+    return {"ok": True}
+
+
+class CollectionAddBody(BaseModel):
+    src: str
+    ref: str
+
+
+@app.post("/api/admin/collections/{collection_id}/films", dependencies=[Depends(require_editor)])
+async def collection_add_film(collection_id: int, body: CollectionAddBody):
+    if body.src not in ("k", "i"):
+        raise HTTPException(status_code=422, detail="Неизвестный источник")
+    if not await db.get_collection(collection_id):
+        raise HTTPException(status_code=404, detail="Подборка не найдена")
+    film_id = await _resolve_film_id(body.src, body.ref)
+    added = await db.add_film_to_collection(collection_id, film_id)
+    return {"ok": True, "added": added, "movie_id": film_id}
+
+
+@app.delete("/api/admin/collections/{collection_id}/films/{film_id}",
+            dependencies=[Depends(require_editor)])
+async def collection_remove_film(collection_id: int, film_id: int):
+    await db.remove_film_from_collection(collection_id, film_id)
+    return {"ok": True}
 
 
 # ── API: пара (партнёрство) ───────────────────────────────────────────────────

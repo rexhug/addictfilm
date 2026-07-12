@@ -43,11 +43,12 @@ async def _add_column_if_missing(table: str, col_def: str) -> None:
 
 # ── Инициализация ────────────────────────────────────────────────────────────
 async def init_db() -> None:
-    # Миграция для БД, созданных до backdrop_url/age_rating/actors_photos — до
+    # Миграция для БД, созданных до backdrop_url/age_rating/actors_photos/role — до
     # основного блока и в изолированных транзакциях (см. _add_column_if_missing).
     await _add_column_if_missing("films", "backdrop_url TEXT")
     await _add_column_if_missing("films", "age_rating TEXT")
     await _add_column_if_missing("films", "actors_photos TEXT")
+    await _add_column_if_missing("users", "role TEXT")
 
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         # WAL: чтение не блокирует запись — публичный трафик без «database is locked».
@@ -136,11 +137,30 @@ async def init_db() -> None:
                 since      TEXT NOT NULL
             )
         """)
+        # ── Подборки (кураторские коллекции фильмов от админа/редактора) ────────
+        _coll_id_col = "SERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
+        await db.execute(f"""
+            CREATE TABLE IF NOT EXISTS collections (
+                id         {_coll_id_col},
+                title      TEXT NOT NULL,
+                created_by BIGINT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS collection_films (
+                collection_id INTEGER NOT NULL,
+                film_id       INTEGER NOT NULL,
+                added_at      TEXT NOT NULL,
+                PRIMARY KEY (collection_id, film_id)
+            )
+        """)
 
         # Индексы под горячие запросы: список юзера и community-агрегат по фильму.
         await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_user ON user_films(user_id, status)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_film ON user_films(film_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_invite_from ON partner_invites(from_user, status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_cf_collection ON collection_films(collection_id)")
         await db.commit()
 
 
@@ -262,7 +282,7 @@ async def get_or_create_film(
                 (imdb_id, title, title_original, year, genres, directors, actors, runtime,
                  imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
                  actors_photos, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(imdb_id) DO NOTHING
             RETURNING id
             """,
@@ -997,3 +1017,89 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         "agreement": agreement, "rated_together": len(rated),
         "matches": matches, "controversial": controversial, "best": best,
     }
+
+
+# ── Подборки (кураторские коллекции) ───────────────────────────────────────────
+async def get_user_role(user_id: int) -> str | None:
+    """Роль из БД (назначается вручную админом) — отдельно от ADMIN_USER_IDS (main.py)."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute("SELECT role FROM users WHERE id = ?", (user_id,))
+        row = await cur.fetchone()
+        return row[0] if row else None
+
+
+async def list_collections() -> list[dict]:
+    """Все подборки: id, title, film_count, cover (постер первого добавленного фильма)."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("""
+            SELECT c.id, c.title,
+                   (SELECT COUNT(*) FROM collection_films WHERE collection_id = c.id) AS film_count,
+                   (SELECT f.poster_url FROM collection_films cf JOIN films f ON f.id = cf.film_id
+                    WHERE cf.collection_id = c.id ORDER BY cf.added_at ASC LIMIT 1) AS cover
+            FROM collections c
+            ORDER BY c.created_at DESC
+        """)
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def create_collection(title: str, created_by: int) -> int:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "INSERT INTO collections (title, created_by, created_at) VALUES (?,?,?) RETURNING id",
+            (title, created_by, _now()))
+        row = await cur.fetchone()
+        await db.commit()
+        return row["id"]
+
+
+async def delete_collection(collection_id: int) -> None:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute("DELETE FROM collection_films WHERE collection_id = ?", (collection_id,))
+        await db.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+        await db.commit()
+
+
+async def get_collection(collection_id: int) -> dict | None:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT id, title FROM collections WHERE id = ?", (collection_id,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def add_film_to_collection(collection_id: int, film_id: int) -> bool:
+    """True — фильм реально добавлен (не был в подборке раньше)."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "INSERT INTO collection_films (collection_id, film_id, added_at) VALUES (?,?,?) "
+            "ON CONFLICT(collection_id, film_id) DO NOTHING RETURNING film_id",
+            (collection_id, film_id, _now()))
+        row = await cur.fetchone()
+        await db.commit()
+        return row is not None
+
+
+async def remove_film_from_collection(collection_id: int, film_id: int) -> None:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute(
+            "DELETE FROM collection_films WHERE collection_id = ? AND film_id = ?",
+            (collection_id, film_id))
+        await db.commit()
+
+
+async def get_collection_films(collection_id: int, user_id: int) -> list[dict]:
+    """Фильмы подборки в порядке добавления куратором — тот же формат, что browse_*
+    (community-рейтинг + мой статус), чтобы фронтенд переиспользовал posterTile()."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"""
+            SELECT {_BROWSE_COLS}
+            FROM films f
+            JOIN collection_films cf ON cf.film_id = f.id AND cf.collection_id = ?
+            LEFT JOIN user_films me ON me.film_id = f.id AND me.user_id = ?
+            ORDER BY cf.added_at ASC
+            """, (collection_id, user_id))
+        return [_browse_dict(r) for r in await cur.fetchall()]
