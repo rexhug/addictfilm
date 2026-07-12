@@ -151,6 +151,29 @@ async def ratings_by_imdb(imdb_ids: list[str]) -> dict[str, float]:
     return out
 
 
+async def posters_by_imdb(imdb_ids: list[str]) -> dict[str, str]:
+    """Постеры Кинопоиска по списку IMDb ID: {imdb_id: poster_url}. Батчами (для бекфила).
+    Возвращает только реально найденные постеры (без previewUrl-заглушек)."""
+    ids = [i for i in imdb_ids if i and i.startswith("tt")]
+    if not KINOPOISK_TOKENS or not ids:
+        return {}
+    out: dict[str, str] = {}
+    for start in range(0, len(ids), 40):
+        chunk = ids[start:start + 40]
+        params = [("externalId.imdb", x) for x in chunk]
+        params += [("selectFields", "externalId"), ("selectFields", "poster"),
+                   ("limit", "250"), ("page", "1")]
+        data = await _request("/movie", params)
+        if not data:
+            continue
+        for m in data.get("docs", []):
+            imdb = (m.get("externalId") or {}).get("imdb")
+            url = (m.get("poster") or {}).get("url")
+            if imdb and url:
+                out[imdb] = url
+    return out
+
+
 async def credits_by_imdb(imdb_ids: list[str]) -> dict[str, tuple[str | None, str | None]]:
     """(режиссёры, актёры) по списку IMDb ID: {imdb_id: (directors, actors)}. Для бекфила."""
     ids = [i for i in imdb_ids if i and i.startswith("tt")]

@@ -16,6 +16,7 @@ import time
 import database as db
 import kinopoisk
 import omdb
+import posters
 import ratelimit
 import wikidata
 from config import KINOPOISK_TOKEN
@@ -241,8 +242,13 @@ async def fetch_details(src: str, ref: str) -> dict | None:
         original = doc.get("alternativeName")
         length = doc.get("movieLength") or doc.get("seriesLength")
         directors, actors = kinopoisk.extract_credits(doc.get("persons") or [])
+        imdb_id = kinopoisk.imdb_id_of(doc)
+        poster_url = (doc.get("poster") or {}).get("url")
+        # У КП постера нет — добираем из OMDb (с апскейлом), если есть настоящий imdb.
+        if not poster_url and imdb_id.startswith("tt"):
+            poster_url = await posters.resolve_omdb(imdb_id)
         return {
-            "imdb_id": kinopoisk.imdb_id_of(doc),
+            "imdb_id": imdb_id,
             "title": name,
             "title_original": original if original and original != name else None,
             "year": str(doc["year"]) if doc.get("year") else None,
@@ -254,7 +260,7 @@ async def fetch_details(src: str, ref: str) -> dict | None:
             "kp_rating": f"{r['kp']:.1f}" if r.get("kp") else None,
             "imdb_votes": str(v["imdb"]) if v.get("imdb") else None,
             "plot": doc.get("description") or doc.get("shortDescription"),
-            "poster_url": (doc.get("poster") or {}).get("url"),
+            "poster_url": poster_url,
         }
 
     # src == "i": OMDb + официальное русское название из Wikidata.
@@ -277,5 +283,5 @@ async def fetch_details(src: str, ref: str) -> dict | None:
         "kp_rating": None,
         "imdb_votes": _clean(data.get("imdbVotes")),
         "plot": _clean(data.get("Plot")),
-        "poster_url": _clean(data.get("Poster")),
+        "poster_url": omdb.upscale_poster(data.get("Poster")),
     }

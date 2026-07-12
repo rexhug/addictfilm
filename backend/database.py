@@ -226,6 +226,30 @@ async def get_film(film_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+async def films_missing_poster(limit: int = 200) -> list[dict]:
+    """Фильмы каталога без постера (poster_url NULL/пусто) — для бекфила.
+    Возвращает [{id, imdb_id, title}]. Свежие сверху (чаще всего нужны первыми)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT id, imdb_id, title FROM films "
+            "WHERE poster_url IS NULL OR poster_url = '' "
+            "ORDER BY id DESC LIMIT ?", (limit,))
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def set_film_poster(imdb_id: str, poster_url: str) -> bool:
+    """Проставить постер фильму по imdb_id. Только если его ещё нет (бекфил не
+    затирает уже найденное). True = запись обновлена."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "UPDATE films SET poster_url = ? "
+            "WHERE imdb_id = ? AND (poster_url IS NULL OR poster_url = '')",
+            (poster_url, imdb_id))
+        await db.commit()
+        return cur.rowcount > 0
+
+
 async def community_rating(film_id: int) -> dict:
     """Средняя оценка всех пользователей по фильму + количество оценок."""
     async with aiosqlite.connect(DB_PATH) as db:

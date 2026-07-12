@@ -14,3 +14,6 @@ KINOPOISK_TOKENS: list[str] = [t.strip() for t in os.getenv("KINOPOISK_TOKEN", "
 KINOPOISK_TOKEN: str = KINOPOISK_TOKENS[0] if KINOPOISK_TOKENS else ""  # для проверок «есть ли ключ»
 
 OMDB_API_KEY: str = os.getenv("OMDB_API_KEY", "")
+
+# Токен обслуживания (бекфил постеров и т.п.). Пусто → админ-эндпоинты выключены.
+ADMIN_TOKEN: str = os.getenv("ADMIN_TOKEN", "")

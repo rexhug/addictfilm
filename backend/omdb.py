@@ -37,6 +37,20 @@ def _has_cyrillic(text: str) -> bool:
     return bool(re.search("[а-яА-ЯёЁіІїЇєЄ]", text))
 
 
+# OMDb отдаёт постеры Amazon в мелком размере (…._V1_SX300.jpg). Amazon-хостинг
+# рендерит любой размер по модификатору между «._V1_» и расширением — просим
+# ширину пошире, чтобы постер не был мыльным на retina. Не-Amazon URL не трогаем.
+_AMZ_POSTER_RE = re.compile(r"(\._V1_).*?(\.(?:jpg|jpeg|png|webp))$", re.IGNORECASE)
+_UPSCALE_WIDTH = 600
+
+
+def upscale_poster(url: str | None, width: int = _UPSCALE_WIDTH) -> str | None:
+    """URL постера OMDb/Amazon в бо́льшем разрешении (SX{width}). Прочие URL — как есть."""
+    if not url or url == "N/A":
+        return None
+    return _AMZ_POSTER_RE.sub(rf"\g<1>SX{width}\g<2>", url)
+
+
 def _translate_sync(text: str) -> str | None:
     try:
         from deep_translator import GoogleTranslator

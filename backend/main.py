@@ -20,10 +20,11 @@ from pydantic import BaseModel
 import database as db
 import kinopoisk
 import omdb
+import posters
 import ratelimit
 import search
 from auth import validate_init_data
-from config import BOT_TOKEN
+from config import ADMIN_TOKEN, BOT_TOKEN
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)  # урок: иначе лог распухает
@@ -285,6 +286,22 @@ async def partner_stats(user: dict = Depends(current_user)):
     s = await db.pair_period_stats(user["id"], pair["partner_id"], pair["since"])
     s["partner"] = _partner_brief(await db.get_user(pair["partner_id"]))
     return s
+
+
+# ── Обслуживание (админ по ADMIN_TOKEN) ──────────────────────────────────────
+def require_admin(x_admin_token: str = Header(default="")) -> None:
+    """Гейт для служебных эндпоинтов. Без заданного ADMIN_TOKEN — выключены (404)."""
+    if not ADMIN_TOKEN:
+        raise HTTPException(status_code=404, detail="Not found")
+    if x_admin_token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Не авторизован")
+
+
+@app.post("/api/admin/backfill-posters", dependencies=[Depends(require_admin)])
+async def backfill_posters(limit: int = 200, omdb_cap: int = 60):
+    """Добрать постеры фильмам без картинки (kinopoisk → OMDb). Идемпотентно;
+    вызывать повторно, пока remaining не станет 0."""
+    return await posters.backfill(limit=limit, _omdb_cap=omdb_cap)
 
 
 # ── Прокси постеров (обходит блокировку CDN на стороне клиента) ───────────────
