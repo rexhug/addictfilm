@@ -95,25 +95,24 @@ class PostgresCursor:
 
 
 class PostgresConnection:
-    """Адаптер asyncpg под используемый в проекте интерфейс aiosqlite."""
+    """Адаптер asyncpg под используемый в проекте интерфейс aiosqlite.
 
-    def __init__(self, connection: Any):
+    Каждое соединение оборачивается в реальную asyncpg-транзакцию (см. connect()):
+    несколько execute() внутри одного `async with connect()` — атомарны и невидимы
+    другим соединениям до явного commit(). Это тот же контракт, что у SQLite/aiosqlite
+    (где withoutCommit == потеря изменений) — код прикладного слоя не меняется.
+    """
+
+    def __init__(self, connection: Any, transaction: Any):
         self._connection = connection
-        self._in_transaction = False
+        self._transaction = transaction
+        self._done = False  # commit()/rollback() уже вызывали (или это сделает connect() сам)
         self.row_factory: Any = None
 
     async def execute(self, sql: str, parameters: Sequence[Any] = ()) -> PostgresCursor:
         statement = sql.strip()
         normalized = " ".join(statement.upper().split())
         if normalized.startswith("PRAGMA "):
-            return PostgresCursor()
-        if normalized == "BEGIN IMMEDIATE":
-            await self._connection.execute("BEGIN")
-            self._in_transaction = True
-            return PostgresCursor()
-        if normalized == "BEGIN":
-            await self._connection.execute("BEGIN")
-            self._in_transaction = True
             return PostgresCursor()
 
         statement = _postgres_sql(sql)
@@ -125,24 +124,44 @@ class PostgresConnection:
         return PostgresCursor(rowcount=_rowcount(status))
 
     async def commit(self) -> None:
-        if self._in_transaction:
-            await self._connection.execute("COMMIT")
-            self._in_transaction = False
+        if not self._done:
+            await self._transaction.commit()
+            self._done = True
 
     async def rollback(self) -> None:
-        if self._in_transaction:
-            await self._connection.execute("ROLLBACK")
-            self._in_transaction = False
+        if not self._done:
+            await self._transaction.rollback()
+            self._done = True
 
 
 @asynccontextmanager
 async def connect(sqlite_path: str, database_url: str) -> AsyncIterator[Any]:
-    """Возвращает соединение выбранной БД; SQLite остаётся локальным режимом."""
+    """Возвращает соединение выбранной БД; SQLite остаётся локальным режимом.
+
+    Postgres-ветка держит одну реальную транзакцию на весь блок `async with`:
+    без явного commit() изменения теряются (откат) — как и у SQLite. Раньше
+    каждый execute() коммитился в Postgres сам по себе (autocommit), из-за чего
+    многошаговые операции (например, приём приглашения в пару) не были атомарны
+    между несколькими Fly-машинами.
+    """
     if uses_postgres(database_url):
         if _pool is None:
             await start(database_url)
         async with _pool.acquire() as connection:
-            yield PostgresConnection(connection)
+            tr = connection.transaction()
+            await tr.start()
+            conn = PostgresConnection(connection, tr)
+            try:
+                yield conn
+            except BaseException:
+                if not conn._done:
+                    await tr.rollback()
+                    conn._done = True
+                raise
+            else:
+                if not conn._done:  # забыли commit() — откатываем, а не тихо теряем контракт
+                    await tr.rollback()
+                    conn._done = True
         return
 
     async with aiosqlite.connect(sqlite_path) as connection:

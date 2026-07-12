@@ -760,29 +760,51 @@ async def create_invite(from_user: int) -> str:
     return token
 
 
+class _InviteRejected(Exception):
+    """Внутренний control-flow для accept_invite — прерывает транзакцию (rollback)."""
+    def __init__(self, reason: str):
+        self.reason = reason
+
+
 async def accept_invite(token: str, accepting_user: int) -> dict:
-    """Принять приглашение. reason: invalid | self | inviter_taken | already_paired | ok."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        inv = await (await db.execute(
-            "SELECT from_user, status FROM partner_invites WHERE token = ?", (token,))).fetchone()
-        if not inv or inv["status"] != "pending":
-            return {"ok": False, "reason": "invalid"}
-        from_user = inv["from_user"]
-        if from_user == accepting_user:
-            return {"ok": False, "reason": "self"}
-        if await get_partner(from_user) is not None:
-            return {"ok": False, "reason": "inviter_taken"}
-        if await get_partner(accepting_user) is not None:
-            return {"ok": False, "reason": "already_paired"}
-        now = _now()
-        await db.execute("INSERT OR REPLACE INTO partners (user_id, partner_id, since) VALUES (?,?,?)",
-                         (from_user, accepting_user, now))
-        await db.execute("INSERT OR REPLACE INTO partners (user_id, partner_id, since) VALUES (?,?,?)",
-                         (accepting_user, from_user, now))
-        await db.execute("UPDATE partner_invites SET status='accepted' WHERE token = ?", (token,))
-        await db.commit()
-        return {"ok": True, "partner_id": from_user}
+    """Принять приглашение. reason: invalid | self | inviter_taken | already_paired | ok.
+
+    Атомарно на одном соединении/транзакции (важно на 2+ Fly-машинах): проверка
+    "уже в паре" — это не отдельный SELECT перед INSERT (гонка), а сам INSERT ...
+    ON CONFLICT DO NOTHING RETURNING — если у user_id уже есть партнёр (PRIMARY
+    KEY), вставка молча не пройдёт и мы это увидим по пустому RETURNING.
+    """
+    try:
+        async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "UPDATE partner_invites SET status='accepted' WHERE token = ? AND status = 'pending' "
+                "RETURNING from_user", (token,))
+            row = await cur.fetchone()
+            if not row:
+                raise _InviteRejected("invalid")
+            from_user = row["from_user"]
+            if from_user == accepting_user:
+                raise _InviteRejected("self")
+
+            now = _now()
+            cur1 = await db.execute(
+                "INSERT INTO partners (user_id, partner_id, since) VALUES (?,?,?) "
+                "ON CONFLICT(user_id) DO NOTHING RETURNING user_id",
+                (from_user, accepting_user, now))
+            if not await cur1.fetchone():
+                raise _InviteRejected("inviter_taken")
+            cur2 = await db.execute(
+                "INSERT INTO partners (user_id, partner_id, since) VALUES (?,?,?) "
+                "ON CONFLICT(user_id) DO NOTHING RETURNING user_id",
+                (accepting_user, from_user, now))
+            if not await cur2.fetchone():
+                raise _InviteRejected("already_paired")
+
+            await db.commit()
+            return {"ok": True, "partner_id": from_user}
+    except _InviteRejected as e:
+        return {"ok": False, "reason": e.reason}
 
 
 async def unpair(user_id: int) -> None:
