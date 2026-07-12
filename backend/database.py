@@ -28,8 +28,26 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+async def _add_column_if_missing(table: str, col_def: str) -> None:
+    """ALTER TABLE ADD COLUMN, идемпотентно. Каждая попытка — В СВОЁМ соединении/
+    транзакции: под Postgres любая ошибка (например «колонка уже есть») переводит
+    ВСЮ транзакцию в aborted-состояние — если бы это было внутри общего блока
+    init_db(), она утянула бы за собой все последующие CREATE TABLE IF NOT EXISTS."""
+    try:
+        async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
+            await db.commit()
+    except Exception:
+        pass
+
+
 # ── Инициализация ────────────────────────────────────────────────────────────
 async def init_db() -> None:
+    # Миграция для БД, созданных до backdrop_url/age_rating — до основного блока
+    # и в изолированных транзакциях (см. _add_column_if_missing).
+    await _add_column_if_missing("films", "backdrop_url TEXT")
+    await _add_column_if_missing("films", "age_rating TEXT")
+
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         # WAL: чтение не блокирует запись — публичный трафик без «database is locked».
         await db.execute("PRAGMA journal_mode=WAL")
@@ -63,6 +81,8 @@ async def init_db() -> None:
                 imdb_votes     TEXT,
                 plot           TEXT,
                 poster_url     TEXT,
+                backdrop_url   TEXT,
+                age_rating     TEXT,
                 created_at     TEXT
             )
         """)
@@ -223,6 +243,7 @@ async def get_or_create_film(
     runtime: str | None = None, imdb_rating: str | None = None, imdb_votes: str | None = None,
     plot: str | None = None, poster_url: str | None = None, title_original: str | None = None,
     kp_rating: str | None = None, directors: str | None = None, actors: str | None = None,
+    backdrop_url: str | None = None, age_rating: str | None = None,
 ) -> int:
     """Возвращает id фильма в общем каталоге, создавая запись при первом появлении
     (dedup по imdb_id). Идемпотентно — один фильм на всех пользователей."""
@@ -237,13 +258,13 @@ async def get_or_create_film(
             """
             INSERT INTO films
                 (imdb_id, title, title_original, year, genres, directors, actors, runtime,
-                 imdb_rating, kp_rating, imdb_votes, plot, poster_url, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(imdb_id) DO NOTHING
             RETURNING id
             """,
             (imdb_id, title, title_original, year, genres, directors, actors, runtime,
-             imdb_rating, kp_rating, imdb_votes, plot, poster_url, _now()),
+             imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating, _now()),
         )
         inserted = await cur.fetchone()
         await db.commit()

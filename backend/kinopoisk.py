@@ -29,9 +29,16 @@ _FIELDS = [
     "id", "name", "alternativeName", "year", "type", "description",
     "shortDescription", "movieLength", "seriesLength",
     "rating.kp", "rating.imdb", "votes.imdb",
-    "poster.url", "poster.previewUrl", "genres.name", "externalId.imdb",
+    "poster.url", "poster.previewUrl", "backdrop.url",
+    "genres.name", "externalId.imdb", "ageRating",
     "persons",
 ]
+
+
+def age_rating_of(doc: dict) -> str | None:
+    """«18+» и т.п. из числового ageRating кинопоиска (0/None — рейтинга нет)."""
+    n = doc.get("ageRating")
+    return f"{n}+" if n else None
 
 
 def extract_credits(persons: list[dict], max_actors: int = 5) -> tuple[str | None, str | None]:
@@ -171,6 +178,32 @@ async def posters_by_imdb(imdb_ids: list[str]) -> dict[str, str]:
             url = (m.get("poster") or {}).get("url")
             if imdb and url:
                 out[imdb] = url
+    return out
+
+
+async def artwork_by_imdb(imdb_ids: list[str]) -> dict[str, dict]:
+    """Backdrop + возрастной рейтинг по списку IMDb ID: {imdb_id: {backdrop_url, age_rating}}.
+    Батчами (для бекфила уже добавленных фильмов)."""
+    ids = [i for i in imdb_ids if i and i.startswith("tt")]
+    if not KINOPOISK_TOKENS or not ids:
+        return {}
+    out: dict[str, dict] = {}
+    for start in range(0, len(ids), 40):
+        chunk = ids[start:start + 40]
+        params = [("externalId.imdb", x) for x in chunk]
+        params += [("selectFields", "externalId"), ("selectFields", "backdrop"),
+                   ("selectFields", "ageRating"), ("limit", "250"), ("page", "1")]
+        data = await _request("/movie", params)
+        if not data:
+            continue
+        for m in data.get("docs", []):
+            imdb = (m.get("externalId") or {}).get("imdb")
+            if not imdb:
+                continue
+            out[imdb] = {
+                "backdrop_url": (m.get("backdrop") or {}).get("url"),
+                "age_rating": age_rating_of(m),
+            }
     return out
 
 

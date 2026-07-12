@@ -262,6 +262,8 @@ async def fetch_details(src: str, ref: str) -> dict | None:
             "imdb_votes": str(v["imdb"]) if v.get("imdb") else None,
             "plot": doc.get("description") or doc.get("shortDescription"),
             "poster_url": poster_url,
+            "backdrop_url": (doc.get("backdrop") or {}).get("url"),
+            "age_rating": kinopoisk.age_rating_of(doc),
         }
 
     # src == "i": OMDb + официальное русское название из Wikidata.
@@ -272,17 +274,28 @@ async def fetch_details(src: str, ref: str) -> dict | None:
     ru_titles = await wikidata.get_titles_by_imdb([data["imdbID"]], "ru")
     title = best_title(ru_titles.get(data["imdbID"]), original)
     # Кинопоиск — приоритетный источник постера (заметно лучше качеством, чем
-    # Amazon-картинки OMDb): сперва по imdb, затем поиском по названию. OMDb —
-    # только запасной вариант, если кинопоиск ФАКТИЧЕСКИ не знает фильм.
+    # Amazon-картинки OMDb) и backdrop/возрастного рейтинга (которых у OMDb нет
+    # вовсе): сперва по imdb, затем поиском по названию. OMDb — только запасной
+    # вариант, если кинопоиск ФАКТИЧЕСКИ не знает фильм.
     # Под дневным бюджетом kinopoisk: при исчерпании сразу берём OMDb (без задержки).
     poster_url = None
+    backdrop_url = None
+    age_rating = None
     if await ratelimit.try_spend_search():
         kp = await kinopoisk.posters_by_imdb([data["imdbID"]])
         poster_url = kp.get(data["imdbID"])
+        art = await kinopoisk.artwork_by_imdb([data["imdbID"]])
+        found = art.get(data["imdbID"]) or {}
+        backdrop_url = found.get("backdrop_url")
+        age_rating = found.get("age_rating")
         if not poster_url:
             poster_url = await posters.resolve_by_name(title, data.get("Year"), original)
     if not poster_url:
         poster_url = omdb.upscale_poster(data.get("Poster"))
+    if not age_rating:
+        # OMDb Rated — «R»/«PG-13»/«Not Rated»/«N/A»: другая система, но лучше, чем ничего.
+        rated = _clean(data.get("Rated"))
+        age_rating = rated if rated not in (None, "Not Rated", "Unrated") else None
     return {
         "imdb_id": data["imdbID"],
         "title": title,
@@ -297,4 +310,6 @@ async def fetch_details(src: str, ref: str) -> dict | None:
         "imdb_votes": _clean(data.get("imdbVotes")),
         "plot": _clean(data.get("Plot")),
         "poster_url": poster_url,
+        "backdrop_url": backdrop_url,
+        "age_rating": age_rating,
     }
