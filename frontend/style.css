@@ -203,19 +203,20 @@ section{margin-top:32px;}
 .d-comment-input{width:100%;border:none;background:none;color:var(--ink);font-size:15px;line-height:1.4;
   font-family:var(--font);resize:none;outline:none;padding:0;min-height:22px;display:block;}
 
-/* cast — circular initials avatars (нет фото у источников данных) */
+/* cast — портретные карточки, полное фото без обрезки (родное соотношение
+   кинопоисковских actor-фото ≈ 360×549) — не круг, не кроп. */
 .d-cast{margin-top:30px;}
 .d-cast-h{margin-bottom:14px;}
 .d-cast-h h2{font-size:17px;font-weight:600;letter-spacing:-0.01em;}
-.d-cast-rail{display:flex;gap:16px;overflow-x:auto;scrollbar-width:none;padding:2px 20px;margin:0 -20px;}
+.d-cast-rail{display:flex;gap:12px;overflow-x:auto;scrollbar-width:none;padding:2px 20px;margin:0 -20px;}
 .d-cast-rail::-webkit-scrollbar{display:none;}
-.d-cast-item{flex:0 0 64px;text-align:center;}
-.d-avatar{position:relative;width:60px;height:60px;border-radius:50%;background:var(--s2);
-  overflow:hidden;margin:0 auto;}
+.d-cast-item{flex:0 0 84px;}
+.d-avatar{position:relative;width:84px;aspect-ratio:360/549;border-radius:14px;background:var(--s2);
+  overflow:hidden;border:1px solid var(--hair);}
 .d-avatar .fb{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-  font-size:16px;font-weight:600;color:var(--ink-2);}
-.d-avatar img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;z-index:1;}
-.d-cast-item .n{font-size:12.5px;font-weight:500;margin-top:8px;line-height:1.25;
+  font-size:20px;font-weight:600;color:var(--ink-2);}
+.d-avatar img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block;z-index:1;}
+.d-cast-item .n{font-size:12.5px;font-weight:500;margin-top:8px;line-height:1.25;text-align:center;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
 
 /* hero transition ghost (catalogue poster → detail poster) */
