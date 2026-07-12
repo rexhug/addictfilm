@@ -655,7 +655,7 @@ async def browse_top(user_id: int, limit: int = 30, offset: int = 0,
                    AVG(uf.rating) AS community_avg,
                    COUNT(uf.rating) AS community_count,
                    (SELECT COUNT(*) FROM user_films WHERE film_id=f.id) AS popularity,
-                   me.status AS my_status, me.rating AS my_rating
+                   MAX(me.status) AS my_status, MAX(me.rating) AS my_rating
             FROM films f
             JOIN user_films uf ON uf.film_id = f.id AND uf.rating IS NOT NULL
             LEFT JOIN user_films me ON me.film_id = f.id AND me.user_id = ?
