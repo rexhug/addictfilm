@@ -57,17 +57,21 @@ async def resolve_by_name(title: str | None, year=None, original: str | None = N
     qy = _year_int(year)
     if not qn:
         return None
-    # Запросы к КП строим из «чистых» названий (без дизамбига «(фильм, 2025)»),
-    # иначе поиск по мусорной строке ничего не найдёт.
+    # Запросы к КП строим из «чистых» названий (без дизамбига «(фильм, 2025)»).
+    # Год добавляем в запрос — иначе нишевый фильм тонет под популярными
+    # одноимёнными и не попадает в топ выдачи.
     tried: set[str] = set()
     queries = []
     for raw in (title, original):
-        q = " ".join(_DISAMBIG_RE.sub(" ", raw or "").split()).strip()
-        if q and q not in tried:
-            tried.add(q)
-            queries.append(q)
+        base = " ".join(_DISAMBIG_RE.sub(" ", raw or "").split()).strip()
+        if not base:
+            continue
+        for q in ((f"{base} {qy}" if qy else None), base):
+            if q and q not in tried:
+                tried.add(q)
+                queries.append(q)
     for q in queries:
-        for d in await kinopoisk.search_movies(q, limit=5):
+        for d in await kinopoisk.search_movies(q, limit=6):
             url = (d.get("poster") or {}).get("url")
             if not url:
                 continue
