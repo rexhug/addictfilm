@@ -12,12 +12,14 @@
 }
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
 html,body{background:var(--bg);}
+html{touch-action:manipulation;}  /* убирает двойной тап = зум (viewport-мета глушит только pinch) */
 body{
   font-family:var(--font);color:var(--ink);letter-spacing:-0.01em;
   -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
   padding-bottom:calc(112px + env(safe-area-inset-bottom));
   background:radial-gradient(120% 45% at 50% -8%, #0b0d11 0%, transparent 55%), var(--bg);
   min-height:100vh;
+  overscroll-behavior-y:none;  /* iOS-стиль: без «резинового» оттягивания фона за края */
 }
 #screen{max-width:520px;margin:0 auto;}
 
