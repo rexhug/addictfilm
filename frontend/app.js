@@ -179,7 +179,7 @@ function posterTile(m, { onClick, badge } = {}) {
   card.innerHTML = `
     <div class="art">
       <div class="noposter">${esc(m.title)}</div>
-      ${m.poster_url ? `<img loading="eager" decoding="sync" src="${posterSrc(m.poster_url)}" alt="" onerror="console.error('POSTER ERROR',this.src);this.style.border='3px solid red'">` : ""}
+      ${m.poster_url ? `<img loading="eager" decoding="sync" crossorigin="anonymous" referrerpolicy="no-referrer" src="${posterSrc(m.poster_url)}?v=${Date.now()}" alt="">` : ""}
       ${b ? `<span class="rate">${b}</span>` : ""}
     </div>
     <div class="meta"><div class="t">${esc(m.title)}</div><div class="y">${esc(m.year || "")}</div></div>`;
