@@ -150,7 +150,10 @@ async function api(path, opts = {}) {
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
 function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; }
 // Постеры грузим через наш прокси /img — работает даже если CDN блокируется у клиента.
-function posterSrc(u) { return u ? "/img?u=" + encodeURIComponent(u) : ""; }
+function posterSrc(u) {
+  if (!u) return "";
+  return `${location.origin}/img?u=${encodeURIComponent(u)}`;
+}
 function ratingOf(m) {
   const r = m.imdb_rating || m.kp_rating;
   if (r && !isNaN(+r)) return (+r).toFixed(1);
@@ -176,7 +179,7 @@ function posterTile(m, { onClick, badge } = {}) {
   card.innerHTML = `
     <div class="art">
       <div class="noposter">${esc(m.title)}</div>
-      ${m.poster_url ? `<img loading="lazy" src="${posterSrc(m.poster_url)}" alt="" onerror="this.remove()">` : ""}
+      ${m.poster_url ? `<img loading="eager" decoding="sync" src="${posterSrc(m.poster_url)}" alt="" onerror="console.error('POSTER ERROR',this.src);this.style.border='3px solid red'">` : ""}
       ${b ? `<span class="rate">${b}</span>` : ""}
     </div>
     <div class="meta"><div class="t">${esc(m.title)}</div><div class="y">${esc(m.year || "")}</div></div>`;
@@ -303,7 +306,7 @@ function collectionCard(c) {
   card.innerHTML = `
     <div class="art">
       <div class="noposter">${esc(c.title)}</div>
-      ${c.cover ? `<img loading="lazy" src="${posterSrc(c.cover)}" alt="" onerror="this.remove()">` : ""}
+      ${c.cover ? `<img loading="eager" decoding="sync" src="${posterSrc(c.cover)}" alt="" onerror="console.error('POSTER ERROR',this.src);this.style.border='3px solid red'">` : ""}
       <span class="rate">${c.film_count} ${esc(t("count_films", c.film_count))}</span>
     </div>
     <div class="meta"><div class="t">${esc(c.title)}</div></div>`;
@@ -527,7 +530,7 @@ function renderDetail(id, m) {
         <div class="d-poster-wrap" id="d-poster-wrap">
           <div class="d-poster">
             <span class="fb">${esc(m.title)}</span>
-            ${m.poster_url ? `<img src="${posterSrc(m.poster_url)}" alt="" onerror="this.remove()">` : ""}
+            ${m.poster_url ? `<img src="${posterSrc(m.poster_url)}" alt="" onerror="console.error('POSTER ERROR',this.src);this.style.border='3px solid red'">` : ""}
           </div>
         </div>
         <h1 class="d-title">${esc(m.title)}</h1>
@@ -544,7 +547,7 @@ function renderDetail(id, m) {
           <div id="d-comment-zone"></div>
         </div>
         ${cast.length ? `<div class="d-cast"><div class="d-cast-h"><h2>${esc(t("cast_title"))}</h2></div>
-          <div class="d-cast-rail">${cast.map(a => `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(a.name))}</span>${a.photo_url ? `<img loading="lazy" src="${posterSrc(a.photo_url)}" alt="" onerror="this.remove()">` : ""}</div><div class="n">${esc(a.name)}</div></div>`).join("")}</div></div>` : ""}
+          <div class="d-cast-rail">${cast.map(a => `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(a.name))}</span>${a.photo_url ? `<img loading="eager" decoding="sync" src="${posterSrc(a.photo_url)}" alt="" onerror="console.error('POSTER ERROR',this.src);this.style.border='3px solid red'">` : ""}</div><div class="n">${esc(a.name)}</div></div>`).join("")}</div></div>` : ""}
       </div>
     </div>`;
 
