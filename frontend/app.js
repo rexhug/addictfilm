@@ -150,9 +150,11 @@ async function api(path, opts = {}) {
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
 function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; }
 // Постеры грузим через наш прокси /img — работает даже если CDN блокируется у клиента.
+// Меняем версию, если нужно сбросить в Telegram кэш уже испорченных ответов прокси.
+const POSTER_CACHE_VERSION = "2";
 function posterSrc(u) {
   if (!u) return "";
-  return `${location.origin}/img?u=${encodeURIComponent(u)}`;
+  return `${location.origin}/img?u=${encodeURIComponent(u)}&v=${POSTER_CACHE_VERSION}`;
 }
 function ratingOf(m) {
   const r = m.imdb_rating || m.kp_rating;
