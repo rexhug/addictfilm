@@ -450,6 +450,23 @@ async def _img_sess() -> aiohttp.ClientSession:
     return _img_session
 
 
+async def _read_image_limited(content: aiohttp.StreamReader) -> bytes:
+    """Прочитать весь поток изображения, не разрешая ему превысить лимит.
+
+    ``StreamReader.read(n)`` не гарантирует, что вернёт весь файл за один вызов:
+    он может отдать только первый сетевой chunk. Поэтому читаем поток целиком
+    кусками, считая размер по ходу, а не обрезаем валидный JPEG на первом chunk.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in content.iter_chunked(64 * 1024):
+        size += len(chunk)
+        if size > _MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="Изображение слишком большое")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @app.get("/img")
 async def img_proxy(u: str):
     p = urlparse(u)
@@ -466,9 +483,7 @@ async def img_proxy(u: str):
                 raise HTTPException(status_code=415, detail="Неподдерживаемый формат изображения")
             if resp.content_length is not None and resp.content_length > _MAX_IMAGE_BYTES:
                 raise HTTPException(status_code=413, detail="Изображение слишком большое")
-            data = await resp.content.read(_MAX_IMAGE_BYTES + 1)
-            if len(data) > _MAX_IMAGE_BYTES:
-                raise HTTPException(status_code=413, detail="Изображение слишком большое")
+            data = await _read_image_limited(resp.content)
     except HTTPException:
         raise
     except Exception:  # noqa: BLE001
