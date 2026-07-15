@@ -10,7 +10,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 import sentry_sdk
@@ -475,6 +475,7 @@ _ALLOWED_IMG_HOSTS = {
 }
 _ALLOWED_IMG_TYPES = {"image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"}
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
+_MAX_IMAGE_REDIRECTS = 3
 _img_session: aiohttp.ClientSession | None = None
 
 
@@ -503,29 +504,45 @@ async def _read_image_limited(content: aiohttp.StreamReader) -> bytes:
     return b"".join(chunks)
 
 
+def _is_allowed_image_url(url: str) -> bool:
+    """Проверить URL до каждого запроса, включая промежуточные редиректы."""
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and parsed.netloc.lower() in _ALLOWED_IMG_HOSTS
+
+
 @app.get("/img")
 async def img_proxy(u: str):
-    p = urlparse(u)
-    if p.scheme not in ("http", "https") or p.netloc.lower() not in _ALLOWED_IMG_HOSTS:
+    if not _is_allowed_image_url(u):
         raise HTTPException(status_code=400, detail="Недопустимый источник")  # анти-SSRF
     try:
-        # Редирект не следуем: иначе разрешённый CDN мог бы перенаправить запрос
-        # во внутреннюю сеть и обойти проверку хоста выше.
-        async with (await _img_sess()).get(u, allow_redirects=False) as resp:
-            if resp.status != 200:
-                raise HTTPException(status_code=404, detail="Постер не найден")
-            ctype = resp.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-            if ctype not in _ALLOWED_IMG_TYPES:
-                raise HTTPException(status_code=415, detail="Неподдерживаемый формат изображения")
-            if resp.content_length is not None and resp.content_length > _MAX_IMAGE_BYTES:
-                raise HTTPException(status_code=413, detail="Изображение слишком большое")
-            data = await _read_image_limited(resp.content)
+        current_url = u
+        # Actor CDN st.kp.yandex.net редиректит в avatars.mds.yandex.net. Идём
+        # вручную, чтобы проверить КАЖДУЮ цель: так сохраняется защита от SSRF.
+        for _ in range(_MAX_IMAGE_REDIRECTS + 1):
+            async with (await _img_sess()).get(current_url, allow_redirects=False) as resp:
+                if resp.status in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("Location")
+                    if not location:
+                        raise HTTPException(status_code=404, detail="Изображение не найдено")
+                    current_url = urljoin(current_url, location)
+                    if not _is_allowed_image_url(current_url):
+                        raise HTTPException(status_code=400, detail="Недопустимый источник")
+                    continue
+                if resp.status != 200:
+                    raise HTTPException(status_code=404, detail="Изображение не найдено")
+                ctype = resp.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                if ctype not in _ALLOWED_IMG_TYPES:
+                    raise HTTPException(status_code=415, detail="Неподдерживаемый формат изображения")
+                if resp.content_length is not None and resp.content_length > _MAX_IMAGE_BYTES:
+                    raise HTTPException(status_code=413, detail="Изображение слишком большое")
+                data = await _read_image_limited(resp.content)
+                return Response(content=data, media_type=ctype,
+                                headers={"Cache-Control": "public, max-age=31536000, immutable"})
+        raise HTTPException(status_code=502, detail="Слишком много перенаправлений")
     except HTTPException:
         raise
     except Exception:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail="Не удалось загрузить постер")
-    return Response(content=data, media_type=ctype,
-                    headers={"Cache-Control": "public, max-age=31536000, immutable"})
+        raise HTTPException(status_code=502, detail="Не удалось загрузить изображение")
 
 
 # ── Фронтенд ─────────────────────────────────────────────────────────────────

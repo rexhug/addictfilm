@@ -2,7 +2,7 @@ import unittest
 
 from fastapi import HTTPException
 
-from main import _MAX_IMAGE_BYTES, _read_image_limited
+from main import _MAX_IMAGE_BYTES, _is_allowed_image_url, _read_image_limited
 
 
 class FakeImageStream:
@@ -15,6 +15,12 @@ class FakeImageStream:
 
 
 class ImageProxyTests(unittest.IsolatedAsyncioTestCase):
+    def test_accepts_only_configured_image_hosts(self):
+        self.assertTrue(_is_allowed_image_url("https://st.kp.yandex.net/images/actor.jpg"))
+        self.assertTrue(_is_allowed_image_url("https://avatars.mds.yandex.net/get-kinopoisk-image/a/360"))
+        self.assertFalse(_is_allowed_image_url("https://st.kp.yandex.net.evil.example/actor.jpg"))
+        self.assertFalse(_is_allowed_image_url("file:///etc/passwd"))
+
     async def test_reads_every_chunk_of_an_image(self):
         stream = FakeImageStream([b"jpeg-start", b"-middle", b"-end"])
         self.assertEqual(await _read_image_limited(stream), b"jpeg-start-middle-end")
