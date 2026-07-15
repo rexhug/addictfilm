@@ -10,7 +10,7 @@ import hashlib
 import logging
 import os
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 import sentry_sdk
@@ -431,6 +431,9 @@ _ALLOWED_IMG_HOSTS = {
     "avatars.mds.yandex.net", "st.kp.yandex.net", "image.openmoviedb.com",
     "imagetmdb.com", "kinopoiskapiunofficial.tech",
 }
+_ALLOWED_IMG_TYPES = {"image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"}
+_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+_MAX_IMAGE_REDIRECTS = 3
 _img_session: aiohttp.ClientSession | None = None
 
 
@@ -458,6 +461,8 @@ def _img_ctype(data: bytes) -> str:
         return "image/webp"
     if data[:6] in (b"GIF87a", b"GIF89a"):
         return "image/gif"
+    if data[4:12] == b"ftypavif":
+        return "image/avif"
     return "image/jpeg"
 
 
@@ -468,10 +473,27 @@ def _img_cache_path(u: str) -> str | None:
     return os.path.join(_IMG_CACHE_DIR, key[:2], key)
 
 
+def _is_allowed_image_url(url: str) -> bool:
+    """Проверить URL до каждого запроса, включая промежуточные редиректы."""
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and parsed.netloc.lower() in _ALLOWED_IMG_HOSTS
+
+
+async def _read_image_limited(content: aiohttp.StreamReader) -> bytes:
+    """Прочитать поток целиком и остановиться раньше лимита памяти."""
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in content.iter_chunked(64 * 1024):
+        size += len(chunk)
+        if size > _MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="Изображение слишком большое")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @app.get("/img")
 async def img_proxy(u: str):
-    p = urlparse(u)
-    if p.scheme not in ("http", "https") or p.netloc.lower() not in _ALLOWED_IMG_HOSTS:
+    if not _is_allowed_image_url(u):
         raise HTTPException(status_code=400, detail="Недопустимый источник")  # анти-SSRF
 
     cache_path = _img_cache_path(u)
@@ -481,25 +503,40 @@ async def img_proxy(u: str):
         return Response(content=data, media_type=_img_ctype(data),
                         headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
-    # 2 попытки к CDN: мобильные/CDN-обрывы — обычное дело, ретрай дешевле 502.
+    # Две попытки к CDN. Редиректы проходим вручную: каждая цель повторно
+    # проверяется по allowlist, чтобы не превратить прокси в SSRF-канал.
     data = None
+    ctype = None
     for attempt in (1, 2):
         try:
-            async with (await _img_sess()).get(u) as resp:
-                if resp.status != 200:
-                    raise HTTPException(status_code=404, detail="Постер не найден")
-                body = await resp.read()
-                # Защита от усечённого ответа: не отдаём (и не кэшируем) битую картинку.
-                clen = resp.headers.get("Content-Length")
-                if clen and len(body) != int(clen):
-                    raise aiohttp.ClientPayloadError("truncated body")
-                data = body
+            current_url = u
+            for _ in range(_MAX_IMAGE_REDIRECTS + 1):
+                async with (await _img_sess()).get(current_url, allow_redirects=False) as resp:
+                    if resp.status in (301, 302, 303, 307, 308):
+                        location = resp.headers.get("Location")
+                        if not location:
+                            raise HTTPException(status_code=404, detail="Изображение не найдено")
+                        current_url = urljoin(current_url, location)
+                        if not _is_allowed_image_url(current_url):
+                            raise HTTPException(status_code=400, detail="Недопустимый источник")
+                        continue
+                    if resp.status != 200:
+                        raise HTTPException(status_code=404, detail="Изображение не найдено")
+                    ctype = resp.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                    if ctype not in _ALLOWED_IMG_TYPES:
+                        raise HTTPException(status_code=415, detail="Неподдерживаемый формат изображения")
+                    if resp.content_length is not None and resp.content_length > _MAX_IMAGE_BYTES:
+                        raise HTTPException(status_code=413, detail="Изображение слишком большое")
+                    data = await _read_image_limited(resp.content)
+                    break
+            if data is not None:
                 break
+            raise HTTPException(status_code=502, detail="Слишком много перенаправлений")
         except HTTPException:
             raise
         except Exception:  # noqa: BLE001
             if attempt == 2:
-                raise HTTPException(status_code=502, detail="Не удалось загрузить постер")
+                raise HTTPException(status_code=502, detail="Не удалось загрузить изображение")
 
     if cache_path and data:
         try:  # атомарная запись: tmp + rename (второй инстанс может писать параллельно)
@@ -511,7 +548,7 @@ async def img_proxy(u: str):
         except OSError:
             pass  # кэш — оптимизация, не роняем отдачу из-за диска
 
-    return Response(content=data, media_type=_img_ctype(data),
+    return Response(content=data, media_type=ctype or _img_ctype(data),
                     headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
