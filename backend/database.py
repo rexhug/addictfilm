@@ -200,6 +200,10 @@ async def init_db() -> None:
         # Индексы под горячие запросы: список юзера и community-агрегат по фильму.
         await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_user ON user_films(user_id, status)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_film ON user_films(film_id)")
+        # Покрывают реальные ORDER BY списков, не меняя схему или данные.
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_user_added ON user_films(user_id, status, added_at DESC)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_user_watched ON user_films(user_id, status, watched_at DESC)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_user_top ON user_films(user_id, status, rating DESC, watched_at DESC)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_invite_from ON partner_invites(from_user, status)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_cf_collection ON collection_films(collection_id)")
         await db.commit()
