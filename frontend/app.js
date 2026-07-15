@@ -36,6 +36,7 @@ const DICT = {
     want_empty_t: "Список пуст", want_empty_s: "Добавь фильмы через поиск",
     watched_empty_t: "Пока ничего не просмотрено", watched_empty_s: "Отмечай фильмы «Смотрел»",
     top_empty_t: "Твой топ пуст", top_empty_s: "Оцени просмотренные фильмы",
+    load_more: "Показать ещё", loading: "Загрузка…", retry: "Повторить",
     my_rating: "Моя оценка", rate_hint: " · тап = «Смотрел(а)»", dir: "Режиссёр ",
     act_want: "Хочу посмотреть", act_watched: "Отметить как просмотрено", act_to_want: "В «Хочу»", act_remove: "Убрать из списка",
     already_watched_link: "Уже смотрел? Отметить",
@@ -90,6 +91,7 @@ const DICT = {
     want_empty_t: "List is empty", want_empty_s: "Add films via search",
     watched_empty_t: "Nothing watched yet", watched_empty_s: "Mark films as Watched",
     top_empty_t: "Your top is empty", top_empty_s: "Rate the films you've watched",
+    load_more: "Show more", loading: "Loading…", retry: "Retry",
     my_rating: "My rating", rate_hint: " · tap = Watched", dir: "Director ",
     act_want: "Want to watch", act_watched: "Mark as watched", act_to_want: "To wishlist", act_remove: "Remove from list",
     already_watched_link: "Already seen it? Mark watched",
@@ -205,7 +207,7 @@ function posterTile(m, { onClick, badge } = {}) {
   card.innerHTML = `
     <div class="art">
       <div class="noposter">${esc(m.title)}</div>
-      ${m.poster_url ? `<img loading="lazy" src="${posterSrc(m.poster_url, true)}" alt="" onerror="__imgRetry(this)">` : ""}
+      ${m.poster_url ? `<img loading="lazy" decoding="async" src="${posterSrc(m.poster_url, true)}" alt="" onerror="__imgRetry(this)">` : ""}
       ${b ? `<span class="rate">${b}</span>` : ""}
     </div>
     <div class="meta"><div class="t">${esc(m.title)}</div><div class="y">${esc(m.year || "")}</div></div>`;
@@ -402,16 +404,40 @@ async function showList(tab) {
   window.scrollTo(0, 0);
   const title = tab === "want" ? t("list_want") : tab === "watched" ? t("list_watched") : t("list_top");
   screen.innerHTML = `<div class="page-head"><h1>${esc(title)}</h1></div><div id="list">${skeletonGrid(6)}</div>`;
-  const { items } = await api(`/api/movies?status=${STATUS_MAP[tab]}&limit=60`);
   const el = document.getElementById("list");
-  if (!items.length) {
-    el.innerHTML = tab === "want" ? emptyState("🔖", t("want_empty_t"), t("want_empty_s"))
-      : tab === "watched" ? emptyState("✅", t("watched_empty_t"), t("watched_empty_s"))
-      : emptyState("⭐", t("top_empty_t"), t("top_empty_s"));
-    return;
-  }
-  const back = () => showList(tab);
-  el.replaceChildren(gridOf(items, m => posterTile(m, { onClick: () => openDetail(m.id, back), badge: m.my_rating ? `★ ${m.my_rating}` : "" })));
+  try {
+    const pageSize = 30;
+    const data = await api(`/api/movies?status=${STATUS_MAP[tab]}&limit=${pageSize}`);
+    const { items, total } = data;
+    if (!items.length) {
+      el.innerHTML = tab === "want" ? emptyState("🔖", t("want_empty_t"), t("want_empty_s"))
+        : tab === "watched" ? emptyState("✅", t("watched_empty_t"), t("watched_empty_s"))
+        : emptyState("⭐", t("top_empty_t"), t("top_empty_s"));
+      return;
+    }
+    const back = () => showList(tab);
+    const renderCards = (list) => list.map(m => posterTile(m, { onClick: () => openDetail(m.id, back), badge: m.my_rating ? `★ ${m.my_rating}` : "" }));
+    const grid = gridOf(items, m => posterTile(m, { onClick: () => openDetail(m.id, back), badge: m.my_rating ? `★ ${m.my_rating}` : "" }));
+    el.replaceChildren(grid);
+    let offset = items.length;
+    if (offset < total) {
+      const more = document.createElement("button");
+      more.className = "load-more";
+      more.textContent = t("load_more");
+      more.onclick = async () => {
+        more.disabled = true;
+        more.textContent = t("loading");
+        try {
+          const next = await api(`/api/movies?status=${STATUS_MAP[tab]}&limit=${pageSize}&offset=${offset}`);
+          grid.append(...renderCards(next.items));
+          offset += next.items.length;
+          if (!next.items.length || offset >= total) more.remove();
+          else { more.disabled = false; more.textContent = t("load_more"); }
+        } catch (e) { more.disabled = false; more.textContent = t("retry"); }
+      };
+      el.appendChild(more);
+    }
+  } catch (e) { el.innerHTML = emptyState("⚠️", t("load_err"), String(e.message)); }
 }
 
 // ── Карточка фильма ───────────────────────────────────────────────────────────
@@ -549,7 +575,7 @@ function renderDetail(id, m) {
           <div id="d-comment-zone"></div>
         </div>
         ${cast.length ? `<div class="d-cast"><div class="d-cast-h"><h2>${esc(t("cast_title"))}</h2></div>
-          <div class="d-cast-rail">${cast.map(a => `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(a.name))}</span>${a.photo_url ? `<img loading="lazy" src="${posterSrc(a.photo_url)}" alt="" onerror="__imgRetry(this)">` : ""}</div><div class="n">${esc(a.name)}</div></div>`).join("")}</div></div>` : ""}
+          <div class="d-cast-rail">${cast.map(a => `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(a.name))}</span>${a.photo_url ? `<img loading="lazy" decoding="async" src="${posterSrc(a.photo_url)}" alt="" onerror="__imgRetry(this)">` : ""}</div><div class="n">${esc(a.name)}</div></div>`).join("")}</div></div>` : ""}
       </div>
     </div>`;
 

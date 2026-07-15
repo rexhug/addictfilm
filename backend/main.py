@@ -9,12 +9,13 @@ community-рейтинг = средняя оценка всех пользова
 import hashlib
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
 import sentry_sdk
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -26,6 +27,7 @@ import omdb
 import posters
 import ratelimit
 import search
+import stats_cache
 from auth import validate_init_data
 from config import ADMIN_TOKEN, ADMIN_USER_IDS, BOT_TOKEN, DATABASE_URL, SENTRY_DSN
 
@@ -39,6 +41,32 @@ if SENTRY_DSN:
 app = FastAPI(title="Movie Mini App")
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 
+@app.middleware("http")
+async def log_slow_requests(request: Request, call_next):
+    """Даёт в Fly/Sentry реальное время медленных запросов без новых сервисов."""
+    started = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    if elapsed_ms >= 750:
+        logger.warning("Slow request: %s %s -> %s in %.0fms",
+                       request.method, request.url.path, response.status_code, elapsed_ms)
+    response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.0f}"
+    return response
+
+# Фоновий щоденний бекап SQLite (Postgres робить бекапи сам — backup_db там no-op).
+_backup_task: asyncio.Task | None = None
+
+
+async def _periodic_backup() -> None:
+    """Раз на добу робити VACUUM INTO-бекап SQLite. При помилці — лог, не падати."""
+    while True:
+        await asyncio.sleep(24 * 3600)
+        try:
+            path = await db.backup_db()
+            if path:
+                logger.info("Scheduled SQLite backup: %s", path)
+        except Exception:  # noqa: BLE001
+            logger.warning("Scheduled backup failed", exc_info=True)
 
 @app.on_event("startup")
 async def startup() -> None:
@@ -139,6 +167,7 @@ async def rate(film_id: int, body: RateBody, user: dict = Depends(current_user))
         raise HTTPException(status_code=404, detail="Фильм не найден")
     await db.set_rating(user["id"], film_id, body.rating)  # урок: тап по оценке = «просмотрено»
     await db.sync_film_to_partner(user["id"], film_id)  # пара: партнёру фильм в «Хочу»
+    stats_cache.clear()
     logger.info("Rating saved: film=%s user=%s rating=%s", film_id, user["id"], body.rating)
     return {"ok": True}
 
@@ -147,6 +176,7 @@ async def rate(film_id: int, body: RateBody, user: dict = Depends(current_user))
 async def unrate(film_id: int, user: dict = Depends(current_user)):
     """Убрать оценку — повторный тап по своей звезде. Статус (списки) не меняется."""
     await db.clear_rating(user["id"], film_id)
+    stats_cache.clear()
     return {"ok": True}
 
 
@@ -162,6 +192,7 @@ async def set_status(film_id: int, body: StatusBody, user: dict = Depends(curren
         raise HTTPException(status_code=404, detail="Фильм не найден")
     await db.set_status(user["id"], film_id, body.status)
     await db.sync_film_to_partner(user["id"], film_id)  # пара: партнёру фильм в «Хочу»
+    stats_cache.clear()
     return {"ok": True}
 
 
@@ -184,6 +215,7 @@ async def comment(film_id: int, body: CommentBody, user: dict = Depends(current_
 @app.delete("/api/movie/{film_id}")
 async def delete(film_id: int, user: dict = Depends(current_user)):
     await db.remove_from_list(user["id"], film_id)  # из своего списка; в каталоге остаётся
+    stats_cache.clear()
     return {"ok": True}
 
 
@@ -237,6 +269,8 @@ async def add(body: AddBody, user: dict = Depends(current_user)):
     watched_at = datetime.now(timezone.utc).isoformat() if body.status == "watched" else None
     added = await db.add_to_list(user["id"], film_id, body.status, watched_at)
     await db.sync_film_to_partner(user["id"], film_id)  # пара: партнёру фильм в «Хочу»
+    if added:
+        stats_cache.clear()
     if not added:
         return {"ok": False, "reason": "exists", "movie_id": film_id}
     return {"ok": True, "movie_id": film_id}
@@ -245,9 +279,14 @@ async def add(body: AddBody, user: dict = Depends(current_user)):
 # ── API: статистика (личная) и случайный фильм ────────────────────────────────
 @app.get("/api/stats")
 async def stats(user: dict = Depends(current_user)):
+    year = datetime.now(timezone.utc).year
+    key = ("personal", user["id"], year)
+    cached = stats_cache.get(key)
+    if cached is not None:
+        return cached
     s = await db.get_user_stats(user["id"])
-    s["year"] = await db.get_year_stats(user["id"], datetime.now(timezone.utc).year)
-    return s
+    s["year"] = await db.get_year_stats(user["id"], year)
+    return stats_cache.put(key, s)
 
 
 @app.get("/api/random")
@@ -381,12 +420,14 @@ async def partner_accept(body: AcceptBody, user: dict = Depends(current_user)):
     res = await db.accept_invite(token, user["id"])
     if not res["ok"]:
         return {"ok": False, "reason": res["reason"]}
+    stats_cache.clear()
     return {"ok": True, "partner": _partner_brief(await db.get_user(res["partner_id"]))}
 
 
 @app.post("/api/partner/unpair")
 async def partner_unpair(user: dict = Depends(current_user)):
     await db.unpair(user["id"])
+    stats_cache.clear()
     return {"ok": True}
 
 
@@ -395,7 +436,11 @@ async def partner_stats(user: dict = Depends(current_user)):
     pair = await db.get_pair(user["id"])
     if pair is None:
         raise HTTPException(status_code=404, detail="Нет пары")
-    s = await db.pair_period_stats(user["id"], pair["partner_id"], pair["since"])
+    key = ("pair", user["id"], pair["partner_id"], pair["since"])
+    s = stats_cache.get(key)
+    if s is None:
+        s = await db.pair_period_stats(user["id"], pair["partner_id"], pair["since"])
+        s = stats_cache.put(key, s)
     s["partner"] = _partner_brief(await db.get_user(pair["partner_id"]))
     return s
 
@@ -559,4 +604,14 @@ async def index():
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"),
                         headers={"Cache-Control": "no-store, max-age=0"})
 
-app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="static")
+class VersionedStaticFiles(StaticFiles):
+    """Довго кешує лише versioned JS/CSS; HTML завжди віддає endpoint вище."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if path in {"app.js", "style.css"} and response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
+app.mount("/", VersionedStaticFiles(directory=FRONTEND_DIR), name="static")
