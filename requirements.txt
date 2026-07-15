@@ -1,7 +1,9 @@
-fastapi
-uvicorn
-aiosqlite
-asyncpg
-aiohttp
-python-dotenv
-sentry-sdk[fastapi]
+# Версії закріплені на сумісному релізі (~=): дозволяє patch-фікси, але не мінорні
+# стрибки, що ламають API (fastapi 0.118→0.139 змінив поведінку залежностей).
+fastapi~=0.139.0
+uvicorn~=0.51.0
+aiosqlite~=0.22.1
+asyncpg~=0.31.0
+aiohttp~=3.14.1
+python-dotenv~=1.2.2
+sentry-sdk[fastapi]~=2.64.0

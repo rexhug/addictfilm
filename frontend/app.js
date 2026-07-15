@@ -13,6 +13,8 @@ let me = null;
 let _returnTo = () => { setActiveTab("home"); showHome(); };
 let _heroSource = null;      // {rect, src} стартовой точки hero-transition, захватывается в posterTile()
 let _detailScrollHandler = null;  // текущий scroll-listener страницы фильма (снимается при уходе)
+let _detailId = 0;      // guard: лічильник запитів деталей; рендер скасовується, якщо юзер пішов
+const _IMG_ERR = 'onerror="this.remove()"';
 
 // ── Локализация ───────────────────────────────────────────────────────────────
 function pl(n, f) { const a = Math.abs(n) % 100, b = a % 10; if (a > 10 && a < 20) return f[2]; if (b > 1 && b < 5) return f[1]; if (b === 1) return f[0]; return f[2]; }
@@ -142,9 +144,14 @@ async function api(path, opts = {}) {
     ...opts,
     headers: { "Content-Type": "application/json", "X-Init-Data": tg.initData, ...(opts.headers || {}) },
   });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
+  if (!res.ok) {
+    const err = new Error((await res.json().catch(() => ({}))).detail || String(res.status));
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 }
+function isTooManyRequests(e) { return e.status === 429 || String(e.message).includes("Слишком много"); }
 
 // ── Утилиты ───────────────────────────────────────────────────────────────────
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
@@ -181,7 +188,7 @@ function posterTile(m, { onClick, badge } = {}) {
   card.innerHTML = `
     <div class="art">
       <div class="noposter">${esc(m.title)}</div>
-      ${m.poster_url ? `<img loading="eager" decoding="sync" src="${posterSrc(m.poster_url)}" alt="" onerror="console.error('POSTER ERROR',this.src);this.style.border='3px solid red'">` : ""}
+      ${m.poster_url ? `<img loading="eager" decoding="sync" src="${posterSrc(m.poster_url)}" alt="" ${_IMG_ERR}>` : ""}
       ${b ? `<span class="rate">${b}</span>` : ""}
     </div>
     <div class="meta"><div class="t">${esc(m.title)}</div><div class="y">${esc(m.year || "")}</div></div>`;
@@ -308,7 +315,7 @@ function collectionCard(c) {
   card.innerHTML = `
     <div class="art">
       <div class="noposter">${esc(c.title)}</div>
-      ${c.cover ? `<img loading="eager" decoding="sync" src="${posterSrc(c.cover)}" alt="" onerror="console.error('POSTER ERROR',this.src);this.style.border='3px solid red'">` : ""}
+      ${c.cover ? `<img loading="eager" decoding="sync" src="${posterSrc(c.cover)}" alt="" ${_IMG_ERR}>` : ""}
       <span class="rate">${c.film_count} ${esc(t("count_films", c.film_count))}</span>
     </div>
     <div class="meta"><div class="t">${esc(c.title)}</div></div>`;
@@ -349,9 +356,11 @@ function createCollectionFlow() {
   document.getElementById("coll-create-btn").onclick = async () => {
     const title = input.value.trim();
     if (!title) return;
-    const r = await api("/api/admin/collections", { method: "POST", body: JSON.stringify({ title }) });
-    tg.HapticFeedback?.notificationOccurred("success");
-    showCollectionDetail(r.id);  // сразу открываем — удобно накидать фильмов
+    try {
+      const r = await api("/api/admin/collections", { method: "POST", body: JSON.stringify({ title }) });
+      tg.HapticFeedback?.notificationOccurred("success");
+      showCollectionDetail(r.id);  // сразу открываем — удобно накидать фильмов
+    } catch (e) { tg.showAlert?.(String(e.message)); }
   };
 }
 
@@ -399,19 +408,22 @@ async function showCollectionDetail(id) {
 const STATUS_MAP = { want: "want_to_watch", watched: "watched", top: "top" };
 async function showList(tab) {
   unwireDetailScroll();
+  _detailId++;  // інвалідуємо будь-який запит деталей, що ще в польоті
   window.scrollTo(0, 0);
   const title = tab === "want" ? t("list_want") : tab === "watched" ? t("list_watched") : t("list_top");
   screen.innerHTML = `<div class="page-head"><h1>${esc(title)}</h1></div><div id="list">${skeletonGrid(6)}</div>`;
-  const { items } = await api(`/api/movies?status=${STATUS_MAP[tab]}&limit=60`);
   const el = document.getElementById("list");
-  if (!items.length) {
-    el.innerHTML = tab === "want" ? emptyState("🔖", t("want_empty_t"), t("want_empty_s"))
-      : tab === "watched" ? emptyState("✅", t("watched_empty_t"), t("watched_empty_s"))
-      : emptyState("⭐", t("top_empty_t"), t("top_empty_s"));
-    return;
-  }
-  const back = () => showList(tab);
-  el.replaceChildren(gridOf(items, m => posterTile(m, { onClick: () => openDetail(m.id, back), badge: m.my_rating ? `★ ${m.my_rating}` : "" })));
+  try {
+    const { items } = await api(`/api/movies?status=${STATUS_MAP[tab]}&limit=60`);
+    if (!items.length) {
+      el.innerHTML = tab === "want" ? emptyState("🔖", t("want_empty_t"), t("want_empty_s"))
+        : tab === "watched" ? emptyState("✅", t("watched_empty_t"), t("watched_empty_s"))
+        : emptyState("⭐", t("top_empty_t"), t("top_empty_s"));
+      return;
+    }
+    const back = () => showList(tab);
+    el.replaceChildren(gridOf(items, m => posterTile(m, { onClick: () => openDetail(m.id, back), badge: m.my_rating ? `★ ${m.my_rating}` : "" })));
+  } catch (e) { el.innerHTML = emptyState("⚠️", t("load_err"), String(e.message)); }
 }
 
 // ── Карточка фильма ───────────────────────────────────────────────────────────
@@ -489,14 +501,16 @@ function closeDetailThen(fn) {
 async function showDetail(id) {
   unwireDetailScroll();
   window.scrollTo(0, 0);
+  const myId = ++_detailId;  // фіксуємо цей запит; якщо юзер пішов — _detailId зміниться
   screen.innerHTML = `<div class="detail-v2">
     <div class="d-backdrop sk"></div>
     <div class="d-body"><div class="d-poster-wrap"><div class="d-poster sk"></div></div>
       <div class="sk sk-line wide"></div><div class="sk sk-line"></div></div>
     <div class="d-floatctrls" style="position:fixed;top:0;left:0;right:0;padding:calc(10px + env(safe-area-inset-top)) 14px 0;z-index:41;">${backBtn()}</div>
   </div>`;
-  wireBack(() => closeDetailThen(_returnTo));
+  wireBack(() => { _detailId++; closeDetailThen(_returnTo); });  // інвалідуємо запит
   const m = await api(`/api/movie/${id}`);
+  if (_detailId !== myId) return;  // юзер пішов, поки йшов запит — не рендеримо
   renderDetail(id, m);
 }
 
@@ -532,7 +546,7 @@ function renderDetail(id, m) {
         <div class="d-poster-wrap" id="d-poster-wrap">
           <div class="d-poster">
             <span class="fb">${esc(m.title)}</span>
-            ${m.poster_url ? `<img src="${posterSrc(m.poster_url)}" alt="" onerror="console.error('POSTER ERROR',this.src);this.style.border='3px solid red'">` : ""}
+            ${m.poster_url ? `<img src="${posterSrc(m.poster_url)}" alt="" ${_IMG_ERR}>` : ""}
           </div>
         </div>
         <h1 class="d-title">${esc(m.title)}</h1>
@@ -549,7 +563,7 @@ function renderDetail(id, m) {
           <div id="d-comment-zone"></div>
         </div>
         ${cast.length ? `<div class="d-cast"><div class="d-cast-h"><h2>${esc(t("cast_title"))}</h2></div>
-          <div class="d-cast-rail">${cast.map(a => `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(a.name))}</span>${a.photo_url ? `<img loading="eager" decoding="sync" src="${posterSrc(a.photo_url)}" alt="" onerror="console.error('POSTER ERROR',this.src);this.style.border='3px solid red'">` : ""}</div><div class="n">${esc(a.name)}</div></div>`).join("")}</div></div>` : ""}
+          <div class="d-cast-rail">${cast.map(a => `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(a.name))}</span>${a.photo_url ? `<img loading="eager" decoding="sync" src="${posterSrc(a.photo_url)}" alt="" ${_IMG_ERR}>` : ""}</div><div class="n">${esc(a.name)}</div></div>`).join("")}</div></div>` : ""}
       </div>
     </div>`;
 
@@ -674,45 +688,69 @@ function showSearch(mode = null) {
   const input = document.getElementById("si");
   const results = document.getElementById("sr");
   let timer;
+  const performSearch = async (q) => {
+    let data;
+    try { data = await api(`/api/search?q=${encodeURIComponent(q)}`); }
+    catch (e) {
+      results.innerHTML = isTooManyRequests(e)
+        ? emptyState("⏳", t("search_toomany_t"), t("search_toomany_s"))
+        : emptyState("⚠️", t("search_err_t"), String(e.message));
+      return;
+    }
+    if (data.limited) { results.innerHTML = emptyState("⏳", t("search_limited_t"), t("search_limited_s")); return; }
+    const items = data.items;
+    if (!items.length) { results.innerHTML = emptyState("🤷", t("search_none_t"), t("search_none_s")); return; }
+    results.replaceChildren(gridOf(items, it => posterTile(
+      { poster_url: it.poster || it.poster_url, title: it.title, year: it.year, imdb_rating: it.rating },
+      {
+        onClick: () => tg.showConfirm(
+          mode ? t("coll_confirm_add", it.title) : t("confirm_add", it.title),
+          async ok => {
+            if (!ok) return;
+            if (mode) {
+              try {
+                const r = await api(`/api/admin/collections/${mode.id}/films`,
+                  { method: "POST", body: JSON.stringify({ src: it.src, ref: it.ref }) });
+                tg.HapticFeedback?.notificationOccurred("success");
+                if (!r.added) tg.showAlert(t("coll_already_in"), () => showCollectionDetail(mode.id));
+                else showCollectionDetail(mode.id);
+              } catch (e) {
+                tg.showAlert(e.message || t("load_err"));
+              }
+            } else {
+              try {
+                const r = await api("/api/add", { method: "POST", body: JSON.stringify({ src: it.src, ref: it.ref }) });
+                if (r.reason === "exists") tg.showAlert(t("already_in_list"));
+                else { tg.HapticFeedback?.notificationOccurred("success"); setActiveTab("want"); showList("want"); }
+              } catch (e) {
+                tg.showAlert(e.message || t("load_err"));
+              }
+            }
+          }),
+      })));
+  };
+
   input.oninput = () => {
     clearTimeout(timer);
     timer = setTimeout(async () => {
       const q = input.value.trim();
       if (q.length < 2) { results.innerHTML = start; return; }
       results.innerHTML = skeletonGrid(6);
-      let data;
-      try { data = await api(`/api/search?q=${encodeURIComponent(q)}`); }
-      catch (e) {
-        results.innerHTML = String(e.message) === "429"
-          ? emptyState("⏳", t("search_toomany_t"), t("search_toomany_s"))
-          : emptyState("⚠️", t("search_err_t"), String(e.message));
-        return;
-      }
-      if (data.limited) { results.innerHTML = emptyState("⏳", t("search_limited_t"), t("search_limited_s")); return; }
-      const items = data.items;
-      if (!items.length) { results.innerHTML = emptyState("🤷", t("search_none_t"), t("search_none_s")); return; }
-      results.replaceChildren(gridOf(items, it => posterTile(
-        { poster_url: it.poster || it.poster_url, title: it.title, year: it.year, imdb_rating: it.rating },
-        {
-          onClick: () => tg.showConfirm(
-            mode ? t("coll_confirm_add", it.title) : t("confirm_add", it.title),
-            async ok => {
-              if (!ok) return;
-              if (mode) {
-                const r = await api(`/api/admin/collections/${mode.id}/films`,
-                  { method: "POST", body: JSON.stringify({ src: it.src, ref: it.ref }) });
-                tg.HapticFeedback?.notificationOccurred("success");
-                if (!r.added) tg.showAlert(t("coll_already_in"), () => showCollectionDetail(mode.id));
-                else showCollectionDetail(mode.id);
-              } else {
-                const r = await api("/api/add", { method: "POST", body: JSON.stringify({ src: it.src, ref: it.ref }) });
-                if (r.reason === "exists") tg.showAlert(t("already_in_list"));
-                else { tg.HapticFeedback?.notificationOccurred("success"); setActiveTab("want"); showList("want"); }
-              }
-            }),
-        })));
+      await performSearch(q);
     }, 400);
   };
+
+  input.onkeydown = async (e) => {
+    if (e.key === "Enter") {
+      clearTimeout(timer);
+      const q = input.value.trim();
+      if (q.length < 2) { results.innerHTML = start; return; }
+      results.innerHTML = skeletonGrid(6);
+      await performSearch(q);
+      input.blur();
+    }
+  };
+
   input.focus();
 }
 

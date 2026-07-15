@@ -14,6 +14,7 @@
 Бекфіл проходить каталог `films` без постера: спершу масово добирає постери з
 КП одним-двома батчами, лишок домальовує з OMDb / пошуку за назвою поштучно.
 """
+import json
 import logging
 import re
 
@@ -190,3 +191,43 @@ async def upgrade_omdb_posters(limit: int = 200, _name_cap: int = 60) -> dict:
     logger.info("Апгрейд OMDb→kinopoisk: скан=%d апгрейжено=%d осталось на OMDb=%d",
                 len(films), upgraded, kept)
     return {"scanned": len(films), "upgraded": upgraded, "kept_omdb": kept}
+
+
+async def backfill_actor_photos(limit: int = 200) -> dict:
+    """Добрать фото актёров фильмам каталога без actors_photos.
+
+    Экономно к лимитам: КП отдаёт persons одним батч-запитом на 30 imdb id
+    (selectFields=persons — целиком, включая photo). Синтетические kp_<id>
+    тянутся поштучно через get_movie. Идемпотентно: не затирает已有的 фото.
+    """
+    films = await db.films_missing_actor_photos(limit)
+    if not films:
+        return {"scanned": 0, "updated": 0, "remaining": 0}
+
+    updated = 0
+
+    # 1. Фильмы с настоящим imdb (tt*) — массово батчами.
+    real = [f for f in films if f["imdb_id"].startswith("tt")]
+    if real:
+        photos_map = await kinopoisk.actor_photos_by_imdb([f["imdb_id"] for f in real])
+        for imdb_id, photos_list in photos_map.items():
+            photos_json = json.dumps(photos_list, ensure_ascii=False)
+            if await db.set_actor_photos(imdb_id, photos_json):
+                updated += 1
+
+    # 2. Синтетические (kp_<id>) — поштучно через get_movie.
+    synthetic = [f for f in films if not f["imdb_id"].startswith("tt")]
+    for f in synthetic:
+        doc = await kinopoisk.get_movie(f["imdb_id"][3:])
+        if not doc:
+            continue
+        photos_list = kinopoisk.extract_actors_with_photos(doc.get("persons") or [])
+        if photos_list:
+            photos_json = json.dumps(photos_list, ensure_ascii=False)
+            if await db.set_actor_photos(f["imdb_id"], photos_json):
+                updated += 1
+
+    remaining = len(films) - updated
+    logger.info("Бекфіл фото акторів: скан=%d обновлено=%d осталось=%d",
+                len(films), updated, remaining)
+    return {"scanned": len(films), "updated": updated, "remaining": remaining}

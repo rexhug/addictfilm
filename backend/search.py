@@ -8,6 +8,7 @@
   {src: "k"|"i", ref, title, year, poster, rating, genres, type}
 """
 import asyncio
+import json
 import logging
 import os
 import re
@@ -242,12 +243,16 @@ async def fetch_details(src: str, ref: str) -> dict | None:
         original = doc.get("alternativeName")
         length = doc.get("movieLength") or doc.get("seriesLength")
         directors, actors = kinopoisk.extract_credits(doc.get("persons") or [])
+        actors_photos_list = kinopoisk.extract_actors_with_photos(doc.get("persons") or [])
         imdb_id = kinopoisk.imdb_id_of(doc)
         poster_url = (doc.get("poster") or {}).get("url")
         # У КП постера нет — добираем из OMDb (с апскейлом), если есть настоящий imdb.
         # Под дневным бюджетом: при исчерпании — не добираем (бекфил закроет позже).
         if not poster_url and imdb_id.startswith("tt") and await ratelimit.try_spend_search():
             poster_url = await posters.resolve_omdb(imdb_id)
+        # backdrop и возрастной рейтинг тоже доступны из kinopoisk-ответа.
+        backdrop_url = (doc.get("backdrop") or {}).get("url")
+        age_rating = doc.get("ageRating")
         return {
             "imdb_id": imdb_id,
             "title": name,
@@ -262,6 +267,9 @@ async def fetch_details(src: str, ref: str) -> dict | None:
             "imdb_votes": str(v["imdb"]) if v.get("imdb") else None,
             "plot": doc.get("description") or doc.get("shortDescription"),
             "poster_url": poster_url,
+            "backdrop_url": backdrop_url,
+            "age_rating": str(age_rating) if age_rating else None,
+            "actors_photos": json.dumps(actors_photos_list, ensure_ascii=False) if actors_photos_list else None,
         }
 
     # src == "i": OMDb + официальное русское название из Wikidata.

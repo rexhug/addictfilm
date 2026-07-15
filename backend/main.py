@@ -6,6 +6,7 @@ community-рейтинг = средняя оценка всех пользова
 
 Запуск:  uvicorn main:app --port 8077   (из папки backend/)
 """
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -38,6 +39,21 @@ if SENTRY_DSN:
 app = FastAPI(title="Movie Mini App")
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 
+# Фоновий щоденний бекап SQLite (Postgres робить бекапи сам — backup_db там no-op).
+_backup_task: asyncio.Task | None = None
+
+
+async def _periodic_backup() -> None:
+    """Раз на добу робити VACUUM INTO-бекап SQLite. При помилці — лог, не падати."""
+    while True:
+        await asyncio.sleep(24 * 3600)
+        try:
+            path = await db.backup_db()
+            if path:
+                logger.info("Scheduled SQLite backup: %s", path)
+        except Exception:  # noqa: BLE001
+            logger.warning("Scheduled backup failed", exc_info=True)
+
 
 @app.on_event("startup")
 async def startup() -> None:
@@ -45,10 +61,14 @@ async def startup() -> None:
     await db.init_db()
     await search.purge_expired()  # подчистить протухший кэш поиска при старте
     logger.info("Database initialized (%s)", "Postgres" if DATABASE_URL else "SQLite")
+    global _backup_task
+    _backup_task = asyncio.create_task(_periodic_backup())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    if _backup_task and not _backup_task.done():
+        _backup_task.cancel()
     for mod in (kinopoisk, omdb):
         try:
             await mod.aclose()
@@ -202,6 +222,15 @@ async def api_search(q: str, user: dict = Depends(current_user)):
     if imdb_id:  # прямой запрос по tt-id идёт в OMDb → тоже под throttle
         if not ratelimit.allow_user(user["id"]):
             raise HTTPException(status_code=429, detail="Слишком много запросов, подождите минуту")
+        # Спершу перевіряємо каталог: якщо фільм вже є — віддаємо з БД без витрати
+        # бюджету зовнішніх API (як _resolve_film_id для src="i"). Для tt-пошуку це
+        # особливо важливо: популярні фільми шукають часто, і кожен tt-запит без цієї
+        # перевірки бив би в OMDb+Wikidata+КП щоразу, виснажуючи квоту джерел.
+        existing = await db.get_film_by_imdb_full(imdb_id)
+        if existing:
+            return {"items": [existing]}
+        if not await ratelimit.try_spend_search():
+            return {"items": [], "limited": True}
         d = await search.fetch_details("i", imdb_id)
         return {"items": [d] if d else []}
     # Throttle считается внутри — только если реально идём в API (кэш-хиты бесплатны).
@@ -427,6 +456,13 @@ async def upgrade_omdb_posters(limit: int = 200, name_cap: int = 60):
     """Заменить постеры Amazon/OMDb на kinopoisk-версии у уже добавленных фильмов.
     Идемпотентно; вызывать повторно, пока kept_omdb не перестанет уменьшаться."""
     return await posters.upgrade_omdb_posters(limit=max(1, min(limit, 500)), _name_cap=max(0, min(name_cap, 100)))
+
+
+@app.post("/api/admin/backfill-actor-photos", dependencies=[Depends(require_admin)])
+async def backfill_actor_photos(limit: int = 200):
+    """Добрать фото актёров фильмам без actors_photos (kinopoisk, батчами по imdb).
+    Идемпотентно; вызывать повторно, пока remaining не станет 0."""
+    return await posters.backfill_actor_photos(limit=max(1, min(limit, 500)))
 
 
 # ── Прокси постеров (обходит блокировку CDN на стороне клиента) ───────────────

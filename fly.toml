@@ -11,6 +11,9 @@ primary_region = 'fra'
 [env]
   DB_PATH = '/data/movies.db'
 
+# Том потрібен лише у SQLite-режимі (DB_PATH). Якщо в проді заданий DATABASE_URL
+# (Postgres/Neon) — том зайвий, але безпечний (просто не використовується).
+# Щоб прибрати: `fly volume destroy movies_data` (інтерактивно через flyctl).
 [[mounts]]
   source = 'movies_data'
   destination = '/data'

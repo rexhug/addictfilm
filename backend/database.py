@@ -49,8 +49,49 @@ async def init_db() -> None:
     await _add_column_if_missing("films", "age_rating TEXT")
     await _add_column_if_missing("films", "actors_photos TEXT")
     await _add_column_if_missing("users", "role TEXT")
+    await _add_column_if_missing("users", "last_seen TEXT")
 
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        # Проверяем и мигрируем таблицу partner_invites, если она осталась от старой схемы (без from_user)
+        try:
+            await db.execute("SELECT from_user FROM partner_invites LIMIT 1")
+        except Exception:
+            try:
+                await db.execute("SELECT token FROM partner_invites LIMIT 1")
+                # Таблица существует, но колонки from_user нет -> дропаем её, чтобы init_db пересоздал с новой схемой
+                await db.execute("DROP TABLE partner_invites")
+                await db.commit()
+            except Exception:
+                pass
+
+        # Проверяем, использует ли таблица users старую схему (с колонкой last_seen_at)
+        try:
+            await db.execute("SELECT last_seen_at FROM users LIMIT 1")
+            # Если запрос успешен, значит старая таблица users существует и имеет last_seen_at -> мигрируем её
+            await db.execute("ALTER TABLE users RENAME TO users_old")
+            await db.execute("""
+                CREATE TABLE users (
+                    id         BIGINT PRIMARY KEY,
+                    first_name TEXT,
+                    username   TEXT,
+                    created_at TEXT,
+                    last_seen  TEXT,
+                    role       TEXT
+                )
+            """)
+            await db.execute("""
+                INSERT INTO users (id, first_name, username, created_at, last_seen)
+                SELECT id, first_name, username, created_at, last_seen_at FROM users_old
+            """)
+            try:
+                await db.execute("UPDATE users SET role = (SELECT role FROM users_old WHERE users_old.id = users.id)")
+            except Exception:
+                pass
+            await db.execute("DROP TABLE users_old")
+            await db.commit()
+        except Exception:
+            pass
+
         # WAL: чтение не блокирует запись — публичный трафик без «database is locked».
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA synchronous=NORMAL")
@@ -321,6 +362,31 @@ async def get_film_id_by_imdb(imdb_id: str) -> int | None:
         cur = await db.execute("SELECT id FROM films WHERE imdb_id = ?", (imdb_id,))
         row = await cur.fetchone()
         return row[0] if row else None
+
+
+async def get_film_by_imdb_full(imdb_id: str) -> dict | None:
+    """Повний запис фільму з каталогу по imdb_id у форматі search-item
+    ({src, ref, title, year, poster, rating, genres}). Використовується /api/search
+    для tt-id: якщо фільм вже в каталозі — віддаємо з БД без витрати бюджету API."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT title, year, genres, poster_url, imdb_rating, kp_rating, imdb_id "
+            "FROM films WHERE imdb_id = ?", (imdb_id,))
+        row = await cur.fetchone()
+    if not row:
+        return None
+    rating = row["imdb_rating"] or row["kp_rating"]
+    return {
+        "src": "i",
+        "ref": row["imdb_id"],
+        "title": row["title"],
+        "year": row["year"] or "?",
+        "poster": row["poster_url"],
+        "rating": rating,
+        "genres": row["genres"],
+        "type": "movie",
+    }
 
 
 async def films_missing_poster(limit: int = 200) -> list[dict]:

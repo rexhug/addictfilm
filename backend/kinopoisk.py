@@ -49,6 +49,27 @@ def extract_credits(persons: list[dict], max_actors: int = 5) -> tuple[str | Non
     return (", ".join(directors) or None), (", ".join(actors) or None)
 
 
+def extract_actors_with_photos(persons: list[dict], max_actors: int = 10) -> list[dict]:
+    """Список акторов с фото: [{name, photo_url}].
+
+    Фото берём из kinopoisk-поля ``photo`` (URL на kinopoiskapiunofficial.tech CDN).
+    Возвращает только акторов с непустым именем; photo_url может быть None, если
+    kinopoisk не знает фото — фронтенд тогда покажет инициалы.
+    """
+    out: list[dict] = []
+    for p in persons or []:
+        name = p.get("name")
+        if not name:
+            continue
+        if p.get("enProfession") != "actor":
+            continue
+        photo = p.get("photo")
+        out.append({"name": name, "photo_url": photo or None})
+        if len(out) >= max_actors:
+            break
+    return out
+
+
 async def _get_session() -> aiohttp.ClientSession:
     global _session
     if _session is None or _session.closed:
@@ -192,6 +213,33 @@ async def credits_by_imdb(imdb_ids: list[str]) -> dict[str, tuple[str | None, st
             imdb = (m.get("externalId") or {}).get("imdb")
             if imdb:
                 out[imdb] = extract_credits(m.get("persons") or [])
+    return out
+
+
+async def actor_photos_by_imdb(imdb_ids: list[str]) -> dict[str, list[dict]]:
+    """Фото акторов по списку IMDb ID: {imdb_id: [{name, photo_url}]}. Для бекфила.
+
+    Один батч-запит на 30 imdb id (selectFields=persons отдаёт всё поле целиком,
+    включая photo — см. LESSONS.md: точечно выбирать вложенные поля persons нельзя).
+    """
+    ids = [i for i in imdb_ids if i and i.startswith("tt")]
+    if not KINOPOISK_TOKENS or not ids:
+        return {}
+    out: dict[str, list[dict]] = {}
+    for start in range(0, len(ids), 30):
+        chunk = ids[start:start + 30]
+        params = [("externalId.imdb", x) for x in chunk]
+        params += [("selectFields", "externalId"), ("selectFields", "persons"),
+                   ("limit", "250"), ("page", "1")]
+        data = await _request("/movie", params)
+        if not data:
+            continue
+        for m in data.get("docs", []):
+            imdb = (m.get("externalId") or {}).get("imdb")
+            if imdb:
+                photos = extract_actors_with_photos(m.get("persons") or [])
+                if photos:
+                    out[imdb] = photos
     return out
 
 
