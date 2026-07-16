@@ -14,9 +14,19 @@ import time
 from collections import defaultdict, deque
 
 import database as db
+from config import KINOPOISK_TOKENS
 
-# Бюджет внешних поисковых вызовов в сутки. Настраивается через .env (DAILY_SEARCH_BUDGET).
-DAILY_SEARCH_BUDGET: int = int(os.getenv("DAILY_SEARCH_BUDGET", "2000"))
+# Бюджет внешних поисковых вызовов в сутки. Если DAILY_SEARCH_BUDGET не задан явно —
+# auto-обчислюється від кількості kinopoisk-токенів: 180 запитів/добу на токен
+# (запас під ~200 free-ліміту kinopoisk.dev). 4 токени → 720/добу, не 2000.
+# Так бюджет завжди відповідає реальній сумарній квоті джерел, навіть після
+# додавання/видалення токенів — пошук не «ламається» від вичерпання квоти щоранку.
+_env_budget = os.getenv("DAILY_SEARCH_BUDGET")
+if _env_budget:
+    DAILY_SEARCH_BUDGET: int = int(_env_budget)
+else:
+    _KP_DAILY_PER_TOKEN = int(os.getenv("KP_DAILY_PER_TOKEN", "180"))
+    DAILY_SEARCH_BUDGET: int = max(1, len(KINOPOISK_TOKENS)) * _KP_DAILY_PER_TOKEN
 
 # Per-user throttle: не более USER_MAX запросов за USER_WINDOW секунд.
 USER_MAX: int = int(os.getenv("USER_SEARCH_MAX", "20"))

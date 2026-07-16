@@ -1,5 +1,9 @@
 import asyncio
+import logging
+
 import aiohttp
+
+logger = logging.getLogger(__name__)
 
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
@@ -57,7 +61,8 @@ async def get_titles_by_imdb(imdb_ids: list[str], lang: str = "ru") -> dict[str,
             if resp.status != 200:
                 return {}
             data = await resp.json(content_type=None)
-    except (aiohttp.ClientError, asyncio.TimeoutError, Exception):
+    except Exception:
+        logger.debug("Wikidata get_titles_by_imdb failed", exc_info=True)
         return {}
 
     out: dict[str, str] = {}
@@ -98,7 +103,8 @@ async def search_movies(query: str) -> list[dict]:
         ) as resp2:
             data2 = await resp2.json(content_type=None)
 
-    except (aiohttp.ClientError, asyncio.TimeoutError, Exception):
+    except Exception:
+        logger.debug("Wikidata search_movies failed", exc_info=True)
         return []
 
     results = []

@@ -6,3 +6,10 @@ __pycache__/
 *.db-wal
 *.db-shm
 *.log
+
+# OS-артефакти
+.DS_Store
+
+# Тимчасові zip-експорти
+*.zip
+.zcode/
