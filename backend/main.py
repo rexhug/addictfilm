@@ -102,7 +102,13 @@ async def current_user(x_init_data: str = Header(default="")) -> dict:
 
 @app.get("/healthz", include_in_schema=False)
 async def healthz():
-    """Для fly.toml http_service.checks — без авторизации, лёгкий."""
+    """Readiness для Fly: процесс и активная БД должны быть доступны."""
+    try:
+        if not await db.ping():
+            raise RuntimeError("empty database ping response")
+    except Exception:  # noqa: BLE001
+        logger.exception("Health check failed: database is unavailable")
+        raise HTTPException(status_code=503, detail="Database unavailable")
     return {"ok": True}
 
 

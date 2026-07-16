@@ -168,6 +168,13 @@ async def init_db() -> None:
         await db.commit()
 
 
+async def ping() -> bool:
+    """Лёгкая readiness-проверка доступности активной базы данных."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute("SELECT 1")
+        return await cur.fetchone() is not None
+
+
 # ── Постоянный кэш поиска ─────────────────────────────────────────────────────
 async def search_cache_get(q: str, max_age_sec: int) -> list | None:
     """Свежие (моложе max_age_sec) результаты поиска по нормализованному запросу, либо None."""
