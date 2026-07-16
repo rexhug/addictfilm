@@ -21,7 +21,6 @@ const DICT = {
     tagline: "Кино, которое ты любишь",
     search_ph: "Поиск фильмов, сериалов, актёров…",
     chip_popular: "Популярное", chip_top: "Топ сообщества", chip_genres: "Жанры", chip_collections: "Подборки",
-    collections_title: "Подборки", collections_empty_t: "Пока нет подборок",
     collections_empty_s: "Загляни позже", collections_empty_admin_s: "Создай первую подборку",
     collections_title_ph: "Название подборки", collections_create_btn: "Создать",
     coll_confirm_add: (t) => `Добавить «${t}» в подборку?`, coll_already_in: "Уже в этой подборке",
@@ -76,7 +75,6 @@ const DICT = {
     tagline: "Movies you'll love",
     search_ph: "Search movies, TV shows, actors…",
     chip_popular: "Popular", chip_top: "Community Top", chip_genres: "Genres", chip_collections: "Collections",
-    collections_title: "Collections", collections_empty_t: "No collections yet",
     collections_empty_s: "Check back later", collections_empty_admin_s: "Create your first collection",
     collections_title_ph: "Collection name", collections_create_btn: "Create",
     coll_confirm_add: (t) => `Add "${t}" to the collection?`, coll_already_in: "Already in this collection",
@@ -211,11 +209,12 @@ async function showHome() {
       <span class="chip active" data-to="sec-pop"><span class="e">🔥</span>${esc(t("chip_popular"))}</span>
       <span class="chip" data-to="sec-top"><span class="e">🏆</span>${esc(t("chip_top"))}</span>
       <span class="chip" data-to="sec-gen"><span class="e">🎭</span>${esc(t("chip_genres"))}</span>
-      <span class="chip" id="chip-coll"><span class="e">🎬</span>${esc(t("chip_collections"))}</span>
+      <span class="chip" data-to="sec-coll"><span class="e">🎬</span>${esc(t("chip_collections"))}</span>
     </div>
     <section class="rise d3" id="sec-pop"><div class="head"><h2>${esc(t("chip_popular"))}</h2></div><div class="rail" id="rail-pop">${skeletonRail(5)}</div></section>
     <section class="rise d4" id="sec-top"><div class="head"><h2>${esc(t("chip_top"))}</h2></div><div class="rail" id="rail-top">${skeletonRail(5)}</div></section>
-    <section class="rise d5" id="sec-gen"><div class="head"><h2>${esc(t("chip_genres"))}</h2></div><div class="rail grail" id="rail-gen">${skeletonRail(4)}</div></section>`;
+    <section class="rise d5" id="sec-gen"><div class="head"><h2>${esc(t("chip_genres"))}</h2></div><div class="rail grail" id="rail-gen">${skeletonRail(4)}</div></section>
+    <section class="rise d5" id="sec-coll"><div class="head"><h2>${esc(t("chip_collections"))}</h2>${canEditCollections() ? `<button class="back" id="coll-add-home" aria-label="+">+</button>` : ""}</div><div class="rail" id="rail-coll">${skeletonRail(5)}</div></section>`;
 
   document.getElementById("lang-btn").onclick = () => setLang(lang === "ru" ? "en" : "ru");
   document.getElementById("home-search").onclick = () => showSearch();
@@ -223,12 +222,25 @@ async function showHome() {
     screen.querySelectorAll(".chips .chip[data-to]").forEach(x => x.classList.toggle("active", x === c));
     document.getElementById(c.dataset.to)?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
-  // «Подборки» — не якорь на секцию, а переход на отдельный экран.
-  document.getElementById("chip-coll").onclick = () => showCollections();
+  if (canEditCollections()) document.getElementById("coll-add-home").onclick = () => createCollectionFlow();
 
   loadRail("rail-pop", "/api/browse?sort=popular&limit=20");
   loadRail("rail-top", "/api/browse?sort=top&limit=20");
   loadGenres();
+  loadCollectionsRail();
+}
+
+async function loadCollectionsRail() {
+  const el = document.getElementById("rail-coll");
+  try {
+    const { items } = await api("/api/collections");
+    if (!el) return;
+    if (!items.length) {
+      el.innerHTML = `<div class="rail-empty">${esc(canEditCollections() ? t("collections_empty_admin_s") : t("collections_empty_s"))}</div>`;
+      return;
+    }
+    el.replaceChildren(...items.map(collectionCard));
+  } catch (e) { if (el) el.innerHTML = `<div class="rail-empty">${esc(t("rail_err"))}</div>`; }
 }
 
 async function loadRail(id, path) {
@@ -291,31 +303,13 @@ function collectionCard(c) {
   return card;
 }
 
-async function showCollections() {
-  unwireDetailScroll();
-  window.scrollTo(0, 0);
-  const canEdit = canEditCollections();
-  screen.innerHTML = `<div class="sub-head">${backBtn()}<h1>${esc(t("collections_title"))}</h1>
-    ${canEdit ? `<button class="back" id="coll-add" aria-label="+">+</button>` : ""}</div>
-    <div id="cc">${skeletonGrid(6)}</div>`;
-  wireBack(() => { setActiveTab("home"); showHome(); });
-  if (canEdit) document.getElementById("coll-add").onclick = () => createCollectionFlow();
-  try {
-    const { items } = await api("/api/collections");
-    const el = document.getElementById("cc");
-    if (!items.length) {
-      el.innerHTML = emptyState("🎬", t("collections_empty_t"),
-        canEdit ? t("collections_empty_admin_s") : t("collections_empty_s"));
-      return;
-    }
-    el.replaceChildren(gridOf(items, collectionCard));
-  } catch (e) { document.getElementById("cc").innerHTML = emptyState("⚠️", t("load_err"), ""); }
-}
-
 function createCollectionFlow() {
-  const el = document.getElementById("cc");
+  // Вызывается с Главной («+» в заголовке секции «Подборки») — временно подменяет
+  // содержимое секции формой; после создания уходим в showCollectionDetail, а сама
+  // секция пересоберётся из API при следующем возврате на Главную (showHome).
+  const el = document.getElementById("sec-coll");
   if (!el) return;
-  el.innerHTML = `<div class="chart-card">
+  el.innerHTML = `<div class="chart-card" style="margin:0 20px;">
     <input class="code-input" id="coll-title-input" placeholder="${esc(t("collections_title_ph"))}" autocomplete="off">
     <button class="pbtn primary" id="coll-create-btn">${esc(t("collections_create_btn"))}</button>
   </div>`;
@@ -341,7 +335,7 @@ async function showCollectionDetail(id) {
         <button class="pbtn primary" id="cd-add">${esc(t("coll_add_film_btn"))}</button>
         <button class="pbtn danger" id="cd-delete">${esc(t("coll_delete_btn"))}</button>
       </div>` : ""}`;
-  wireBack(() => showCollections());
+  wireBack(() => { setActiveTab("home"); showHome(); });
   if (canEdit) {
     document.getElementById("cd-add").onclick = () => showSearch({ type: "collection", id });
     document.getElementById("cd-delete").onclick = () => {
@@ -349,7 +343,7 @@ async function showCollectionDetail(id) {
       tg.showConfirm(t("coll_delete_confirm", title), async ok => {
         if (!ok) return;
         await api(`/api/admin/collections/${id}`, { method: "DELETE" });
-        showCollections();
+        setActiveTab("home"); showHome();
       });
     };
   }
