@@ -148,22 +148,37 @@ async function api(path, opts = {}) {
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
 function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; }
 // Постеры грузим через наш прокси /img — работает даже если CDN блокируется у клиента.
-// small=true — для тайлов сеток/рельсов: кинопоисковские постеры просим в 300x450
-// вместо 600x900 (вчетверо меньше байт — на мобильной сети меньше обрывов).
+// small=true — кинопоисковские постеры в 300x450 вместо 600x900 (вчетверо меньше
+// байт). Используется ВЕЗДЕ, где постер мелкий: тайлы, и карточка фильма тоже
+// (там постер 128px — 300x450 достаточно, а главное URL совпадает с тайлом →
+// постер на карточке встаёт мгновенно из браузерного кэша, без сети).
+// Бекдропы get-ott жмём 1344x756 (до 1.9МБ!) → 672x378 — обрывы уходят.
 function posterSrc(u, small) {
   if (!u) return "";
   if (small) u = u.replace(/^(https:\/\/avatars\.mds\.yandex\.net\/get-kinopoisk-image\/.+)\/600x900$/, "$1/300x450");
+  u = u.replace(/^(https:\/\/avatars\.mds\.yandex\.net\/get-ott\/.+)\/1344x756$/, "$1/672x378");
   return "/img?u=" + encodeURIComponent(u);
 }
-// Ретрай битой/оборванной картинки: до 2 повторов с кэш-бастом (&r=) — это же
-// лечит навсегда закэшированные WebView'ом обрезанные копии (immutable-кэш).
-// Только после всех попыток убираем <img> (виден плейсхолдер с названием).
+// Ретрай оборванной картинки. Важно: НЕ трогаем видимый <img> — свежую копию
+// грузим в отдельном Image() и подменяем src только когда она ПОЛНОСТЬЮ доехала.
+// Частично показанный постер никогда не «моргает» и не исчезает (раньше retry
+// менял src на живом теге — постер появлялся и тут же пропадал). Кэш-баст &r=
+// обходит застрявшую в WebView-кэше битую копию. Убираем тег только если не
+// отрисовалось ВООБЩЕ ничего и все попытки провалились.
 window.__imgRetry = function (img) {
   const n = +(img.dataset.r || 0);
-  if (n >= 2) { img.remove(); return; }
+  if (n >= 2) {
+    if (!img.naturalWidth) img.remove();  // совсем пусто → плейсхолдер с названием
+    return;                               // частично видно → оставляем как есть
+  }
   img.dataset.r = n + 1;
-  const base = img.src.replace(/&r=\d+$/, "");
-  setTimeout(() => { img.src = base + "&r=" + Date.now(); }, 700 * (n + 1));
+  const fresh = img.src.replace(/&r=\d+$/, "") + "&r=" + Date.now();
+  setTimeout(() => {
+    const probe = new Image();
+    probe.onload = () => { img.src = fresh; };   // подменяем только готовую
+    probe.onerror = () => { window.__imgRetry(img); };
+    probe.src = fresh;
+  }, 700 * (n + 1));
 };
 function ratingOf(m) {
   const r = m.imdb_rating || m.kp_rating;
@@ -505,8 +520,8 @@ function renderDetail(id, m) {
         <span class="t">${esc(m.title)}</span>
         <button class="d-ctrl" id="d-more-sticky" aria-label="Share">${shareSvg()}</button>
       </div>
-      <div class="d-backdrop${bdUrl ? "" : " no-bd"}" id="d-backdrop">
-        ${bdUrl ? `<img id="d-backdrop-img" src="${posterSrc(bdUrl)}" alt="" onerror="__imgRetry(this)">` : ""}
+      <div class="d-backdrop${m.backdrop_url ? "" : " no-bd"}" id="d-backdrop">
+        ${bdUrl ? `<img id="d-backdrop-img" src="${posterSrc(bdUrl, !m.backdrop_url)}" alt="" onerror="__imgRetry(this)">` : ""}
         <div class="d-scrim-t"></div><div class="d-scrim-b"></div>
         <div class="d-floatctrls">
           <button class="d-ctrl" id="d-back-top" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
@@ -517,7 +532,7 @@ function renderDetail(id, m) {
         <div class="d-poster-wrap" id="d-poster-wrap">
           <div class="d-poster">
             <span class="fb">${esc(m.title)}</span>
-            ${m.poster_url ? `<img src="${posterSrc(m.poster_url)}" alt="" onerror="__imgRetry(this)">` : ""}
+            ${m.poster_url ? `<img src="${posterSrc(m.poster_url, true)}" alt="" onerror="__imgRetry(this)">` : ""}
           </div>
         </div>
         <h1 class="d-title">${esc(m.title)}</h1>
