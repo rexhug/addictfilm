@@ -6,6 +6,7 @@ community-рейтинг = средняя оценка всех пользова
 
 Запуск:  uvicorn main:app --port 8077   (из папки backend/)
 """
+import hashlib
 import logging
 import os
 from datetime import datetime, timezone
@@ -437,8 +438,34 @@ async def _img_sess() -> aiohttp.ClientSession:
     global _img_session
     if _img_session is None or _img_session.closed:
         _img_session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=12), headers={"User-Agent": "Mozilla/5.0"})
+            timeout=aiohttp.ClientTimeout(total=15, connect=5), headers={"User-Agent": "Mozilla/5.0"})
     return _img_session
+
+
+# Дисковый кэш картинок на томе /data (пустует после миграции БД на Postgres).
+# Смысл: раздача с локального диска стабильнее и быстрее, чем каждый раз ходить
+# на CDN Яндекса/Amazon — меньше шансов оборвать медленное мобильное соединение.
+_IMG_CACHE_DIR = os.getenv("IMG_CACHE_DIR") or ("/data/imgcache" if os.path.isdir("/data") else "")
+
+
+def _img_ctype(data: bytes) -> str:
+    """Content-Type по магическим байтам (в кэше храним только тело)."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    return "image/jpeg"
+
+
+def _img_cache_path(u: str) -> str | None:
+    if not _IMG_CACHE_DIR:
+        return None
+    key = hashlib.sha256(u.encode()).hexdigest()
+    return os.path.join(_IMG_CACHE_DIR, key[:2], key)
 
 
 @app.get("/img")
@@ -446,17 +473,45 @@ async def img_proxy(u: str):
     p = urlparse(u)
     if p.scheme not in ("http", "https") or p.netloc.lower() not in _ALLOWED_IMG_HOSTS:
         raise HTTPException(status_code=400, detail="Недопустимый источник")  # анти-SSRF
-    try:
-        async with (await _img_sess()).get(u) as resp:
-            if resp.status != 200:
-                raise HTTPException(status_code=404, detail="Постер не найден")
-            data = await resp.read()
-            ctype = resp.headers.get("Content-Type", "image/jpeg")
-    except HTTPException:
-        raise
-    except Exception:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail="Не удалось загрузить постер")
-    return Response(content=data, media_type=ctype,
+
+    cache_path = _img_cache_path(u)
+    if cache_path and os.path.exists(cache_path):
+        with open(cache_path, "rb") as f:
+            data = f.read()
+        return Response(content=data, media_type=_img_ctype(data),
+                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+    # 2 попытки к CDN: мобильные/CDN-обрывы — обычное дело, ретрай дешевле 502.
+    data = None
+    for attempt in (1, 2):
+        try:
+            async with (await _img_sess()).get(u) as resp:
+                if resp.status != 200:
+                    raise HTTPException(status_code=404, detail="Постер не найден")
+                body = await resp.read()
+                # Защита от усечённого ответа: не отдаём (и не кэшируем) битую картинку.
+                clen = resp.headers.get("Content-Length")
+                if clen and len(body) != int(clen):
+                    raise aiohttp.ClientPayloadError("truncated body")
+                data = body
+                break
+        except HTTPException:
+            raise
+        except Exception:  # noqa: BLE001
+            if attempt == 2:
+                raise HTTPException(status_code=502, detail="Не удалось загрузить постер")
+
+    if cache_path and data:
+        try:  # атомарная запись: tmp + rename (второй инстанс может писать параллельно)
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            tmp = f"{cache_path}.{os.getpid()}.tmp"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, cache_path)
+        except OSError:
+            pass  # кэш — оптимизация, не роняем отдачу из-за диска
+
+    return Response(content=data, media_type=_img_ctype(data),
                     headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
