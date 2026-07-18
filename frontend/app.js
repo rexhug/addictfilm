@@ -781,7 +781,7 @@ function pairHeroHTML(ps) {
   const top = `<div class="st-pair-top">
     ${ps.agreement != null ? ringSVG(ps.agreement) : ""}
     <div class="st-pair-side">
-      <div class="st-pair-name">${esc(t("partner_with"))} ${name} 💙</div>
+      <div class="st-pair-name">${esc(t("partner_with"))} ${name}</div>
       ${days != null ? `<div class="st-pair-days">${esc(t("st_days_together", days))}</div>` : ""}
       <div class="st-pair-minis">
         ${stMini(ps.rated_together || 0, t("st_films_together"))}
