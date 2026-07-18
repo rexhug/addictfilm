@@ -397,6 +397,7 @@ async def partner_stats(user: dict = Depends(current_user)):
         raise HTTPException(status_code=404, detail="Нет пары")
     s = await db.pair_period_stats(user["id"], pair["partner_id"], pair["since"])
     s["partner"] = _partner_brief(await db.get_user(pair["partner_id"]))
+    s["since"] = pair["since"]  # для «вместе N дней» на фронте
     return s
 
 

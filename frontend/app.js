@@ -50,6 +50,11 @@ const DICT = {
     confirm_add: (t) => `Добавить «${t}» в «Хочу посмотреть»?`, already_in_list: "Уже в твоём списке!",
     stats_title: "Статистика", my_stats: "Моя статистика", stats_empty_t: "Пока нет статистики", stats_empty_s: "Добавь фильмы и поставь оценки", calc: "Считаю…",
     tile_watched: "просмотрено", tile_want: "в «Хочу»", tile_avg: "средняя", tile_hours: "ч", st_screen_time: "экранного времени",
+    st_days_together: (n) => `вместе ${n} ${pl(n, ["день", "дня", "дней"])}`,
+    st_films_together: "фильмов вместе", st_hours_together: "часов вместе", st_matches_short: "совпадений",
+    st_ratings: "оценок", st_fav_film: "Любимый фильм", st_worst_film: "Худший фильм",
+    st_longest: "Самый длинный", st_this_year: "В этом году", st_director: "Режиссёр", st_actor: "Актёр",
+    st_genre_other: "Другое",
     chart_ratings: "Мои оценки", chart_genres: "Жанры", chart_actors: "Актёры", chart_directors: "Режиссёры",
     year_title: (y) => `Итоги ${y}`, year_avg: "средняя", year_fav_genre: "Любимый жанр — ", year_actor: "Актёр года — ", year_best: "Лучшее",
     auth_err_s: "Открой через кнопку меню бота в Telegram",
@@ -104,6 +109,11 @@ const DICT = {
     confirm_add: (t) => `Add "${t}" to your wishlist?`, already_in_list: "Already in your list!",
     stats_title: "Stats", my_stats: "My stats", stats_empty_t: "No stats yet", stats_empty_s: "Add films and rate them", calc: "Calculating…",
     tile_watched: "watched", tile_want: "wishlist", tile_avg: "average", tile_hours: "h", st_screen_time: "of screen time",
+    st_days_together: (n) => `${n} days together`,
+    st_films_together: "films together", st_hours_together: "hours together", st_matches_short: "matches",
+    st_ratings: "ratings", st_fav_film: "Favorite", st_worst_film: "Worst",
+    st_longest: "Longest", st_this_year: "This year", st_director: "Director", st_actor: "Actor",
+    st_genre_other: "Other",
     chart_ratings: "My ratings", chart_genres: "Genres", chart_actors: "Actors", chart_directors: "Directors",
     year_title: (y) => `${y} in review`, year_avg: "average", year_fav_genre: "Favorite genre — ", year_actor: "Actor of the year — ", year_best: "Best",
     auth_err_s: "Open via the bot's menu button in Telegram",
@@ -716,86 +726,147 @@ function showSearch(mode = null) {
   input.focus();
 }
 
-// ── Статистика (пара в приоритете сверху, личная — ниже) ──────────────────────
+// ── Статистика (пара сверху премиум-блоком, личная ниже) ──────────────────────
+const _GENRE_PIE = ["#3B82F6", "#8B5CF6", "#EC4899", "#F59E0B", "#10B981", "#64748B"];
+function parseRuntimeMin(str) { const m = String(str || "").match(/(\d+)/); return m ? +m[1] : 0; }
+
 async function showStats() {
   unwireDetailScroll();
   window.scrollTo(0, 0);
   screen.innerHTML = `<div class="page-head"><h1>${esc(t("stats_title"))}</h1></div><div id="stats"><div class="empty"><div class="empty-sub">${esc(t("calc"))}</div></div></div>`;
   const box = document.getElementById("stats");
 
-  // 1. Пара — приоритетно, первым блоком.
   let partner = { status: "none" }, pstats = null;
   try { partner = await api("/api/partner"); } catch (e) {}
   if (partner.status === "paired") { try { pstats = await api("/api/partner/stats"); } catch (e) {} }
 
-  // 2. Личная статистика за всё время — ниже.
   const s = await api("/api/stats");
+  // Сырой список просмотренного — для карточек «лучший/худший/длинный» (id+постер
+  // для перехода на фильм). Считаем на клиенте, без нового бекенда.
+  let watched = [];
+  try { watched = (await api("/api/movies?status=watched&limit=100")).items || []; } catch (e) {}
+
   const personal = (!s.watched && !s.want)
     ? emptyState("📊", t("stats_empty_t"), t("stats_empty_s"))
-    : personalStatsHTML(s);
+    : personalStatsHTML(s, watched);
 
-  if (partner.status === "paired" && pstats) {
-    // Пара — отдельный премиум-блок (только «отношения»: совместимость + общие
-    // фильмы), НЕ дублируем полный набор графиков пары (это и была перегрузка).
-    // Ниже — «Моя статистика».
-    box.innerHTML =
-      pairHeroHTML(pstats) +
-      `<div class="st-section-lbl">${esc(t("my_stats"))}</div>` +
-      personal;
-  } else {
-    box.innerHTML = partnerCardHTML(partner, null) + personal;
-  }
+  box.innerHTML =
+    (partner.status === "paired" && pstats
+      ? pairHeroHTML(pstats) + `<div class="st-section-lbl">${esc(t("my_stats"))}</div>`
+      : partnerCardHTML(partner, null)) +
+    personal;
+
   wirePartner(box);
-  requestAnimationFrame(() => box.querySelectorAll(".st-fill").forEach(el => el.classList.add("in")));
+  wireStatCards(box, watched);
+  requestAnimationFrame(() => box.querySelectorAll(".st-fill,.st-ring-fg").forEach(el => el.classList.add("in")));
+}
+
+function ringSVG(pct) {
+  const r = 46, c = 2 * Math.PI * r;
+  return `<svg class="st-ring" viewBox="0 0 108 108">
+    <circle class="st-ring-bg" cx="54" cy="54" r="${r}"></circle>
+    <circle class="st-ring-fg" cx="54" cy="54" r="${r}" style="stroke-dasharray:${c};--full:${c};--off:${c * (1 - pct / 100)};"></circle>
+    <text class="st-ring-num" x="54" y="52">${pct}<tspan class="st-ring-pct">%</tspan></text>
+    <text class="st-ring-lbl" x="54" y="70">${esc(t("partner_compat"))}</text>
+  </svg>`;
 }
 
 function pairHeroHTML(ps) {
   const name = esc(ps.partner.name || t("partner_word"));
-  const empty = !ps.watched && !ps.want && !ps.rated_together;
-  const facts = empty ? `<div class="st-pair-empty">${esc(t("pair_empty"))}</div>`
-    : (ps.agreement != null
-        ? `<div class="st-pair-hero">
-             <div class="st-pair-num">${ps.agreement}<span>%</span></div>
-             <div class="st-pair-cap"><b>${esc(t("partner_with"))} ${name}</b><span>${esc(t("partner_compat"))} · ${ps.rated_together} ${esc(t("count_films", ps.rated_together))}</span></div>
-           </div>
-           ${ps.matches ? stFact("🎯", t("partner_matches"), `<b>${ps.matches}</b>`) : ""}
-           ${ps.best ? stFact("💛", t("partner_best"), `${esc(ps.best.title)} <small>${ps.best.avg}</small>`) : ""}
-           ${ps.controversial ? stFact("⚡️", t("partner_controversial"), `${esc(ps.controversial.title)} <small>${ps.controversial.a}/${ps.controversial.b}</small>`) : ""}`
-        : `<div class="st-pair-hero"><div class="st-pair-cap"><b>${esc(t("partner_with"))} ${name}</b><span>${esc(t("partner_no_common"))}</span></div></div>`);
-  return `<div class="st-pair">${facts}<button class="st-unpair" id="p-unpair">${esc(t("partner_unpair_btn"))}</button></div>`;
+  if (!ps.watched && !ps.want && !ps.rated_together) {
+    return `<div class="st-pair"><div class="st-pair-cap"><b>${esc(t("partner_with"))} ${name}</b><span>${esc(t("pair_empty"))}</span></div>${unpairLink()}</div>`;
+  }
+  const days = ps.since ? Math.max(0, Math.floor((Date.now() - new Date(ps.since)) / 86400000)) : null;
+  const hours = Math.floor((ps.total_runtime_min || 0) / 60);
+  const top = `<div class="st-pair-top">
+    ${ps.agreement != null ? ringSVG(ps.agreement) : ""}
+    <div class="st-pair-side">
+      <div class="st-pair-name">${esc(t("partner_with"))} ${name} 💙</div>
+      ${days != null ? `<div class="st-pair-days">${esc(t("st_days_together", days))}</div>` : ""}
+      <div class="st-pair-minis">
+        ${stMini(ps.rated_together || 0, t("st_films_together"))}
+        ${stMini(hours, t("st_hours_together"))}
+        ${stMini(ps.matches || 0, t("st_matches_short"))}
+      </div>
+    </div>
+  </div>`;
+  const facts =
+    (ps.best ? stFact("💛", t("partner_best"), `${esc(ps.best.title)} <small>${ps.best.avg}★</small>`) : "") +
+    (ps.controversial ? stFact("⚡️", t("partner_controversial"), `${esc(ps.controversial.title)} <small>${ps.controversial.a}/${ps.controversial.b}</small>`) : "");
+  return `<div class="st-pair">${top}${facts ? `<div class="st-pair-facts">${facts}</div>` : ""}${unpairLink()}</div>`;
 }
+function unpairLink() { return `<button class="st-unpair" id="p-unpair">${esc(t("partner_unpair_btn"))}</button>`; }
 function stFact(icon, label, val) {
   return `<div class="st-fact"><span class="st-fact-i">${icon}</span><span class="st-fact-l">${esc(label)}</span><span class="st-fact-v">${val}</span></div>`;
 }
 
-function personalStatsHTML(s) {
+function personalStatsHTML(s, watched) {
   const y = s.year;
   const hours = Math.floor(s.total_runtime_min / 60);
-  // Герой — экранное время (эмоциональная цифра), + 3 вторичных метрики компактно.
   const hero = `<div class="st-hero">
     <div class="st-hero-num">${hours}<span> ${esc(t("tile_hours"))}</span></div>
     <div class="st-hero-sub">${esc(t("st_screen_time"))}</div>
     <div class="st-mini-row">
-      ${stMini(s.watched, t("tile_watched"))}${stMini(s.want, t("tile_want"))}${stMini(s.avg_rating ?? "—", t("tile_avg"))}
+      ${stMini(s.watched, t("tile_watched"))}${stMini(s.want, t("tile_want"))}${stMini(s.avg_rating ?? "—", t("tile_avg"))}${stMini(s.rating_count, t("st_ratings"))}
     </div>
   </div>`;
+
+  // Карточки-факты из сырого списка (клик → фильм). rated — только с оценкой.
+  const rated = watched.filter(m => m.my_rating);
+  const best = rated.length ? rated.reduce((a, b) => b.my_rating > a.my_rating ? b : a) : null;
+  const worst = rated.length ? rated.reduce((a, b) => b.my_rating < a.my_rating ? b : a) : null;
+  const longest = watched.length ? watched.reduce((a, b) => parseRuntimeMin(b.runtime) > parseRuntimeMin(a.runtime) ? b : a) : null;
+  const infoCards = [
+    best ? filmCard("🏆", t("st_fav_film"), best) : "",
+    worst && worst !== best ? filmCard("🥔", t("st_worst_film"), worst) : "",
+    longest && parseRuntimeMin(longest.runtime) ? filmCard("⏱", t("st_longest"), longest, esc(longest.runtime)) : "",
+    y.count ? factCard("🎬", t("st_this_year"), y.count) : "",
+    s.top_directors.length ? factCard("🎥", t("st_director"), esc(s.top_directors[0][0])) : "",
+    s.top_actors.length ? factCard("⭐", t("st_actor"), esc(s.top_actors[0][0])) : "",
+  ].filter(Boolean).join("");
+  const info = infoCards ? `<div class="st-info-grid">${infoCards}</div>` : "";
+
+  // Донат жанров: топ-5 + «Другое».
+  let genresBlock = "";
+  if (s.top_genres_pct.length) {
+    const top5 = s.top_genres_pct.slice(0, 5);
+    const sum = top5.reduce((a, [, p]) => a + p, 0);
+    const slices = sum < 99 ? [...top5, [t("st_genre_other"), 100 - sum]] : top5;
+    let acc = 0;
+    const stops = slices.map(([, p], i) => { const seg = `${_GENRE_PIE[i]} ${acc}% ${acc + p}%`; acc += p; return seg; }).join(",");
+    const legend = slices.map(([g, p], i) => `<div class="st-lg-row"><span class="st-lg-dot" style="background:${_GENRE_PIE[i]}"></span><span class="st-lg-name">${esc(g)}</span><span class="st-lg-val">${p}%</span></div>`).join("");
+    genresBlock = stCard(t("chart_genres"), `<div class="st-donut-wrap"><div class="st-donut" style="background:conic-gradient(${stops})"></div><div class="st-legend">${legend}</div></div>`);
+  }
+
   const dist = s.rating_dist || [];
   const maxD = Math.max(1, ...dist);
   const hist = dist.some(v => v > 0) ? stCard(t("chart_ratings"), `<div class="st-hist">${
     dist.map((c, i) => `<div class="st-hcol"><div class="st-harea">${c ? `<div class="st-hval">${c}</div>` : ""}<div class="st-hbar st-fill" style="--h:${c ? Math.max(6, Math.round(c / maxD * 100)) : 0}%"></div></div><div class="st-hx">${i + 1}</div></div>`).join("")}</div>`) : "";
-  const genres = s.top_genres_pct.length ? stCard(t("chart_genres"), s.top_genres_pct.map(([g, p]) => stBar(g, p + "%", p)).join("")) : "";
+
   const maxA = s.top_actors.length ? s.top_actors[0][1] : 1;
   const actors = s.top_actors.length ? stCard(t("chart_actors"), s.top_actors.map(([n, c]) => stBar(n, c, Math.round(c / maxA * 100))).join("")) : "";
   const maxDir = s.top_directors.length ? s.top_directors[0][1] : 1;
   const directors = s.top_directors.length ? stCard(t("chart_directors"), s.top_directors.map(([n, c]) => stBar(n, c, Math.round(c / maxDir * 100))).join("")) : "";
-  const yearCard = y.count ? `<div class="st-card st-year">
-    <div class="st-card-h">${esc(t("year_title", y.year))}</div>
-    <div class="st-year-big"><b>${y.count}</b> ${esc(t("count_films", y.count))}${y.avg_rating ? ` · ★ ${y.avg_rating}` : ""}</div>
-    ${y.top_genre ? stFact("🎭", t("chart_genres"), esc(y.top_genre)) : ""}
-    ${y.top_actor ? stFact("🎬", t("chart_actors"), `${esc(y.top_actor[0])} <small>${y.top_actor[1]}</small>`) : ""}
-    ${y.best_titles && y.best_titles.length ? stFact("⭐", t("year_best"), `${y.best_titles.map(esc).join(", ")} <small>${y.best_avg}</small>`) : ""}
-  </div>` : "";
-  return hero + hist + genres + actors + directors + yearCard;
+
+  return hero + info + genresBlock + hist + actors + directors;
+}
+function filmCard(icon, label, m, extra) {
+  return `<button class="st-info st-info-film" data-film="${m.id}">
+    <div class="st-info-h"><span>${icon}</span>${esc(label)}</div>
+    <div class="st-info-film-row">
+      <div class="st-info-poster">${m.poster_url ? `<img loading="lazy" src="${posterSrc(m.poster_url, true)}" alt="" onerror="__imgRetry(this)">` : `<span>${esc(m.title[0] || "?")}</span>`}</div>
+      <div class="st-info-film-meta"><div class="st-info-title">${esc(m.title)}</div><div class="st-info-sub">${extra || (m.my_rating ? m.my_rating + " ★" : esc(m.year || ""))}</div></div>
+    </div>
+  </button>`;
+}
+function factCard(icon, label, value) {
+  return `<div class="st-info"><div class="st-info-h"><span>${icon}</span>${esc(label)}</div><div class="st-info-big">${esc(value)}</div></div>`;
+}
+function wireStatCards(box, watched) {
+  box.querySelectorAll(".st-info-film").forEach(b => b.onclick = () => {
+    const back = () => { setActiveTab("stats"); showStats(); };
+    openDetail(+b.dataset.film, back);
+  });
 }
 function stMini(value, label) { return `<div class="st-mini"><div class="st-mini-v">${esc(value)}</div><div class="st-mini-l">${esc(label)}</div></div>`; }
 function stCard(title, inner) { return `<div class="st-card"><div class="st-card-h">${esc(title)}</div>${inner}</div>`; }

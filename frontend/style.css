@@ -305,26 +305,66 @@ section{margin-top:32px;}
 .st-pair{position:relative;background:
   radial-gradient(120% 80% at 100% 0%, rgba(59,130,246,.14), transparent 60%), var(--s1);
   border:1px solid rgba(59,130,246,.22);border-radius:22px;padding:20px;margin:0 20px;overflow:hidden;}
-.st-pair-hero{display:flex;align-items:center;gap:16px;margin-bottom:6px;}
-.st-pair-num{font-size:46px;font-weight:800;letter-spacing:-0.04em;line-height:1;color:var(--accent);font-variant-numeric:tabular-nums;}
-.st-pair-num span{font-size:24px;}
+.st-pair-top{display:flex;align-items:center;gap:16px;}
+.st-pair-side{flex:1;min-width:0;}
+.st-pair-name{font-size:16px;font-weight:650;letter-spacing:-0.01em;}
+.st-pair-days{font-size:12.5px;color:var(--ink-2);margin-top:2px;}
+.st-pair-minis{display:flex;gap:8px;margin-top:14px;}
+.st-pair-minis .st-mini-v{font-size:19px;}
 .st-pair-cap{display:flex;flex-direction:column;gap:3px;}
 .st-pair-cap b{font-size:16px;font-weight:650;letter-spacing:-0.01em;}
 .st-pair-cap span{font-size:12.5px;color:var(--ink-2);}
-.st-pair-empty{font-size:13px;color:var(--ink-2);line-height:1.5;}
-.st-pair .st-fact{padding:10px 0;}
-.st-unpair{margin-top:14px;width:100%;border:none;border-radius:14px;padding:11px;
-  background:var(--s2);color:#F87171;font-size:14px;font-weight:500;font-family:var(--font);cursor:pointer;transition:transform .15s;}
-.st-unpair:active{transform:scale(.98);}
+.st-pair-facts{margin-top:14px;padding-top:6px;border-top:1px solid var(--hair);}
+.st-pair-facts .st-fact:first-child{border-top:none;}
+/* кольцо совместимости (SVG) */
+.st-ring{flex:none;width:104px;height:104px;}
+.st-ring-bg{fill:none;stroke:var(--s3);stroke-width:9;}
+.st-ring-fg{fill:none;stroke:var(--accent);stroke-width:9;stroke-linecap:round;
+  transform:rotate(-90deg);transform-origin:54px 54px;stroke-dashoffset:var(--full);
+  transition:stroke-dashoffset .9s cubic-bezier(.2,.8,.2,1);
+  filter:drop-shadow(0 0 6px rgba(59,130,246,.5));}
+.st-ring-fg.in{stroke-dashoffset:var(--off);}
+.st-ring-num{fill:var(--ink);font:800 26px var(--font);text-anchor:middle;letter-spacing:-0.03em;}
+.st-ring-pct{font-size:14px;fill:var(--ink-2);}
+.st-ring-lbl{fill:var(--ink-2);font:600 8.5px var(--font);text-anchor:middle;text-transform:uppercase;letter-spacing:.06em;}
+/* «разорвать пару» — приглушённая опасная опция внизу, не кнопка-акцент */
+.st-unpair{display:block;margin:16px auto 0;border:none;background:none;color:var(--ink-2);
+  font-size:12.5px;font-family:var(--font);cursor:pointer;padding:4px 8px;transition:opacity .15s;}
+.st-unpair:active{opacity:.5;}
 
-/* итоги года — акцентная рамка */
-.st-year{border-color:rgba(59,130,246,.18);}
-.st-year-big{font-size:17px;font-weight:650;letter-spacing:-0.01em;margin-bottom:8px;font-variant-numeric:tabular-nums;}
+/* инфо-карточки 2 в ряд (лучший/худший/длинный/год/режиссёр/актёр) */
+.st-info-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px 20px 0;}
+.st-info{text-align:left;background:var(--s1);border:1px solid var(--hair);border-radius:18px;padding:14px;
+  font-family:var(--font);cursor:default;color:var(--ink);transition:transform .12s;}
+.st-info-film{cursor:pointer;}
+.st-info-film:active{transform:scale(.98);}
+.st-info-h{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2);font-weight:500;margin-bottom:10px;}
+.st-info-h span{font-size:13px;}
+.st-info-big{font-size:30px;font-weight:800;letter-spacing:-0.03em;font-variant-numeric:tabular-nums;}
+.st-info-film-row{display:flex;gap:10px;align-items:center;}
+.st-info-poster{flex:none;width:40px;aspect-ratio:2/3;border-radius:8px;overflow:hidden;position:relative;
+  background:var(--s2);display:grid;place-items:center;font-size:14px;font-weight:600;color:var(--ink-2);}
+.st-info-poster img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;}
+.st-info-film-meta{min-width:0;}
+.st-info-title{font-size:14px;font-weight:600;line-height:1.2;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.st-info-sub{font-size:12px;color:var(--ink-2);margin-top:3px;font-variant-numeric:tabular-nums;}
+
+/* донат жанров + легенда */
+.st-donut-wrap{display:flex;align-items:center;gap:20px;}
+.st-donut{flex:none;width:116px;height:116px;border-radius:50%;
+  -webkit-mask:radial-gradient(circle 34px at 50% 50%, transparent 98%, #000);
+  mask:radial-gradient(circle 34px at 50% 50%, transparent 98%, #000);}
+.st-legend{flex:1;display:flex;flex-direction:column;gap:9px;}
+.st-lg-row{display:flex;align-items:center;gap:9px;font-size:13.5px;}
+.st-lg-dot{flex:none;width:9px;height:9px;border-radius:3px;}
+.st-lg-name{flex:1;}
+.st-lg-val{color:var(--ink-2);font-variant-numeric:tabular-nums;font-weight:500;}
 
 @media (prefers-reduced-motion:reduce){
-  .st-hbar,.st-bar-fill{transition:none;}
-  .st-hbar{height:var(--h);}.st-bar-fill{width:var(--w);}
-  .st-unpair:active{transform:none;}
+  .st-hbar,.st-bar-fill,.st-ring-fg{transition:none;}
+  .st-hbar{height:var(--h);}.st-bar-fill{width:var(--w);}.st-ring-fg{stroke-dashoffset:var(--off);}
+  .st-info-film:active,.st-unpair:active{transform:none;}
 }
 
 /* ── Пара ───────────────────────────────────── */
