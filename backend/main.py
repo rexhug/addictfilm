@@ -398,6 +398,11 @@ async def partner_stats(user: dict = Depends(current_user)):
     s = await db.pair_period_stats(user["id"], pair["partner_id"], pair["since"])
     s["partner"] = _partner_brief(await db.get_user(pair["partner_id"]))
     s["since"] = pair["since"]  # для «вместе N дней» на фронте
+    # Сольная статистика партнёра — для блока «Сравнение с {name}».
+    ps = await db.get_user_stats(pair["partner_id"])
+    s["partner_solo"] = {"watched": ps["watched"], "want": ps["want"],
+                         "avg_rating": ps["avg_rating"], "rating_count": ps["rating_count"],
+                         "hours": (ps["total_runtime_min"] or 0) // 60}
     return s
 
 

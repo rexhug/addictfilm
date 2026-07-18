@@ -361,9 +361,64 @@ section{margin-top:32px;}
 .st-lg-name{flex:1;}
 .st-lg-val{color:var(--ink-2);font-variant-numeric:tabular-nums;font-weight:500;}
 
+/* достижения — горизонтальный рельс */
+.st-ach-card{overflow:hidden;}
+.st-ach-rail{display:flex;gap:12px;overflow-x:auto;scrollbar-width:none;margin:0 -18px;padding:0 18px;}
+.st-ach-rail::-webkit-scrollbar{display:none;}
+.st-ach{flex:0 0 96px;text-align:center;padding:14px 8px;border-radius:16px;background:var(--s2);
+  border:1px solid var(--hair);opacity:.42;filter:grayscale(.6);}
+.st-ach.on{opacity:1;filter:none;background:
+  radial-gradient(120% 90% at 50% 0%, rgba(59,130,246,.16), transparent 65%), var(--s2);
+  border-color:rgba(59,130,246,.28);}
+.st-ach-i{font-size:30px;line-height:1;}
+.st-ach-t{font-size:12.5px;font-weight:600;margin-top:8px;}
+.st-ach-s{font-size:11px;color:var(--ink-2);margin-top:2px;line-height:1.2;}
+
+/* heatmap активности */
+.st-hm-scroll{overflow-x:auto;scrollbar-width:none;margin:0 -18px;padding:0 18px;}
+.st-hm-scroll::-webkit-scrollbar{display:none;}
+.st-hm{display:flex;gap:3px;width:max-content;}
+.hm-col{display:flex;flex-direction:column;gap:3px;}
+.hm-cell{width:10px;height:10px;border-radius:2.5px;background:var(--s3);}
+.hm-empty{background:transparent;}
+.hm-l0{background:var(--s3);}
+.hm-l1{background:rgba(59,130,246,.35);}
+.hm-l2{background:rgba(59,130,246,.65);}
+.hm-l3{background:var(--accent);}
+.st-hm-legend{display:flex;align-items:center;gap:4px;justify-content:flex-end;margin-top:12px;
+  font-size:11px;color:var(--ink-2);}
+.st-hm-legend .hm-cell{width:10px;height:10px;}
+
+/* просмотры по месяцам */
+.st-months{display:flex;align-items:flex-end;gap:4px;height:100px;}
+.st-mcol{flex:1;display:flex;flex-direction:column;align-items:center;height:100%;}
+.st-marea{flex:1;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;}
+.st-mval{font-size:10px;color:var(--ink-2);margin-bottom:3px;font-variant-numeric:tabular-nums;}
+.st-mbar{width:64%;height:0;border-radius:5px 5px 2px 2px;
+  background:linear-gradient(180deg,var(--accent),#2563EB);transition:height .5s cubic-bezier(.2,.8,.2,1);}
+.st-mbar.in{height:var(--h);}
+.st-mx{font-size:10px;color:var(--ink-2);margin-top:6px;text-transform:uppercase;}
+
+/* сравнение с партнёром — двусторонние бары */
+.st-cmp-head{display:flex;justify-content:space-between;font-size:13px;font-weight:600;
+  color:var(--ink-2);margin-bottom:14px;}
+.st-cmp-row{display:flex;align-items:center;gap:8px;margin:12px 0;}
+.st-cmp-a,.st-cmp-b{flex:1;display:flex;align-items:center;gap:6px;min-width:0;}
+.st-cmp-a{flex-direction:row-reverse;}
+.st-cmp-lbl{flex:0 0 auto;font-size:11.5px;color:var(--ink-2);text-align:center;min-width:64px;}
+.st-cmp-track{flex:1;height:7px;border-radius:5px;background:var(--s3);overflow:hidden;}
+.st-cmp-track.r{transform:scaleX(-1);}
+.st-cmp-fill{width:0;height:100%;border-radius:5px;transition:width .6s cubic-bezier(.2,.8,.2,1);}
+.st-cmp-fill.a{background:var(--accent);}
+.st-cmp-fill.b{background:#8B5CF6;}
+.st-cmp-fill.in{width:var(--w);}
+.st-cmp-v{flex:none;font-size:12.5px;font-weight:600;font-variant-numeric:tabular-nums;min-width:26px;}
+.st-cmp-a .st-cmp-v{text-align:left;}.st-cmp-b .st-cmp-v{text-align:right;}
+
 @media (prefers-reduced-motion:reduce){
-  .st-hbar,.st-bar-fill,.st-ring-fg{transition:none;}
+  .st-hbar,.st-bar-fill,.st-ring-fg,.st-mbar,.st-cmp-fill{transition:none;}
   .st-hbar{height:var(--h);}.st-bar-fill{width:var(--w);}.st-ring-fg{stroke-dashoffset:var(--off);}
+  .st-mbar{height:var(--h);}.st-cmp-fill{width:var(--w);}
   .st-info-film:active,.st-unpair:active{transform:none;}
 }
 

@@ -55,6 +55,16 @@ const DICT = {
     st_ratings: "оценок", st_fav_film: "Любимый фильм", st_worst_film: "Худший фильм",
     st_longest: "Самый длинный", st_this_year: "В этом году", st_director: "Режиссёр", st_actor: "Актёр",
     st_genre_other: "Другое",
+    st_achievements: "Достижения", st_activity: "Активность", st_by_month: "Просмотры по месяцам",
+    st_compare: (n) => `Сравнение с ${n}`, st_more: "Ещё о тебе",
+    st_decade: "Десятилетие", st_weekday: "Активный день", st_avg_session: "Средний сеанс", st_top_month: "Топ месяц", st_streak: "Серия",
+    st_streak_days: (n) => `${n} ${pl(n, ["день", "дня", "дней"])} подряд`,
+    hm_less: "меньше", hm_more: "больше",
+    ach_cinephile: "Киноман", ach_cinephile_s: "50 фильмов", ach_100h: "100 часов", ach_100h_s: "просмотра",
+    ach_streak: "Серия", ach_streak_s: "7 дней подряд", ach_perfect: "Идеальная пара", ach_perfect_s: "90%+ совместимости",
+    ach_rater: "Критик", ach_rater_s: "50 оценок",
+    months_short: ["янв","фев","мар","апр","май","июн","июл","авг","сен","окт","ноя","дек"],
+    weekdays_short: ["пн","вт","ср","чт","пт","сб","вс"],
     chart_ratings: "Мои оценки", chart_genres: "Жанры", chart_actors: "Актёры", chart_directors: "Режиссёры",
     year_title: (y) => `Итоги ${y}`, year_avg: "средняя", year_fav_genre: "Любимый жанр — ", year_actor: "Актёр года — ", year_best: "Лучшее",
     auth_err_s: "Открой через кнопку меню бота в Telegram",
@@ -114,6 +124,16 @@ const DICT = {
     st_ratings: "ratings", st_fav_film: "Favorite", st_worst_film: "Worst",
     st_longest: "Longest", st_this_year: "This year", st_director: "Director", st_actor: "Actor",
     st_genre_other: "Other",
+    st_achievements: "Achievements", st_activity: "Activity", st_by_month: "Watches by month",
+    st_compare: (n) => `Compared with ${n}`, st_more: "More about you",
+    st_decade: "Decade", st_weekday: "Active day", st_avg_session: "Avg session", st_top_month: "Top month", st_streak: "Streak",
+    st_streak_days: (n) => `${n}-day streak`,
+    hm_less: "less", hm_more: "more",
+    ach_cinephile: "Cinephile", ach_cinephile_s: "50 films", ach_100h: "100 hours", ach_100h_s: "watched",
+    ach_streak: "Streak", ach_streak_s: "7 days in a row", ach_perfect: "Perfect pair", ach_perfect_s: "90%+ match",
+    ach_rater: "Critic", ach_rater_s: "50 ratings",
+    months_short: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"],
+    weekdays_short: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"],
     chart_ratings: "My ratings", chart_genres: "Genres", chart_actors: "Actors", chart_directors: "Directors",
     year_title: (y) => `${y} in review`, year_avg: "average", year_fav_genre: "Favorite genre — ", year_actor: "Actor of the year — ", year_best: "Best",
     auth_err_s: "Open via the bot's menu button in Telegram",
@@ -748,7 +768,7 @@ async function showStats() {
 
   const personal = (!s.watched && !s.want)
     ? emptyState("📊", t("stats_empty_t"), t("stats_empty_s"))
-    : personalStatsHTML(s, watched);
+    : personalStatsHTML(s, watched, pstats);
 
   box.innerHTML =
     (partner.status === "paired" && pstats
@@ -800,7 +820,7 @@ function stFact(icon, label, val) {
   return `<div class="st-fact"><span class="st-fact-i">${icon}</span><span class="st-fact-l">${esc(label)}</span><span class="st-fact-v">${val}</span></div>`;
 }
 
-function personalStatsHTML(s, watched) {
+function personalStatsHTML(s, watched, pstats) {
   const y = s.year;
   const hours = Math.floor(s.total_runtime_min / 60);
   const hero = `<div class="st-hero">
@@ -848,7 +868,105 @@ function personalStatsHTML(s, watched) {
   const maxDir = s.top_directors.length ? s.top_directors[0][1] : 1;
   const directors = s.top_directors.length ? stCard(t("chart_directors"), s.top_directors.map(([n, c]) => stBar(n, c, Math.round(c / maxDir * 100))).join("")) : "";
 
-  return hero + info + genresBlock + hist + actors + directors;
+  // ── Фаза 2: всё из watched_at/runtime/year (клиент, без нового бекенда) ──────
+  const act = computeActivity(watched);
+  const achievements = achievementsHTML(s, act, pstats);
+  const heatmap = watched.length ? stCard(t("st_activity"),
+    `<div class="st-hm-scroll"><div class="st-hm">${heatmapCells(act.byDay)}</div></div>
+     <div class="st-hm-legend"><span>${esc(t("hm_less"))}</span><i class="hm-cell hm-l0"></i><i class="hm-cell hm-l1"></i><i class="hm-cell hm-l2"></i><i class="hm-cell hm-l3"></i><span>${esc(t("hm_more"))}</span></div>`) : "";
+  const maxM = Math.max(1, ...act.byMonth);
+  const monthsBar = act.byMonth.some(v => v > 0) ? stCard(t("st_by_month"), `<div class="st-months">${
+    act.byMonth.map((c, i) => `<div class="st-mcol"><div class="st-marea">${c ? `<div class="st-mval">${c}</div>` : ""}<div class="st-mbar st-fill" style="--h:${c ? Math.max(6, Math.round(c / maxM * 100)) : 0}%"></div></div><div class="st-mx">${esc(t("months_short")[i][0])}</div></div>`).join("")}</div>`) : "";
+  const compare = (pstats && pstats.partner_solo) ? compareHTML(s, pstats) : "";
+  const moreFacts = [
+    act.decade ? stFact("📼", t("st_decade"), `${act.decade[0]}<small>${act.decade[1]}</small>`) : "",
+    act.byWeekday.some(v => v > 0) ? stFact("📅", t("st_weekday"), esc(t("weekdays_short")[act.wdIdx])) : "",
+    act.avgMin ? stFact("⏳", t("st_avg_session"), `${act.avgMin} ${esc(t("tile_hours")) === "ч" ? "мин" : "min"}`) : "",
+    act.byMonth.some(v => v > 0) ? stFact("🔥", t("st_top_month"), esc(t("months_short")[act.topMonthIdx])) : "",
+    act.streakBest ? stFact("⚡️", t("st_streak"), esc(t("st_streak_days", act.streakBest))) : "",
+  ].filter(Boolean).join("");
+  const moreCard = moreFacts ? `<div class="st-card"><div class="st-card-h">${esc(t("st_more"))}</div>${moreFacts}</div>` : "";
+
+  return hero + achievements + genresBlock + hist + heatmap + monthsBar + compare + info + moreCard + actors + directors;
+}
+
+// Всё из дат просмотра/длительности/года фильма — считаем один раз.
+function computeActivity(watched) {
+  const byDay = {}, byWeekday = [0, 0, 0, 0, 0, 0, 0], byDecade = {};
+  const byMonth = new Array(12).fill(0);
+  const yr = new Date().getFullYear();
+  let totalMin = 0;
+  for (const m of watched) {
+    const mins = parseRuntimeMin(m.runtime); totalMin += mins;
+    if (m.year) { const dec = Math.floor(+m.year / 10) * 10; if (dec > 1900) byDecade[dec] = (byDecade[dec] || 0) + 1; }
+    if (!m.watched_at) continue;
+    const d = new Date(m.watched_at);
+    byDay[d.toISOString().slice(0, 10)] = (byDay[d.toISOString().slice(0, 10)] || 0) + 1;
+    byWeekday[(d.getDay() + 6) % 7]++;                 // Пн=0
+    if (d.getFullYear() === yr) byMonth[d.getMonth()]++;
+  }
+  const days = Object.keys(byDay).sort();
+  let streak = 0, best = 0, prev = null;
+  for (const k of days) { const cur = new Date(k); streak = (prev && cur - prev === 86400000) ? streak + 1 : 1; best = Math.max(best, streak); prev = cur; }
+  const dec = Object.entries(byDecade).sort((a, b) => b[1] - a[1])[0];
+  return {
+    byDay, byMonth, byWeekday,
+    wdIdx: byWeekday.indexOf(Math.max(...byWeekday)),
+    decade: dec ? [`${dec[0]}-е`, dec[1]] : null,
+    topMonthIdx: byMonth.indexOf(Math.max(...byMonth)),
+    avgMin: watched.length ? Math.round(totalMin / watched.length) : 0,
+    streakBest: best,
+  };
+}
+function heatmapCells(byDay) {
+  const WEEKS = 53, today = new Date(); today.setHours(0, 0, 0, 0);
+  const start = new Date(today); start.setDate(start.getDate() - (WEEKS * 7 - 1));
+  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));   // выровнять на понедельник
+  let cols = "";
+  for (let w = 0; w < WEEKS; w++) {
+    let col = "";
+    for (let d = 0; d < 7; d++) {
+      const cell = new Date(start); cell.setDate(start.getDate() + w * 7 + d);
+      if (cell > today) { col += `<i class="hm-cell hm-empty"></i>`; continue; }
+      const c = byDay[cell.toISOString().slice(0, 10)] || 0;
+      const lvl = c === 0 ? 0 : c === 1 ? 1 : c === 2 ? 2 : 3;
+      col += `<i class="hm-cell hm-l${lvl}" title="${cell.toISOString().slice(0, 10)}: ${c}"></i>`;
+    }
+    cols += `<div class="hm-col">${col}</div>`;
+  }
+  return cols;
+}
+function achievementsHTML(s, act, pstats) {
+  const hours = Math.floor(s.total_runtime_min / 60);
+  const list = [
+    { i: "🎬", t: t("ach_cinephile"), s: t("ach_cinephile_s"), on: s.watched >= 50 },
+    { i: "🍿", t: t("ach_100h"), s: t("ach_100h_s"), on: hours >= 100 },
+    { i: "🔥", t: t("ach_streak"), s: t("ach_streak_s"), on: act.streakBest >= 7 },
+    { i: "⭐", t: t("ach_rater"), s: t("ach_rater_s"), on: s.rating_count >= 50 },
+  ];
+  if (pstats && pstats.agreement != null) list.push({ i: "💛", t: t("ach_perfect"), s: t("ach_perfect_s"), on: pstats.agreement >= 90 });
+  const cards = list.map(a => `<div class="st-ach${a.on ? " on" : ""}"><div class="st-ach-i">${a.i}</div><div class="st-ach-t">${esc(a.t)}</div><div class="st-ach-s">${esc(a.s)}</div></div>`).join("");
+  return `<div class="st-card st-ach-card"><div class="st-card-h">${esc(t("st_achievements"))}</div><div class="st-ach-rail">${cards}</div></div>`;
+}
+function compareHTML(s, ps) {
+  const p = ps.partner_solo, name = esc(ps.partner.name || t("partner_word"));
+  const myHours = Math.floor(s.total_runtime_min / 60);
+  const rows = [
+    [t("tile_avg"), +s.avg_rating || 0, +p.avg_rating || 0],
+    [t("tile_watched"), s.watched, p.watched],
+    [t("tile_hours"), myHours, p.hours],
+    [t("tile_want"), s.want, p.want],
+    [t("st_ratings"), s.rating_count, p.rating_count],
+  ];
+  const bars = rows.map(([lbl, a, b]) => {
+    const max = Math.max(a, b, 1);
+    return `<div class="st-cmp-row">
+      <div class="st-cmp-a"><span class="st-cmp-v">${a}</span><div class="st-cmp-track r"><div class="st-cmp-fill st-fill a" style="--w:${Math.round(a / max * 100)}%"></div></div></div>
+      <div class="st-cmp-lbl">${esc(lbl)}</div>
+      <div class="st-cmp-b"><div class="st-cmp-track"><div class="st-cmp-fill st-fill b" style="--w:${Math.round(b / max * 100)}%"></div></div><span class="st-cmp-v">${b}</span></div>
+    </div>`;
+  }).join("");
+  return `<div class="st-card"><div class="st-cmp-head"><span>${esc(t("stats_title") === "Статистика" ? "Ты" : "You")}</span><span>${name}</span></div>${bars}</div>`;
 }
 function filmCard(icon, label, m, extra) {
   return `<button class="st-info st-info-film" data-film="${m.id}">
