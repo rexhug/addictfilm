@@ -6,9 +6,12 @@ community-рейтинг = средняя оценка всех пользова
 
 Запуск:  uvicorn main:app --port 8077   (из папки backend/)
 """
+import asyncio
 import hashlib
 import logging
 import os
+import re
+import secrets
 import time
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
@@ -18,7 +21,7 @@ import sentry_sdk
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import database as db
 import db_runtime
@@ -73,11 +76,23 @@ async def startup() -> None:
     await db_runtime.start(DATABASE_URL)  # пул Postgres; для SQLite — no-op
     await db.init_db()
     await search.purge_expired()  # подчистить протухший кэш поиска при старте
+    # SQLite требует прикладного бэкапа; PostgreSQL обслуживается провайдером.
+    global _backup_task
+    if not DATABASE_URL and (_backup_task is None or _backup_task.done()):
+        _backup_task = asyncio.create_task(_periodic_backup(), name="sqlite-periodic-backup")
     logger.info("Database initialized (%s)", "Postgres" if DATABASE_URL else "SQLite")
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    global _backup_task
+    if _backup_task is not None:
+        _backup_task.cancel()
+        try:
+            await _backup_task
+        except asyncio.CancelledError:
+            pass
+        _backup_task = None
     for mod in (kinopoisk, omdb):
         try:
             await mod.aclose()
@@ -94,8 +109,16 @@ async def current_user(x_init_data: str = Header(default="")) -> dict:
     """Проверяем подпись Telegram и регистрируем/обновляем пользователя.
     Белого списка нет — публичный продукт: пускаем любого с валидной подписью."""
     user = validate_init_data(x_init_data, BOT_TOKEN)
-    if not user or not user.get("id"):
+    user_id = user.get("id") if user else None
+    if isinstance(user_id, bool):
+        user_id = None
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        user_id = None
+    if not user or not user_id or user_id < 0:
         raise HTTPException(status_code=401, detail="Не авторизован")
+    user["id"] = user_id
     await db.upsert_user(user)
     return user
 
@@ -141,6 +164,8 @@ async def movies(status: str = "want_to_watch", sort: str = "date",
                  limit: int = 50, offset: int = 0, user: dict = Depends(current_user)):
     if status not in ("want_to_watch", "watched", "top"):
         raise HTTPException(status_code=422, detail="Неизвестный статус")
+    if sort not in ("date", "rating"):
+        raise HTTPException(status_code=422, detail="Неизвестная сортировка")
     limit = max(1, min(limit, 100))   # защита от чрезмерной выборки
     offset = max(0, offset)
     items = await db.get_user_films(user["id"], status, limit=limit, offset=offset, sort=sort)
@@ -162,13 +187,11 @@ async def movie(film_id: int, user: dict = Depends(current_user)):
 
 
 class RateBody(BaseModel):
-    rating: int
+    rating: int = Field(ge=1, le=10)
 
 
 @app.post("/api/movie/{film_id}/rate")
 async def rate(film_id: int, body: RateBody, user: dict = Depends(current_user)):
-    if not 1 <= body.rating <= 10:
-        raise HTTPException(status_code=422, detail="Оценка 1–10")
     if not await db.get_film(film_id):
         raise HTTPException(status_code=404, detail="Фильм не найден")
     await db.set_rating(user["id"], film_id, body.rating)  # урок: тап по оценке = «просмотрено»
@@ -203,7 +226,7 @@ async def set_status(film_id: int, body: StatusBody, user: dict = Depends(curren
 
 
 class CommentBody(BaseModel):
-    text: str
+    text: str = Field(max_length=500)
 
 
 @app.post("/api/movie/{film_id}/comment")
@@ -229,6 +252,8 @@ async def delete(film_id: int, user: dict = Depends(current_user)):
 @app.get("/api/search")
 async def api_search(q: str, user: dict = Depends(current_user)):
     q = q.strip()
+    if len(q) > 200:
+        raise HTTPException(status_code=422, detail="Слишком длинный поисковый запрос")
     if len(q) < 2:
         return {"items": []}
     imdb_id = search.extract_imdb_id(q)
@@ -248,6 +273,12 @@ async def _resolve_film_id(src: str, ref: str) -> int:
     """Дедуп до внешних API + fetch_details + get_or_create_film — общий путь для
     /api/add и /api/admin/collections/{id}/films. Для src="i" ref == imdb_id, и если
     фильм уже в общем каталоге — линкуем сразу, не тратя лимит kinopoisk/OMDb."""
+    ref = ref.strip()
+    if src == "k" and not re.fullmatch(r"\d{1,12}", ref):
+        raise HTTPException(status_code=422, detail="Некорректный идентификатор фильма")
+    if src == "i" and not re.fullmatch(r"tt\d{5,12}", ref):
+        raise HTTPException(status_code=422, detail="Некорректный IMDb идентификатор")
+
     film_id = None
     if src == "i":
         film_id = await db.get_film_id_by_imdb(ref)
@@ -261,7 +292,7 @@ async def _resolve_film_id(src: str, ref: str) -> int:
 
 class AddBody(BaseModel):
     src: str
-    ref: str
+    ref: str = Field(max_length=128)
     status: str = "want_to_watch"
 
 
@@ -306,11 +337,16 @@ async def random_movie(user: dict = Depends(current_user)):
 async def browse(sort: str = "popular", genre: str = "", limit: int = 30,
                  offset: int = 0, user: dict = Depends(current_user)):
     limit = max(1, min(limit, 60))
+    offset = max(0, offset)
+    if sort not in ("popular", "top", "genre"):
+        raise HTTPException(status_code=422, detail="Неизвестная сортировка")
     if sort == "top":
         items = await db.browse_top(user["id"], limit=limit, offset=offset)
     elif sort == "genre":
         if not genre.strip():
             return {"items": []}
+        if len(genre.strip()) > 80:
+            raise HTTPException(status_code=422, detail="Слишком длинный жанр")
         items = await db.browse_by_genre(user["id"], genre.strip(), limit=limit, offset=offset)
     else:
         items = await db.browse_popular(user["id"], limit=limit, offset=offset)
@@ -338,7 +374,7 @@ async def collection_detail(collection_id: int, user: dict = Depends(current_use
 
 
 class CollectionBody(BaseModel):
-    title: str
+    title: str = Field(max_length=500)
 
 
 @app.post("/api/admin/collections", dependencies=[Depends(require_editor)])
@@ -357,7 +393,7 @@ async def collection_delete(collection_id: int):
 
 class CollectionAddBody(BaseModel):
     src: str
-    ref: str
+    ref: str = Field(max_length=128)
 
 
 @app.post("/api/admin/collections/{collection_id}/films", dependencies=[Depends(require_editor)])
@@ -415,7 +451,7 @@ async def partner_invite(user: dict = Depends(current_user)):
 
 
 class AcceptBody(BaseModel):
-    token: str
+    token: str = Field(max_length=128)
 
 
 @app.post("/api/partner/accept")
@@ -456,7 +492,7 @@ def require_admin(x_admin_token: str = Header(default="")) -> None:
     """Гейт для служебных эндпоинтов. Без заданного ADMIN_TOKEN — выключены (404)."""
     if not ADMIN_TOKEN:
         raise HTTPException(status_code=404, detail="Not found")
-    if x_admin_token != ADMIN_TOKEN:
+    if not secrets.compare_digest(x_admin_token, ADMIN_TOKEN):
         raise HTTPException(status_code=401, detail="Не авторизован")
 
 
@@ -464,14 +500,14 @@ def require_admin(x_admin_token: str = Header(default="")) -> None:
 async def backfill_posters(limit: int = 200, omdb_cap: int = 60):
     """Добрать постеры фильмам без картинки (kinopoisk → OMDb). Идемпотентно;
     вызывать повторно, пока remaining не станет 0."""
-    return await posters.backfill(limit=limit, _omdb_cap=omdb_cap)
+    return await posters.backfill(limit=max(1, min(limit, 500)), _omdb_cap=max(1, min(omdb_cap, 200)))
 
 
 @app.post("/api/admin/upgrade-omdb-posters", dependencies=[Depends(require_admin)])
 async def upgrade_omdb_posters(limit: int = 200, name_cap: int = 60):
     """Заменить постеры Amazon/OMDb на kinopoisk-версии у уже добавленных фильмов.
     Идемпотентно; вызывать повторно, пока kept_omdb не перестанет уменьшаться."""
-    return await posters.upgrade_omdb_posters(limit=limit, _name_cap=name_cap)
+    return await posters.upgrade_omdb_posters(limit=max(1, min(limit, 500)), _name_cap=max(1, min(name_cap, 200)))
 
 
 # ── Прокси постеров (обходит блокировку CDN на стороне клиента) ───────────────
@@ -502,7 +538,7 @@ async def _img_sess() -> aiohttp.ClientSession:
 _IMG_CACHE_DIR = os.getenv("IMG_CACHE_DIR") or ("/data/imgcache" if os.path.isdir("/data") else "")
 
 
-def _img_ctype(data: bytes) -> str:
+def _img_ctype(data: bytes) -> str | None:
     """Content-Type по магическим байтам (в кэше храним только тело)."""
     if data[:3] == b"\xff\xd8\xff":
         return "image/jpeg"
@@ -514,7 +550,7 @@ def _img_ctype(data: bytes) -> str:
         return "image/gif"
     if data[4:12] == b"ftypavif":
         return "image/avif"
-    return "image/jpeg"
+    return None
 
 
 def _img_cache_path(u: str) -> str | None:
@@ -544,6 +580,8 @@ async def _read_image_limited(content: aiohttp.StreamReader) -> bytes:
 
 @app.get("/img")
 async def img_proxy(u: str):
+    if len(u) > 4096:
+        raise HTTPException(status_code=400, detail="Недопустимый источник")
     if not _is_allowed_image_url(u):
         raise HTTPException(status_code=400, detail="Недопустимый источник")  # анти-SSRF
 
@@ -551,8 +589,10 @@ async def img_proxy(u: str):
     if cache_path and os.path.exists(cache_path):
         with open(cache_path, "rb") as f:
             data = f.read()
-        return Response(content=data, media_type=_img_ctype(data),
-                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
+        cached_ctype = _img_ctype(data)
+        if cached_ctype:
+            return Response(content=data, media_type=cached_ctype,
+                            headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
     # Две попытки к CDN. Редиректы проходим вручную: каждая цель повторно
     # проверяется по allowlist, чтобы не превратить прокси в SSRF-канал.
@@ -579,6 +619,10 @@ async def img_proxy(u: str):
                     if resp.content_length is not None and resp.content_length > _MAX_IMAGE_BYTES:
                         raise HTTPException(status_code=413, detail="Изображение слишком большое")
                     data = await _read_image_limited(resp.content)
+                    detected_ctype = _img_ctype(data)
+                    if not detected_ctype:
+                        raise HTTPException(status_code=415, detail="Неподдерживаемый формат изображения")
+                    ctype = detected_ctype
                     break
             if data is not None:
                 break

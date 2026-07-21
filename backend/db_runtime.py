@@ -164,5 +164,10 @@ async def connect(sqlite_path: str, database_url: str) -> AsyncIterator[Any]:
                     conn._done = True
         return
 
-    async with aiosqlite.connect(sqlite_path) as connection:
+    # A short busy timeout prevents transient "database is locked" failures when
+    # several API requests contend for the single SQLite writer. Foreign keys are
+    # connection-scoped in SQLite, so they must be enabled for every connection.
+    async with aiosqlite.connect(sqlite_path, timeout=5) as connection:
+        await connection.execute("PRAGMA busy_timeout=5000")
+        await connection.execute("PRAGMA foreign_keys=ON")
         yield connection

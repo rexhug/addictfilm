@@ -700,20 +700,27 @@ function showSearch(mode = null) {
   const input = document.getElementById("si");
   const results = document.getElementById("sr");
   let timer;
+  let requestVersion = 0;
+  let searchController = null;
   input.oninput = () => {
+    const version = ++requestVersion;
     clearTimeout(timer);
+    searchController?.abort();
     timer = setTimeout(async () => {
       const q = input.value.trim();
       if (q.length < 2) { results.innerHTML = start; return; }
       results.innerHTML = skeletonGrid(6);
+      searchController = new AbortController();
       let data;
-      try { data = await api(`/api/search?q=${encodeURIComponent(q)}`); }
+      try { data = await api(`/api/search?q=${encodeURIComponent(q)}`, { signal: searchController.signal }); }
       catch (e) {
+        if (e.name === "AbortError" || version !== requestVersion || !input.isConnected) return;
         results.innerHTML = String(e.message) === "429"
           ? emptyState("⏳", t("search_toomany_t"), t("search_toomany_s"))
           : emptyState("⚠️", t("search_err_t"), String(e.message));
         return;
       }
+      if (version !== requestVersion || !input.isConnected) return;
       if (data.limited) { results.innerHTML = emptyState("⏳", t("search_limited_t"), t("search_limited_s")); return; }
       const items = data.items;
       if (!items.length) { results.innerHTML = emptyState("🤷", t("search_none_t"), t("search_none_s")); return; }

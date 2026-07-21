@@ -60,6 +60,7 @@ async def init_db() -> None:
                 id         BIGINT PRIMARY KEY,          -- telegram user id (>int32, нужен BIGINT)
                 first_name TEXT,
                 username   TEXT,
+                role       TEXT,
                 created_at TEXT,
                 last_seen  TEXT
             )
@@ -94,13 +95,16 @@ async def init_db() -> None:
             CREATE TABLE IF NOT EXISTS user_films (
                 user_id    BIGINT NOT NULL,               -- telegram user id (>int32)
                 film_id    INTEGER NOT NULL,
-                status     TEXT NOT NULL DEFAULT 'want_to_watch',  -- want_to_watch | watched
-                rating     INTEGER,                                 -- 1..10, NULL пока не оценил
+                status     TEXT NOT NULL DEFAULT 'want_to_watch'
+                           CHECK (status IN ('want_to_watch', 'watched')),
+                rating     INTEGER CHECK (rating BETWEEN 1 AND 10),
                 comment    TEXT,
                 added_at   TEXT,
                 watched_at TEXT,
                 rated_at   TEXT,
-                PRIMARY KEY (user_id, film_id)
+                PRIMARY KEY (user_id, film_id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (film_id) REFERENCES films(id)
             )
         """)
         # Постоянный кэш поисковых запросов: повторный поиск не бьёт в API источника
@@ -126,7 +130,8 @@ async def init_db() -> None:
                 token      TEXT PRIMARY KEY,
                 from_user  BIGINT NOT NULL,               -- telegram user id (>int32)
                 status     TEXT NOT NULL DEFAULT 'pending',  -- pending | accepted
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (from_user) REFERENCES users(id)
             )
         """)
         # Симметрично: для пары (a,b) две строки — a→b и b→a (лукап по user_id O(1)).
@@ -134,7 +139,10 @@ async def init_db() -> None:
             CREATE TABLE IF NOT EXISTS partners (
                 user_id    BIGINT PRIMARY KEY,           -- telegram user id (>int32)
                 partner_id BIGINT NOT NULL,
-                since      TEXT NOT NULL
+                since      TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (partner_id) REFERENCES users(id),
+                CHECK (user_id <> partner_id)
             )
         """)
         # ── Подборки (кураторские коллекции фильмов от админа/редактора) ────────
@@ -144,7 +152,8 @@ async def init_db() -> None:
                 id         {_coll_id_col},
                 title      TEXT NOT NULL,
                 created_by BIGINT NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (created_by) REFERENCES users(id)
             )
         """)
         await db.execute("""
@@ -152,7 +161,9 @@ async def init_db() -> None:
                 collection_id INTEGER NOT NULL,
                 film_id       INTEGER NOT NULL,
                 added_at      TEXT NOT NULL,
-                PRIMARY KEY (collection_id, film_id)
+                PRIMARY KEY (collection_id, film_id),
+                FOREIGN KEY (collection_id) REFERENCES collections(id),
+                FOREIGN KEY (film_id) REFERENCES films(id)
             )
         """)
 
@@ -164,6 +175,27 @@ async def init_db() -> None:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_user_watched ON user_films(user_id, status, watched_at DESC)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_user_top ON user_films(user_id, status, rating DESC, watched_at DESC)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_invite_from ON partner_invites(from_user, status)")
+        # Ранние версии могли создать несколько pending-инвайтов из-за гонки
+        # check-then-insert. Историю сохраняем, но оставляем рабочим только самый
+        # новый токен каждого пользователя, после чего индекс делает инвариант
+        # атомарным на всех инстансах.
+        await db.execute("""
+            UPDATE partner_invites AS stale
+            SET status = 'superseded'
+            WHERE stale.status = 'pending'
+              AND EXISTS (
+                  SELECT 1
+                  FROM partner_invites AS newer
+                  WHERE newer.from_user = stale.from_user
+                    AND newer.status = 'pending'
+                    AND (newer.created_at > stale.created_at
+                         OR (newer.created_at = stale.created_at AND newer.token > stale.token))
+              )
+        """)
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_invite_one_pending_per_user "
+            "ON partner_invites(from_user) WHERE status = 'pending'"
+        )
         await db.execute("CREATE INDEX IF NOT EXISTS idx_cf_collection ON collection_films(collection_id)")
         await db.commit()
 
@@ -836,17 +868,31 @@ async def get_pending_invite(from_user: int) -> str | None:
 
 
 async def create_invite(from_user: int) -> str:
-    """Создать (или переиспользовать) приглашение в пару. Возвращает токен."""
-    existing = await get_pending_invite(from_user)
-    if existing:
-        return existing
+    """Создать (или переиспользовать) единственное активное приглашение.
+
+    Частичный уникальный индекс защищает этот инвариант между процессами и
+    инстансами. В отличие от прежнего check-then-insert, одновременные запросы
+    возвращают один и тот же токен, а не создают два живых.
+    """
     token = secrets.token_urlsafe(12)
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        await db.execute(
-            "INSERT INTO partner_invites (token, from_user, status, created_at) VALUES (?,?, 'pending', ?)",
+        cur = await db.execute(
+            "INSERT INTO partner_invites (token, from_user, status, created_at) VALUES (?,?, 'pending', ?) "
+            "ON CONFLICT DO NOTHING RETURNING token",
             (token, from_user, _now()))
+        created = await cur.fetchone()
+        if created:
+            await db.commit()
+            return created[0]
+
+        cur = await db.execute(
+            "SELECT token FROM partner_invites WHERE from_user = ? AND status = 'pending' "
+            "ORDER BY created_at DESC LIMIT 1", (from_user,))
+        existing = await cur.fetchone()
         await db.commit()
-    return token
+        if existing:
+            return existing[0]
+    raise RuntimeError("Could not create or retrieve a pending partner invite")
 
 
 class _InviteRejected(Exception):
@@ -890,6 +936,11 @@ async def accept_invite(token: str, accepting_user: int) -> dict:
             if not await cur2.fetchone():
                 raise _InviteRejected("already_paired")
 
+            # Neither user may retain a pre-pair invite that could unexpectedly
+            # be accepted after the pair is later dissolved.
+            await db.execute(
+                "DELETE FROM partner_invites WHERE from_user IN (?, ?) AND status = 'pending'",
+                (from_user, accepting_user))
             await db.commit()
             return {"ok": True, "partner_id": from_user}
     except _InviteRejected as e:
@@ -897,14 +948,24 @@ async def accept_invite(token: str, accepting_user: int) -> dict:
 
 
 async def unpair(user_id: int) -> None:
-    partner = await get_partner(user_id)
+    """Разорвать только текущую симметричную пару пользователя.
+
+    Поиск партнёра и удаление выполняются в одной транзакции. Поэтому
+    запоздалый запрос не может удалить новую пару бывшего партнёра.
+    """
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        ids = [user_id] + ([partner] if partner is not None else [])
+        cur = await db.execute("SELECT partner_id FROM partners WHERE user_id = ?", (user_id,))
+        row = await cur.fetchone()
+        if row:
+            partner_id = row[0]
+            await db.execute(
+                "DELETE FROM partners "
+                "WHERE (user_id = ? AND partner_id = ?) OR (user_id = ? AND partner_id = ?)",
+                (user_id, partner_id, partner_id, user_id))
+        # Calling unpair while not paired also cancels the caller's pending invite.
+        # We intentionally do not touch another user's newer invite or relationship.
         await db.execute(
-            f"DELETE FROM partners WHERE user_id IN ({','.join('?' * len(ids))})", ids)
-        # неиспользованные приглашения обеих сторон тоже гасим — при новой паре создаётся свежее
-        await db.execute(
-            f"DELETE FROM partner_invites WHERE from_user IN ({','.join('?' * len(ids))}) AND status='pending'", ids)
+            "DELETE FROM partner_invites WHERE from_user = ? AND status = 'pending'", (user_id,))
         await db.commit()
 
 

@@ -41,8 +41,8 @@ def _qnorm(query: str) -> str:
 
 
 def extract_imdb_id(text: str) -> str | None:
-    m = re.search(r"tt\d{7,8}", text)
-    return m.group(0) if m else None
+    m = re.search(r"(?<!\w)(tt\d{5,12})(?!\d)", text, flags=re.IGNORECASE)
+    return m.group(1).lower() if m else None
 
 
 def has_cyrillic(text: str) -> bool:
