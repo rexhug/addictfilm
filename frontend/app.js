@@ -50,6 +50,10 @@ const DICT = {
     search_none_t: "Ничего не найдено", search_none_s: "Попробуй год или английское название",
     confirm_add: (t) => `Добавить «${t}» в «Хочу посмотреть»?`, already_in_list: "Уже в твоём списке!",
     stats_title: "Статистика", my_stats: "Моя статистика", stats_empty_t: "Пока нет статистики", stats_empty_s: "Добавь фильмы и поставь оценки", calc: "Считаю…",
+    stats_me_tab: "Я", stats_together_tab: "Мы вместе", stats_taste: "Твой вкус", stats_together: "Ваша история",
+    stats_ratings_hint: "Сколько фильмов ты поставил(а) на каждую оценку", stats_genres_hint: "Доля жанра среди просмотренных фильмов",
+    stats_people_hint: "Сколько просмотренных фильмов связано с каждым человеком", stats_films: (n) => `${n} ${pl(n, ["фильм", "фильма", "фильмов"])}`,
+    stats_taste_hint: (genre, rating) => genre ? `Тебе особенно нравятся ${genre}; чаще всего ты ставишь ${rating}.` : `Чаще всего ты ставишь ${rating}.`,
     tile_watched: "просмотрено", tile_want: "в «Хочу»", tile_avg: "средняя", tile_hours: "часов",
     chart_ratings: "Мои оценки", chart_genres: "Жанры", chart_actors: "Актёры", chart_directors: "Режиссёры",
     year_title: (y) => `Итоги ${y}`, year_avg: "средняя", year_fav_genre: "Любимый жанр — ", year_actor: "Актёр года — ", year_best: "Лучшее",
@@ -58,6 +62,8 @@ const DICT = {
     partner_invite_btn: "Добавить партнёра", partner_invited_sub: "Приглашение готово. Отправь ссылку партнёру в Telegram.",
     partner_share_btn: "Поделиться ссылкой", partner_share_text: "Давай смотреть фильмы вместе ❤️",
     partner_with: "Пара с", partner_word: "партнёром", partner_compat: "совместимость",
+    partner_explainer: (n) => `Считаем по разнице ваших оценок у ${n} ${pl(n, ["общего фильма", "общих фильмов", "общих фильмов"])}. Чем ближе к 100%, тем чаще вы согласны.`,
+    partner_settings: "Настройки пары", partner_exact_hint: "Одинаковые оценки", partner_shared_best: "Ваш фаворит", partner_shared_dispute: "Самое большое расхождение",
     partner_no_common: "Пока нет фильмов, которые оценили оба",
     partner_matches: "Точных совпадений", partner_best: "Лучший общий", partner_controversial: "Самый спорный", partner_genres: "Общие жанры",
     partner_unpair_btn: "Разорвать пару", partner_unpair_confirm: "Разорвать пару? Личные списки останутся у каждого.",
@@ -105,6 +111,10 @@ const DICT = {
     search_none_t: "Nothing found", search_none_s: "Try a year or the English title",
     confirm_add: (t) => `Add "${t}" to your wishlist?`, already_in_list: "Already in your list!",
     stats_title: "Stats", my_stats: "My stats", stats_empty_t: "No stats yet", stats_empty_s: "Add films and rate them", calc: "Calculating…",
+    stats_me_tab: "Me", stats_together_tab: "Together", stats_taste: "Your taste", stats_together: "Your story",
+    stats_ratings_hint: "How many films you gave each rating", stats_genres_hint: "Genre share among watched films",
+    stats_people_hint: "How many watched films feature each person", stats_films: (n) => `${n} ${n === 1 ? "film" : "films"}`,
+    stats_taste_hint: (genre, rating) => genre ? `You lean toward ${genre} and most often give ${rating}.` : `You most often give ${rating}.`,
     tile_watched: "watched", tile_want: "wishlist", tile_avg: "average", tile_hours: "hours",
     chart_ratings: "My ratings", chart_genres: "Genres", chart_actors: "Actors", chart_directors: "Directors",
     year_title: (y) => `${y} in review`, year_avg: "average", year_fav_genre: "Favorite genre — ", year_actor: "Actor of the year — ", year_best: "Best",
@@ -113,6 +123,8 @@ const DICT = {
     partner_invite_btn: "Add partner", partner_invited_sub: "Invite ready. Send the link to your partner in Telegram.",
     partner_share_btn: "Share link", partner_share_text: "Let's watch movies together ❤️",
     partner_with: "Paired with", partner_word: "partner", partner_compat: "compatibility",
+    partner_explainer: (n) => `Based on the gap between your ratings across ${n} shared ${n === 1 ? "film" : "films"}. Closer to 100% means you agree more often.`,
+    partner_settings: "Pair settings", partner_exact_hint: "Same ratings", partner_shared_best: "Your shared favorite", partner_shared_dispute: "Biggest difference",
     partner_no_common: "No films you both rated yet",
     partner_matches: "Exact matches", partner_best: "Best shared", partner_controversial: "Most divisive", partner_genres: "Shared genres",
     partner_unpair_btn: "Unpair", partner_unpair_confirm: "Unpair? Each keeps their personal lists.",
@@ -749,7 +761,7 @@ function showSearch(mode = null) {
   input.focus();
 }
 
-// ── Статистика (пара в приоритете сверху, личная — ниже) ──────────────────────
+// ── Статистика: личный вкус и совместная история — отдельные режимы ───────────
 async function showStats() {
   unwireDetailScroll();
   window.scrollTo(0, 0);
@@ -761,26 +773,34 @@ async function showStats() {
   try { partner = await api("/api/partner"); } catch (e) {}
   if (partner.status === "paired") { try { pstats = await api("/api/partner/stats"); } catch (e) {} }
 
-  // 2. Личная статистика за всё время — ниже.
+  // 2. Личная статистика за всё время.
   const s = await api("/api/stats");
-  const personal = (!s.watched && !s.want)
-    ? emptyState("📊", t("stats_empty_t"), t("stats_empty_s"))
-    : personalStatsHTML(s);
+  const personal = (!s.watched && !s.want) ? emptyState("📊", t("stats_empty_t"), t("stats_empty_s")) : personalStatsHTML(s);
+  const paired = partner.status === "paired" && pstats;
+  let mode = "me";
 
-  if (partner.status === "paired" && pstats) {
-    // Пара: полная статистика пары (тот же формат) сверху, «Моя статистика» ниже.
-    const name = esc(pstats.partner.name || t("partner_word"));
-    const pairHasData = pstats.watched || pstats.want || pstats.rated_together;
-    box.innerHTML =
-      `<div class="sec-label">${t("partner_with")} ${name}</div>` +
-      pairHeroHTML(pstats) +
-      (pairHasData ? personalStatsHTML(pstats) : "") +
-      `<div class="sec-label">${esc(t("my_stats"))}</div>` +
-      personal;
-  } else {
-    box.innerHTML = partnerCardHTML(partner, null) + personal;
-  }
-  wirePartner(box);
+  const render = () => {
+    const tabs = paired ? `<div class="stats-switch" role="tablist">
+      <button class="stats-switch-btn ${mode === "me" ? "active" : ""}" data-stats-mode="me" role="tab">${esc(t("stats_me_tab"))}</button>
+      <button class="stats-switch-btn ${mode === "pair" ? "active" : ""}" data-stats-mode="pair" role="tab">${esc(t("stats_together_tab"))}</button>
+    </div>` : "";
+    let content;
+    if (mode === "pair" && paired) {
+      const name = esc(pstats.partner.name || t("partner_word"));
+      const hasData = pstats.watched || pstats.want || pstats.rated_together;
+      content = `<div class="stats-context">${esc(t("partner_with"))} ${name}</div>` + pairHeroHTML(pstats) +
+        (hasData ? personalStatsHTML(pstats, "pair") : `<div class="chart-card">${emptyState("💙", t("stats_together"), t("pair_empty"))}</div>`);
+    } else {
+      content = !paired && partner.status !== "none" ? partnerCardHTML(partner, null) + personal : personal;
+    }
+    box.innerHTML = tabs + content;
+    box.querySelectorAll("[data-stats-mode]").forEach(button => button.onclick = () => {
+      mode = button.dataset.statsMode;
+      render();
+    });
+    wirePartner(box);
+  };
+  render();
 }
 
 function pairHeroHTML(ps) {
@@ -788,35 +808,40 @@ function pairHeroHTML(ps) {
   const body = empty
     ? `<div class="partner-sub">${esc(t("pair_empty"))}</div>`
     : `${ps.agreement != null
-        ? `<div class="compat"><div class="compat-num">${ps.agreement}%</div><div class="compat-lbl">${esc(t("partner_compat"))} · ${ps.rated_together} ${esc(t("count_films", ps.rated_together))}</div></div>`
+        ? `<div class="compat"><div class="compat-num">${ps.agreement}%</div><div class="compat-lbl">${esc(t("partner_compat"))}</div></div><div class="stats-hint pair-hint">${esc(t("partner_explainer", ps.rated_together))}</div>`
         : `<div class="partner-sub">${esc(t("partner_no_common"))}</div>`}
-      ${ps.matches ? `<div class="year-line">${esc(t("partner_matches"))}: <b>${ps.matches}</b></div>` : ""}
-      ${ps.best ? `<div class="year-line">${esc(t("partner_best"))}: ${esc(ps.best.title)} <small>(${ps.best.avg})</small></div>` : ""}
-      ${ps.controversial ? `<div class="year-line">${esc(t("partner_controversial"))}: ${esc(ps.controversial.title)} <small>(${ps.controversial.a} / ${ps.controversial.b})</small></div>` : ""}`;
-  return `<div class="chart-card partner">${body}<button class="pbtn danger" id="p-unpair">${esc(t("partner_unpair_btn"))}</button></div>`;
+      ${ps.matches ? `<div class="pair-fact"><span>${esc(t("partner_exact_hint"))}</span><b>${ps.matches}</b></div>` : ""}
+      ${ps.best ? `<div class="pair-fact"><span>${esc(t("partner_shared_best"))}</span><b>${esc(ps.best.title)} <small>(${ps.best.avg})</small></b></div>` : ""}
+      ${ps.controversial ? `<div class="pair-fact"><span>${esc(t("partner_shared_dispute"))}</span><b>${esc(ps.controversial.title)} <small>(${ps.controversial.a} / ${ps.controversial.b})</small></b></div>` : ""}`;
+  return `<div class="chart-card partner">${body}<details class="pair-settings"><summary>${esc(t("partner_settings"))}</summary><button class="pbtn danger" id="p-unpair">${esc(t("partner_unpair_btn"))}</button></details></div>`;
 }
 
-function personalStatsHTML(s) {
+function personalStatsHTML(s, scope = "me") {
   const y = s.year;
   const hours = Math.floor(s.total_runtime_min / 60);
+  const topGenre = s.top_genres_pct?.[0]?.[0];
+  const topRating = (s.rating_dist || []).reduce((best, count, index, values) => count > values[best] ? index : best, 0) + 1;
+  const intro = scope === "me" && s.rating_dist?.some(v => v > 0)
+    ? `<div class="stats-intro"><div class="stats-context">${esc(t("stats_taste"))}</div><div>${esc(t("stats_taste_hint", topGenre, topRating))}</div></div>`
+    : "";
   const tiles = `<div class="stats-grid">
     ${statTile("🎬", s.watched, t("tile_watched"))}${statTile("🔖", s.want, t("tile_want"))}
     ${statTile("⭐", s.avg_rating ?? "—", t("tile_avg"))}${statTile("⏱", hours, t("tile_hours"))}</div>`;
   const dist = s.rating_dist || [];
   const maxD = Math.max(1, ...dist);
-  const hist = dist.some(v => v > 0) ? chartCard(t("chart_ratings"), `<div class="hist">${
+  const hist = dist.some(v => v > 0) ? chartCard(t("chart_ratings"), `<div class="stats-hint">${esc(t("stats_ratings_hint"))}</div><div class="hist">${
     dist.map((c, i) => `<div class="hist-col"><div class="hist-bar-area">${c ? `<div class="hist-val">${c}</div>` : ""}<div class="hist-bar" style="height:${c ? Math.max(6, Math.round(c / maxD * 100)) : 0}%"></div></div><div class="hist-x">${i + 1}</div></div>`).join("")}</div>`) : "";
-  const genres = s.top_genres_pct.length ? chartCard(t("chart_genres"), s.top_genres_pct.map(([g, p]) => hbar(g, p + "%", p)).join("")) : "";
+  const genres = s.top_genres_pct.length ? chartCard(t("chart_genres"), `<div class="stats-hint">${esc(t("stats_genres_hint"))}</div>${s.top_genres_pct.map(([g, p]) => hbar(g, p + "%", p)).join("")}`) : "";
   const maxA = s.top_actors.length ? s.top_actors[0][1] : 1;
-  const actors = s.top_actors.length ? chartCard(t("chart_actors"), s.top_actors.map(([n, c]) => hbar(n, c, Math.round(c / maxA * 100))).join("")) : "";
+  const actors = s.top_actors.length ? chartCard(t("chart_actors"), `<div class="stats-hint">${esc(t("stats_people_hint"))}</div>${s.top_actors.map(([n, c]) => hbar(n, t("stats_films", c), Math.round(c / maxA * 100))).join("")}`) : "";
   const maxDir = s.top_directors.length ? s.top_directors[0][1] : 1;
-  const directors = s.top_directors.length ? chartCard(t("chart_directors"), s.top_directors.map(([n, c]) => hbar(n, c, Math.round(c / maxDir * 100))).join("")) : "";
+  const directors = s.top_directors.length ? chartCard(t("chart_directors"), `<div class="stats-hint">${esc(t("stats_people_hint"))}</div>${s.top_directors.map(([n, c]) => hbar(n, t("stats_films", c), Math.round(c / maxDir * 100))).join("")}`) : "";
   const yearCard = y.count ? chartCard(t("year_title", y.year), `
     <div class="year-line"><b>${y.count}</b> ${esc(t("count_films", y.count))}${y.avg_rating ? ` · ${esc(t("year_avg"))} <b>${y.avg_rating}</b>` : ""}</div>
     ${y.top_genre ? `<div class="year-line">${esc(t("year_fav_genre"))}${esc(y.top_genre)}</div>` : ""}
     ${y.top_actor ? `<div class="year-line">${esc(t("year_actor"))}${esc(y.top_actor[0])} <small>(${y.top_actor[1]})</small></div>` : ""}
     ${y.best_titles && y.best_titles.length ? `<div class="year-line">${esc(t("year_best"))} <small>(${y.best_avg})</small>: ${y.best_titles.map(esc).join(", ")}</div>` : ""}`) : "";
-  return tiles + hist + genres + actors + directors + yearCard;
+  return intro + tiles + hist + genres + actors + directors + yearCard;
 }
 
 // ── Пара ──────────────────────────────────────────────────────────────────────
