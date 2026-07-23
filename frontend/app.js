@@ -13,6 +13,7 @@ let me = null;
 let _returnTo = () => { setActiveTab("home"); showHome(); };
 let _heroSource = null;      // {rect, src} стартовой точки hero-transition, захватывается в posterTile()
 let _detailScrollHandler = null;  // текущий scroll-listener страницы фильма (снимается при уходе)
+let _tabbarScrollHandler = null;
 
 // ── Локализация ───────────────────────────────────────────────────────────────
 function pl(n, f) { const a = Math.abs(n) % 100, b = a % 10; if (a > 10 && a < 20) return f[2]; if (b > 1 && b < 5) return f[1]; if (b === 1) return f[0]; return f[2]; }
@@ -837,7 +838,7 @@ function pairHeroHTML(ps) {
   const explainer = ps.agreement != null ? t("partner_explainer", ps.rated_together) : t("pair_empty");
   return `<section class="pair-hero">
     <div class="pair-heading"><div class="pair-avatar-stack">${myAvatar}<span class="pair-heart">♥</span>${partnerAvatar}</div>
-      <div class="pair-names"><div><b>${esc(myName)}</b>${myHandle ? `<small>${esc(myHandle)}</small>` : ""}<i>×</i><b>${esc(partnerName)}</b>${partnerHandle ? `<small>${esc(partnerHandle)}</small>` : ""}</div><p>${esc(t("pair_subtitle"))}</p></div></div>
+      <div class="pair-names"><div class="pair-people"><span class="pair-person"><b>${esc(myName)}</b>${myHandle ? `<small>${esc(myHandle)}</small>` : ""}</span><i>×</i><span class="pair-person"><b>${esc(partnerName)}</b>${partnerHandle ? `<small>${esc(partnerHandle)}</small>` : ""}</span></div><p>${esc(t("pair_subtitle"))}</p></div></div>
     <div class="pair-compat"><div class="pair-compat-copy"><span>♥ ${esc(t("pair_compat_title"))}</span><strong>${compatibility}</strong><p>${esc(explainer)}</p></div><div class="pair-gauge"><div class="pair-gauge-track"><i style="--pair-score:${ps.agreement ?? 0}%"></i></div><b>${compatibility}</b></div></div>
     ${ps.matches != null ? `<div class="pair-fact"><span>${esc(t("partner_exact_hint"))}</span><b>${ps.matches}</b></div>` : ""}
     <details class="pair-settings"><summary>${esc(t("partner_settings"))}</summary><button class="pbtn danger" id="p-unpair">${esc(t("partner_unpair_btn"))}</button></details>
@@ -892,8 +893,8 @@ function personalStatsHTML(s, scope = "me", expanded = { genres: false, actors: 
     : (s.rating_dist?.some(v => v > 0) ? t("stats_taste_hint", topGenre, topRating) : "");
   const intro = introText ? `<div class="stats-intro"><div class="stats-context">${esc(t(scope === "pair" ? "stats_together" : "stats_taste"))}</div><div>${esc(introText)}</div></div>` : "";
   const tiles = `<div class="stats-grid">
-    ${statTile("🎬", s.watched, t(scope === "pair" ? "tile_shared_watched" : "tile_watched"))}${statTile("🔖", s.want, t(scope === "pair" ? "tile_shared_want" : "tile_want"))}
-    ${statTile("⭐", s.avg_rating ?? "—", t("tile_avg"))}${statTile("⏱", hours, t("tile_hours"))}</div>`;
+    ${statTile("", s.watched, t(scope === "pair" ? "tile_shared_watched" : "tile_watched"))}${statTile("", s.want, t(scope === "pair" ? "tile_shared_want" : "tile_want"))}
+    ${statTile("", s.avg_rating ?? "—", t("tile_avg"))}${statTile("", hours, t("tile_hours"))}</div>`;
   const dist = s.rating_dist || [];
   const maxD = Math.max(1, ...dist);
   const hist = dist.some(v => v > 0) ? chartCard(t(scope === "pair" ? "chart_ratings_pair" : "chart_ratings"), `<div class="stats-hint">${esc(t(scope === "pair" ? "stats_ratings_hint_pair" : "stats_ratings_hint"))}</div><div class="hist">${
@@ -1011,7 +1012,7 @@ async function showAcceptInvite(param) {
   };
 }
 
-function statTile(icon, value, label) { return `<div class="tile"><div class="tile-icon">${icon}</div><div class="tile-val">${esc(value)}</div><div class="tile-label">${esc(label)}</div></div>`; }
+function statTile(icon, value, label) { return `<div class="tile">${icon ? `<div class="tile-icon">${icon}</div>` : ""}<div class="tile-val">${esc(value)}</div><div class="tile-label">${esc(label)}</div></div>`; }
 function chartCard(title, inner) { return `<div class="chart-card"><div class="chart-title">${esc(title)}</div>${inner}</div>`; }
 function hbar(label, valueText, pct) { return `<div class="hbar-row"><div class="hbar-label">${esc(label)}</div><div class="hbar-track"><div class="hbar-fill" style="width:${Math.max(4, pct)}%"></div></div><div class="hbar-val">${esc(valueText)}</div></div>`; }
 
@@ -1020,11 +1021,33 @@ function backBtn() { return `<button class="back" aria-label="Back"><svg viewBox
 function wireBack(fn) { const b = screen.querySelector(".back"); if (b) b.onclick = fn; }
 function setActiveTab(t) { document.querySelectorAll("#tabbar .tab").forEach(b => b.classList.toggle("active", b.dataset.tab === t)); }
 function route(tab) { if (tab === "home") showHome(); else if (tab === "stats") showStats(); else showList(tab); }
+function wireTabbarAutoHide() {
+  if (_tabbarScrollHandler) window.removeEventListener("scroll", _tabbarScrollHandler);
+  let lastY = window.scrollY;
+  let ticking = false;
+  const bar = document.getElementById("tabbar");
+  const onScroll = () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => {
+      const y = window.scrollY;
+      if (bar) {
+        if (y > 96 && y > lastY + 8) bar.classList.add("tabbar-hidden");
+        else if (y < 96 || y < lastY - 8) bar.classList.remove("tabbar-hidden");
+      }
+      lastY = y;
+      ticking = false;
+    });
+  };
+  window.addEventListener("scroll", onScroll, { passive: true });
+  _tabbarScrollHandler = onScroll;
+}
 // Вне Telegram (нет window.Telegram.WebApp) — не падаем, а объясняем.
 if (!tg) {
   screen.innerHTML = emptyState("💬", "Откройте в Telegram", "Это мини-приложение работает внутри Telegram");
 } else {
   document.querySelectorAll("#tabbar .tab").forEach(btn => { btn.onclick = () => { setActiveTab(btn.dataset.tab); route(btn.dataset.tab); }; });
+  wireTabbarAutoHide();
   applyTabLabels();
   (async () => {
     try {
