@@ -13,6 +13,7 @@ let me = null;
 let _returnTo = () => { setActiveTab("home"); showHome(); };
 let _heroSource = null;      // {rect, src} стартовой точки hero-transition, захватывается в posterTile()
 let _detailScrollHandler = null;  // текущий scroll-listener страницы фильма (снимается при уходе)
+let _detailLoadController = null; // отменяет устаревший detail-fetch при быстром переходе
 let _tabbarScrollHandler = null;
 
 // ── Локализация ───────────────────────────────────────────────────────────────
@@ -51,14 +52,14 @@ const DICT = {
     search_none_t: "Ничего не найдено", search_none_s: "Попробуй год или английское название",
     confirm_add: (t) => `Добавить «${t}» в «Хочу посмотреть»?`, already_in_list: "Уже в твоём списке!",
     stats_title: "Мой кинопрофиль", my_stats: "Моя статистика", stats_empty_t: "Пока нет статистики", stats_empty_s: "Добавь фильмы и поставь оценки", calc: "Считаю…",
-    stats_profile_fallback: "Киноман", stats_profile_sub: "Твоя история в кино", stats_more: "Показать ещё", stats_less: "Свернуть",
+    stats_profile_fallback: "Киноман", stats_profile_sub: "Твоя история в кино", stats_more: "Показать ещё", stats_less: "Свернуть", stats_view_all: "Посмотреть всех",
     stats_me_tab: "Я", stats_together_tab: "Мы вместе", stats_taste: "Твой вкус", stats_together: "Ваша история",
     stats_ratings_hint: "Сколько фильмов ты поставил(а) на каждую оценку", stats_ratings_hint_pair: "Сколько общих фильмов попало в каждую оценку", stats_genres_hint: "Доля жанра среди просмотренных фильмов",
-    stats_people_hint: "Сколько просмотренных фильмов связано с каждым человеком", stats_films: (n) => `${n} ${pl(n, ["фильм", "фильма", "фильмов"])}`,
+    stats_people_hint: "Сколько просмотренных фильмов связано с каждым человеком", stats_directors_hint: "Сколько просмотренных фильмов снято каждым режиссёром", stats_people_hint_pair: "В скольких общих просмотренных фильмах встречается человек", stats_directors_hint_pair: "Сколько общих просмотренных фильмов снято каждым режиссёром", stats_films: (n) => `${n} ${pl(n, ["фильм", "фильма", "фильмов"])}`,
+    stats_favorite_actor: "Любимый актёр", stats_favorite_director: "Любимый режиссёр", stats_actors_empty: "Недостаточно данных об актёрах", stats_directors_empty: "Недостаточно данных о режиссёрах", stats_people_empty_hint: "Статистика появится после просмотра фильмов.",
     stats_taste_hint: (genre, rating) => genre ? `Тебе особенно нравятся ${genre}; чаще всего ты ставишь ${rating}.` : `Чаще всего ты ставишь ${rating}.`,
     tile_watched: "просмотрено", tile_want: "в «Хочу»", tile_shared_watched: "вместе посмотрено", tile_shared_want: "вместе в «Хочу»", tile_avg: "средняя", tile_hours: "часов",
     chart_ratings: "Как ты оцениваешь фильмы", chart_ratings_pair: "Общие оценки", chart_genres: "Жанры", chart_actors: "Актёры", chart_directors: "Режиссёры",
-    stats_people_hint_pair: "В скольких общих просмотренных фильмах встречается человек",
     year_title: (y) => `Итоги ${y}`, year_avg: "средняя", year_fav_genre: "Любимый жанр — ", year_actor: "Актёр года — ", year_best: "Лучшее",
     auth_err_s: "Открой через кнопку меню бота в Telegram",
     partner_title: "Пара", partner_none_sub: "Добавь партнёра — считайте совместимость вкусов вместе",
@@ -118,14 +119,14 @@ const DICT = {
     search_none_t: "Nothing found", search_none_s: "Try a year or the English title",
     confirm_add: (t) => `Add "${t}" to your wishlist?`, already_in_list: "Already in your list!",
     stats_title: "My movie profile", my_stats: "My stats", stats_empty_t: "No stats yet", stats_empty_s: "Add films and rate them", calc: "Calculating…",
-    stats_profile_fallback: "Movie fan", stats_profile_sub: "Your story in movies", stats_more: "Show more", stats_less: "Show less",
+    stats_profile_fallback: "Movie fan", stats_profile_sub: "Your story in movies", stats_more: "Show more", stats_less: "Show less", stats_view_all: "View all",
     stats_me_tab: "Me", stats_together_tab: "Together", stats_taste: "Your taste", stats_together: "Your story",
     stats_ratings_hint: "How many films you gave each rating", stats_ratings_hint_pair: "How many shared films received each rating", stats_genres_hint: "Genre share among watched films",
-    stats_people_hint: "How many watched films feature each person", stats_films: (n) => `${n} ${n === 1 ? "film" : "films"}`,
+    stats_people_hint: "How many watched films feature each person", stats_directors_hint: "How many watched films each director made", stats_people_hint_pair: "How often a person appears in films you watched together", stats_directors_hint_pair: "How many shared watched films each director made", stats_films: (n) => `${n} ${n === 1 ? "film" : "films"}`,
+    stats_favorite_actor: "Favorite actor", stats_favorite_director: "Favorite director", stats_actors_empty: "Not enough actor data", stats_directors_empty: "Not enough director data", stats_people_empty_hint: "Statistics will appear after you watch films.",
     stats_taste_hint: (genre, rating) => genre ? `You lean toward ${genre} and most often give ${rating}.` : `You most often give ${rating}.`,
     tile_watched: "watched", tile_want: "wishlist", tile_shared_watched: "watched together", tile_shared_want: "shared wishlist", tile_avg: "average", tile_hours: "hours",
     chart_ratings: "How you rate movies", chart_ratings_pair: "Shared ratings", chart_genres: "Genres", chart_actors: "Actors", chart_directors: "Directors",
-    stats_people_hint_pair: "How often a person appears in films you watched together",
     year_title: (y) => `${y} in review`, year_avg: "average", year_fav_genre: "Favorite genre — ", year_actor: "Actor of the year — ", year_best: "Best",
     auth_err_s: "Open via the bot's menu button in Telegram",
     partner_title: "Partner", partner_none_sub: "Add a partner — see how your movie tastes match",
@@ -192,7 +193,7 @@ function posterSrc(u, small) {
 const RETRYABLE_IMAGE_HOSTS = new Set([
   "m.media-amazon.com", "images-na.ssl-images-amazon.com", "ia.media-imdb.com",
   "avatars.mds.yandex.net", "st.kp.yandex.net", "image.openmoviedb.com",
-  "image.tmdb.org", "kinopoiskapiunofficial.tech",
+  "image.tmdb.org", "kinopoiskapiunofficial.tech", "commons.wikimedia.org", "upload.wikimedia.org",
 ]);
 function isRetryableImage(img) {
   try {
@@ -228,6 +229,70 @@ window.__imgRetry = function (img) {
     probe.src = fresh;
   }, 700 * (n + 1));
 };
+
+// Kinopoisk sometimes returns its monochrome "K" card as a person's `photo`.
+// It is a successful image request, so the usual error/retry path cannot catch
+// it. Person photos are served through our same-origin proxy, which lets us
+// inspect a tiny downscaled copy before revealing it. Real portraits have
+// either colour variation or a substantially richer greyscale range; the
+// provider placeholder is almost entirely neutral and has only a few shades.
+function isKinopoiskPortraitPlaceholder(img) {
+  if (!img.naturalWidth || !img.naturalHeight) return false;
+  try {
+    const side = 40;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = side;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, side, side);
+    const pixels = ctx.getImageData(0, 0, side, side).data;
+    let neutral = 0;
+    const shades = new Set();
+    for (let i = 0; i < pixels.length; i += 4) {
+      const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
+      const high = Math.max(r, g, b), low = Math.min(r, g, b);
+      if (high - low <= 10) {
+        neutral += 1;
+        shades.add(Math.floor((r + g + b) / 48));
+      }
+    }
+    const sampleCount = pixels.length / 4;
+    return neutral / sampleCount >= 0.99 && shades.size <= 6;
+  } catch (_) {
+    // If a browser ever disallows canvas inspection, favour showing a real
+    // photo rather than hiding it on an inconclusive check.
+    return false;
+  }
+}
+
+function revealPersonPhoto(img) {
+  if (img.dataset.personPhotoChecked) return;
+  img.dataset.personPhotoChecked = "1";
+  if (isKinopoiskPortraitPlaceholder(img)) {
+    img.remove();
+    return;
+  }
+  img.classList.add("ready");
+}
+
+function revealLoadedPersonPhotos(root = document) {
+  root.querySelectorAll?.("img[data-person-photo]").forEach(img => {
+    if (img.complete && img.naturalWidth) revealPersonPhoto(img);
+  });
+}
+
+// HTML is assembled from API data, so keep recovery behaviour out of inline
+// attributes. This allows a strict CSP without `script-src 'unsafe-inline'`.
+document.addEventListener("load", event => {
+  const img = event.target;
+  if (img instanceof HTMLImageElement && img.hasAttribute("data-person-photo")) revealPersonPhoto(img);
+}, true);
+document.addEventListener("error", event => {
+  const img = event.target;
+  if (!(img instanceof HTMLImageElement)) return;
+  if (img.hasAttribute("data-img-retry")) window.__imgRetry(img);
+  else if (img.hasAttribute("data-img-remove-on-error")) img.remove();
+}, true);
+
 function ratingOf(m) {
   const r = m.imdb_rating || m.kp_rating;
   if (r && !isNaN(+r)) return (+r).toFixed(1);
@@ -253,7 +318,7 @@ function posterTile(m, { onClick, badge } = {}) {
   card.innerHTML = `
     <div class="art">
       <div class="noposter">${esc(m.title)}</div>
-      ${m.poster_url ? `<img loading="lazy" decoding="async" src="${posterSrc(m.poster_url, true)}" alt="" onerror="__imgRetry(this)">` : ""}
+      ${m.poster_url ? `<img loading="lazy" decoding="async" src="${posterSrc(m.poster_url, true)}" alt="" data-img-retry>` : ""}
       ${b ? `<span class="rate">${b}</span>` : ""}
     </div>
     <div class="meta"><div class="t">${esc(m.title)}</div><div class="y">${esc(m.year || "")}</div></div>`;
@@ -266,7 +331,7 @@ function posterTile(m, { onClick, badge } = {}) {
   return card;
 }
 function gridOf(items, toCard) { const g = document.createElement("div"); g.className = "grid"; for (const it of items) g.appendChild(toCard(it)); return g; }
-function openDetail(id, back) { if (back) _returnTo = back; showDetail(id); }
+function openDetail(id, back, preview = null) { if (back) _returnTo = back; showDetail(id, preview); }
 
 // ── Главная ───────────────────────────────────────────────────────────────────
 async function showHome() {
@@ -329,7 +394,7 @@ async function loadRail(id, path) {
     if (!el) return;
     if (!items.length) { el.innerHTML = `<div class="rail-empty">${esc(t("rail_empty"))}</div>`; return; }
     const back = () => { setActiveTab("home"); showHome(); };
-    el.replaceChildren(...items.map(m => posterTile(m, { onClick: () => openDetail(m.id, back) })));
+    el.replaceChildren(...items.map(m => posterTile(m, { onClick: () => openDetail(m.id, back, m) })));
   } catch (e) { if (el) el.innerHTML = `<div class="rail-empty">${esc(t("rail_err"))}</div>`; }
 }
 async function loadGenres() {
@@ -359,7 +424,7 @@ async function showGenre(name) {
     const el = document.getElementById("gg");
     if (!items.length) { el.innerHTML = emptyState("🎭", t("genre_empty_t"), t("genre_empty_s")); return; }
     const back = () => showGenre(name);
-    el.replaceChildren(gridOf(items, m => posterTile(m, { onClick: () => openDetail(m.id, back) })));
+    el.replaceChildren(gridOf(items, m => posterTile(m, { onClick: () => openDetail(m.id, back, m) })));
   } catch (e) { document.getElementById("gg").innerHTML = emptyState("⚠️", t("load_err"), ""); }
 }
 
@@ -374,7 +439,7 @@ function collectionCard(c) {
   card.innerHTML = `
     <div class="art">
       <div class="noposter">${esc(c.title)}</div>
-      ${c.cover ? `<img loading="lazy" src="${posterSrc(c.cover, true)}" alt="" onerror="__imgRetry(this)">` : ""}
+      ${c.cover ? `<img loading="lazy" src="${posterSrc(c.cover, true)}" alt="" data-img-retry>` : ""}
       <span class="rate">${c.film_count} ${esc(t("count_films", c.film_count))}</span>
     </div>
     <div class="meta"><div class="t">${esc(c.title)}</div></div>`;
@@ -438,7 +503,7 @@ async function showCollectionDetail(id) {
           await api(`/api/admin/collections/${id}/films/${m.id}`, { method: "DELETE" });
           showCollectionDetail(id);
         })
-      : (m) => openDetail(m.id, back);
+      : (m) => openDetail(m.id, back, m);
     el.replaceChildren(gridOf(c.items, m => posterTile(m, { onClick: () => onTile(m) })));
   } catch (e) { document.getElementById("cdg").innerHTML = emptyState("⚠️", t("load_err"), ""); }
 }
@@ -462,8 +527,8 @@ async function showList(tab) {
       return;
     }
     const back = () => showList(tab);
-    const renderCards = (list) => list.map(m => posterTile(m, { onClick: () => openDetail(m.id, back), badge: m.my_rating ? `★ ${m.my_rating}` : "" }));
-    const grid = gridOf(items, m => posterTile(m, { onClick: () => openDetail(m.id, back), badge: m.my_rating ? `★ ${m.my_rating}` : "" }));
+    const renderCards = (list) => list.map(m => posterTile(m, { onClick: () => openDetail(m.id, back, m), badge: m.my_rating ? `★ ${m.my_rating}` : "" }));
+    const grid = gridOf(items, m => posterTile(m, { onClick: () => openDetail(m.id, back, m), badge: m.my_rating ? `★ ${m.my_rating}` : "" }));
     el.replaceChildren(grid);
     let offset = items.length;
     if (offset < total) {
@@ -495,6 +560,20 @@ function shareSvg() { return `<svg viewBox="0 0 24 24" fill="none" stroke="curre
 
 function unwireDetailScroll() {
   if (_detailScrollHandler) { window.removeEventListener("scroll", _detailScrollHandler); _detailScrollHandler = null; }
+  if (_detailLoadController) { _detailLoadController.abort(); _detailLoadController = null; }
+}
+function resetDetailViewport() {
+  // iOS WebView occasionally restores the previous document scroll position
+  // while a detail template is being swapped in. Reset both possible scroll
+  // roots now and on the following frame, after the new layout exists.
+  const reset = () => {
+    window.scrollTo(0, 0);
+    if (document.scrollingElement) document.scrollingElement.scrollTop = 0;
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  };
+  reset();
+  requestAnimationFrame(reset);
 }
 function wireDetailScroll(backdropH) {
   const backdrop = document.getElementById("d-backdrop-img");
@@ -558,18 +637,56 @@ function closeDetailThen(fn) {
   setTimeout(fn, 190);
 }
 
-async function showDetail(id) {
+function renderDetailPreview(preview) {
+  const title = preview.title || "…";
+  const poster = preview.poster_url || preview.poster || "";
+  const meta = [preview.year, preview.age_rating, preview.runtime].filter(Boolean).join(" · ");
+  screen.innerHTML = `
+    <div class="detail-v2 detail-preview">
+      <div class="d-backdrop no-bd">
+        ${poster ? `<img src="${posterSrc(poster, true)}" alt="" data-img-retry>` : ""}
+        <div class="d-scrim-t"></div><div class="d-scrim-b"></div>
+        <div class="d-floatctrls">
+          <button class="d-ctrl" id="d-back-preview" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
+        </div>
+      </div>
+      <div class="d-body">
+        <div class="d-poster-wrap"><div class="d-poster"><span class="fb">${esc(title)}</span>${poster ? `<img src="${posterSrc(poster, true)}" alt="" data-img-retry>` : ""}</div></div>
+        <h1 class="d-title">${esc(title)}</h1>
+        ${preview.title_original && preview.title_original !== title ? `<div class="d-original">${esc(preview.title_original)}</div>` : ""}
+        ${meta ? `<div class="d-meta">${esc(meta)}</div>` : ""}
+        <div class="d-preview-lines"><div class="sk sk-line wide"></div><div class="sk sk-line"></div></div>
+      </div>
+    </div>`;
+  document.getElementById("d-back-preview").onclick = () => closeDetailThen(_returnTo);
+}
+
+async function showDetail(id, preview = null) {
   unwireDetailScroll();
-  window.scrollTo(0, 0);
-  screen.innerHTML = `<div class="detail-v2">
-    <div class="d-backdrop sk"></div>
-    <div class="d-body"><div class="d-poster-wrap"><div class="d-poster sk"></div></div>
-      <div class="sk sk-line wide"></div><div class="sk sk-line"></div></div>
-    <div class="d-floatctrls" style="position:fixed;top:0;left:0;right:0;padding:calc(10px + env(safe-area-inset-top)) 14px 0;z-index:41;">${backBtn()}</div>
-  </div>`;
-  wireBack(() => closeDetailThen(_returnTo));
-  const m = await api(`/api/movie/${id}`);
-  renderDetail(id, m);
+  if (preview) renderDetailPreview(preview);
+  else {
+    screen.innerHTML = `<div class="detail-v2">
+      <div class="d-backdrop sk"></div>
+      <div class="d-body"><div class="d-poster-wrap"><div class="d-poster sk"></div></div>
+        <div class="sk sk-line wide"></div><div class="sk sk-line"></div></div>
+      <div class="d-floatctrls" style="position:fixed;top:0;left:0;right:0;padding:calc(10px + env(safe-area-inset-top)) 14px 0;z-index:41;">${backBtn()}</div>
+    </div>`;
+    wireBack(() => closeDetailThen(_returnTo));
+  }
+  resetDetailViewport();
+  const controller = new AbortController();
+  _detailLoadController = controller;
+  try {
+    const m = await api(`/api/movie/${id}`, { signal: controller.signal });
+    if (!controller.signal.aborted) renderDetail(id, m);
+  } catch (e) {
+    if (!controller.signal.aborted) {
+      const body = screen.querySelector(".detail-v2 .d-body");
+      if (body) body.insertAdjacentHTML("beforeend", emptyState("⚠️", t("load_err"), String(e.message)));
+    }
+  } finally {
+    if (_detailLoadController === controller) _detailLoadController = null;
+  }
 }
 
 function renderDetail(id, m) {
@@ -593,7 +710,7 @@ function renderDetail(id, m) {
         <button class="d-ctrl" id="d-more-sticky" aria-label="Share">${shareSvg()}</button>
       </div>
       <div class="d-backdrop${m.backdrop_url ? "" : " no-bd"}" id="d-backdrop">
-        ${bdUrl ? `<img id="d-backdrop-img" src="${posterSrc(bdUrl, !m.backdrop_url)}" alt="" onerror="__imgRetry(this)">` : ""}
+        ${bdUrl ? `<img id="d-backdrop-img" src="${posterSrc(bdUrl, !m.backdrop_url)}" alt="">` : ""}
         <div class="d-scrim-t"></div><div class="d-scrim-b"></div>
         <div class="d-floatctrls">
           <button class="d-ctrl" id="d-back-top" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
@@ -604,7 +721,7 @@ function renderDetail(id, m) {
         <div class="d-poster-wrap" id="d-poster-wrap">
           <div class="d-poster">
             <span class="fb">${esc(m.title)}</span>
-            ${m.poster_url ? `<img src="${posterSrc(m.poster_url, true)}" alt="" onerror="__imgRetry(this)">` : ""}
+            ${m.poster_url ? `<img src="${posterSrc(m.poster_url, true)}" alt="" data-img-retry>` : ""}
           </div>
         </div>
         <h1 class="d-title">${esc(m.title)}</h1>
@@ -621,13 +738,14 @@ function renderDetail(id, m) {
           <div id="d-comment-zone"></div>
         </div>
         ${cast.length ? `<div class="d-cast"><div class="d-cast-h"><h2>${esc(t("cast_title"))}</h2></div>
-          <div class="d-cast-rail">${cast.map(a => `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(a.name))}</span>${a.photo_url ? `<img loading="lazy" decoding="async" src="${posterSrc(a.photo_url)}" alt="" onerror="__imgRetry(this)">` : ""}</div><div class="n">${esc(a.name)}</div></div>`).join("")}</div></div>` : ""}
+          <div class="d-cast-rail">${cast.map(a => `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(a.name))}</span>${a.photo_url ? `<img loading="lazy" decoding="async" src="${posterSrc(a.photo_url)}" alt="" data-img-retry data-person-photo>` : ""}</div><div class="n">${esc(a.name)}</div></div>`).join("")}</div></div>` : ""}
       </div>
     </div>`;
 
   renderStars(id, m);
   renderComment(id, m);
   renderActions(id, m);
+  revealLoadedPersonPhotos(screen);
 
   const back = () => closeDetailThen(_returnTo);
   document.getElementById("d-back-top").onclick = back;
@@ -635,7 +753,29 @@ function renderDetail(id, m) {
   document.getElementById("d-more-top").onclick = () => shareMovie(m);
   document.getElementById("d-more-sticky").onclick = () => shareMovie(m);
 
+  const backdropShell = document.getElementById("d-backdrop");
   const bdImg = document.getElementById("d-backdrop-img");
+  // A portrait is a valid fallback, but a failed wide backdrop must never leave
+  // a tall black hole above the poster. The proxy already retries the source;
+  // after that, switch once to the known poster or collapse to a compact gradient.
+  const usePosterBackdropFallback = () => {
+    backdropShell?.classList.add("no-bd");
+    if (!bdImg) return;
+    if (bdImg.dataset.heroFallback === "poster") {
+      bdImg.remove();
+      return;
+    }
+    if (!m.poster_url) {
+      bdImg.remove();
+      return;
+    }
+    bdImg.dataset.heroFallback = "poster";
+    bdImg.addEventListener("error", usePosterBackdropFallback, { once: true });
+    bdImg.src = posterSrc(m.poster_url, true);
+  };
+  if (bdImg && m.backdrop_url) {
+    bdImg.addEventListener("error", usePosterBackdropFallback, { once: true });
+  }
   const startScroll = () => {
     const h = document.getElementById("d-backdrop").getBoundingClientRect().height;
     wireDetailScroll(h);
@@ -845,6 +985,7 @@ async function showStats() {
     const shareStatsButton = screen.querySelector("[data-stats-share]");
     if (shareStatsButton) shareStatsButton.onclick = () => shareStats();
     wirePartner(box);
+    revealLoadedPersonPhotos(box);
   };
   render();
 }
@@ -873,7 +1014,7 @@ function pairHeroHTML(ps) {
 function pairHighlightsHTML(ps) {
   const favorites = ps.common_favorites || (ps.best ? [ps.best] : []);
   const disagreements = ps.disagreements || (ps.controversial ? [ps.controversial] : []);
-  const poster = item => item.poster_url ? `<img loading="lazy" src="${esc(posterSrc(item.poster_url, true))}" alt="" onerror="this.remove()">` : `<span class="pair-poster-fallback">✦</span>`;
+  const poster = item => item.poster_url ? `<img loading="lazy" src="${esc(posterSrc(item.poster_url, true))}" alt="" data-img-remove-on-error>` : `<span class="pair-poster-fallback">✦</span>`;
   const favoriteRows = favorites.map(item => `<div class="pair-film ${item.film_id ? "is-clickable" : ""}" ${item.film_id ? `data-film-id="${item.film_id}" role="button" tabindex="0"` : ""}><div class="pair-film-poster">${poster(item)}</div><div><b>${esc(item.title)}</b><small>${esc(t("partner_shared_best"))}</small></div><strong>★ ${item.avg ?? "—"}</strong></div>`).join("");
   const differenceRows = disagreements.map(item => `<div class="pair-difference ${item.film_id ? "is-clickable" : ""}" ${item.film_id ? `data-film-id="${item.film_id}" role="button" tabindex="0"` : ""}><div class="pair-film-poster">${poster(item)}</div><b>${esc(item.title)}</b><span><em>${item.a}</em> <i>vs</i> <em>${item.b}</em><small>Δ ${item.diff ?? Math.abs(item.a - item.b)}</small></span></div>`).join("");
   return `<div class="pair-highlight-grid">
@@ -884,7 +1025,7 @@ function pairHighlightsHTML(ps) {
 
 function userAvatarHTML(user, name, className = "profile-avatar") {
   const photo = user?.photo_url || user?.avatar_url;
-  return `<div class="${className}"><span>${esc(initials(name))}</span>${photo ? `<img src="${esc(photo)}" alt="" loading="eager" onerror="this.remove()">` : ""}</div>`;
+  return `<div class="${className}"><span>${esc(initials(name))}</span>${photo ? `<img src="${esc(photo)}" alt="" loading="eager" data-img-remove-on-error>` : ""}</div>`;
 }
 
 function statsProfileHTML(s) {
@@ -911,6 +1052,108 @@ function statsList(section, items, renderItem, expanded) {
   return rows + `<button class="stats-more" data-stats-expand="${section}">${esc(t(expanded[section] ? "stats_less" : "stats_more"))}<span>${expanded[section] ? "↑" : "↓"}</span></button>`;
 }
 
+// Genre visuals are intentionally small inline SVGs: they load instantly in the
+// Telegram WebView, inherit the app's colour system, and never depend on an
+// external icon CDN.  The aliases cover both catalogue languages and common API
+// spellings; unknown genres get a neutral film icon instead of a broken image.
+const GENRE_VISUALS = {
+  drama: { color: "#3b82f6", glow: "rgba(59,130,246,.22)", icon: '<path d="M4.5 7.5 10 5l4 2.5v9L9.5 19 4.5 16.5zM14 7.5 19.5 5l.5 11.5-5 2.5z"/><path d="M7 11h.01M11 11h.01M7 14c1.1 1 2.9 1 4 0M16.5 11h.01M18.5 11h.01M16 14c.7.6 1.6.8 2.4.5"/>' },
+  thriller: { color: "#a855f7", glow: "rgba(168,85,247,.22)", icon: '<path d="m5 4 15 15M8 7l-3 8 8-3M16 14l3-8-8 3M4 20l3-3"/>' },
+  mystery: { color: "#14b8a6", glow: "rgba(20,184,166,.22)", icon: '<path d="M5 11c2.5-3 11.5-3 14 0M8 10l1-4h6l1 4M4 14h16M7 15a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm10 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z"/>' },
+  romance: { color: "#ec4899", glow: "rgba(236,72,153,.22)", icon: '<path d="M20 8.5C20 5.5 16.7 4 14.5 6.2L12 8.7 9.5 6.2C7.3 4 4 5.5 4 8.5c0 4.7 8 9.5 8 9.5s8-4.8 8-9.5Z"/>' },
+  comedy: { color: "#fbbf24", glow: "rgba(251,191,36,.22)", icon: '<circle cx="12" cy="12" r="8"/><path d="M8 10h.01M16 10h.01M8.5 14c2 2 5 2 7 0"/>' },
+  scifi: { color: "#38bdf8", glow: "rgba(56,189,248,.22)", icon: '<path d="M6 14c0-5 2.4-9 6-9s6 4 6 9c0 3-2.7 5-6 5s-6-2-6-5Z"/><path d="M8.5 12h.01M15.5 12h.01M9 16c1.8 1 4.2 1 6 0"/>' },
+  fantasy: { color: "#4ade80", glow: "rgba(74,222,128,.22)", icon: '<path d="M5 17c1-6 3-9 7-9 3 0 4.5 1.6 5.5 4.5M7 11 5 7l4 1 1-4 2 4M10 17c2-1 4.5-1 7 .5M17 6l1.5-2M19 9l2-1"/>' },
+  adventure: { color: "#fb923c", glow: "rgba(251,146,60,.22)", icon: '<path d="m5 19 14-14M8 16l-3 3 3-1M16 8l3-3-1 3M7 6l4 4M14 13l4 4"/>' },
+  horror: { color: "#fb5a62", glow: "rgba(251,90,98,.22)", icon: '<path d="M7 19v-3l-2-2 2-2V8l2-3h6l2 3v4l2 2-2 2v3l-2 2H9z"/><path d="M9 11h.01M15 11h.01M10 15h4"/>' },
+  crime: { color: "#22c7be", glow: "rgba(34,199,190,.22)", icon: '<path d="M7 20v-5a5 5 0 0 1 10 0v5M5 9c0-3 14-3 14 0M8 9l1-5h6l1 5M4 20h16M9 15h.01M15 15h.01"/>' },
+  courtroom: { color: "#8b5cf6", glow: "rgba(139,92,246,.22)", icon: '<path d="m7 7 6 6M9 5l-4 4 5 5 4-4zM15 13l4 4M4 20h16"/>' },
+  biography: { color: "#fbbf24", glow: "rgba(251,191,36,.22)", icon: '<path d="m12 4 2.2 4.5L19 9.2l-3.5 3.4.8 4.8-4.3-2.3-4.3 2.3.8-4.8L5 9.2l4.8-.7z"/>' },
+  space: { color: "#38bdf8", glow: "rgba(56,189,248,.22)", icon: '<path d="M14 4c3 2 4 5 3 9l2 2-3 1-1 3-2-2c-4 1-7 0-9-3 1-4 5-8 10-10Z"/><path d="M12 9h.01M5 19l3-3"/>' },
+  nature: { color: "#68d46b", glow: "rgba(104,212,107,.22)", icon: '<path d="M19 5C10 5 5 9 5 16c0 2 1 3 3 3 7 0 11-5 11-14Z"/><path d="M5 19c3-4 6-6 11-9"/>' },
+  action: { color: "#f97316", glow: "rgba(249,115,22,.22)", icon: '<circle cx="15" cy="5" r="2"/><path d="m11 10 4-2 2 3 3 1M11 10l-3 4 3 2 1 4M14 12l-1 4 4 3"/>' },
+  war: { color: "#3297f6", glow: "rgba(50,151,246,.22)", icon: '<path d="M12 4c2 2 4.5 2 7 2v5c0 5-3 8-7 9-4-1-7-4-7-9V6c2.5 0 5-.5 7-2Z"/><path d="m12 9 1 2 2 .3-1.5 1.4.4 2-1.9-1-1.9 1 .4-2L9 11.3l2-.3z"/>' },
+  music: { color: "#9b5cf5", glow: "rgba(155,92,245,.22)", icon: '<path d="M14 5v10.5a3 3 0 1 1-2-2.8V7l7-2v8.5a3 3 0 1 1-2-2.8V4z"/>' },
+  family: { color: "#4297f7", glow: "rgba(66,151,247,.22)", icon: '<circle cx="9" cy="8" r="2.5"/><circle cx="16" cy="9" r="2"/><path d="M4 19v-2.5C4 14 6.3 13 9 13s5 1 5 3.5V19M14 19v-2c0-1.8 1.5-3 3.5-3S21 15.2 21 17v2"/>' },
+  animation: { color: "#4ade80", glow: "rgba(74,222,128,.22)", icon: '<circle cx="12" cy="12" r="6"/><circle cx="8" cy="7" r="2"/><circle cx="16" cy="7" r="2"/><path d="M9 13h.01M15 13h.01M9.5 16c1.5 1 3.5 1 5 0"/>' },
+  documentary: { color: "#3b82f6", glow: "rgba(59,130,246,.22)", icon: '<circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2 2 3 5 3 8s-1 6-3 8c-2-2-3-5-3-8s1-6 3-8Z"/>' },
+  history: { color: "#ec4899", glow: "rgba(236,72,153,.22)", icon: '<circle cx="12" cy="10" r="4"/><path d="m9 14-2 6 5-2 5 2-2-6M10 10l1.3 1.3L14 8.8"/>' },
+  default: { color: "#6f88aa", glow: "rgba(111,136,170,.20)", icon: '<path d="M4 7.5 8 5h8l4 2.5v9L16 19H8l-4-2.5zM8 5l4 4 4-4M4 7.5l4 4-4 4M20 7.5l-4 4 4 4"/>' },
+};
+
+function genreKey(genre) {
+  const key = String(genre || "").trim().toLowerCase().replace(/[–—-]/g, " ").replace(/\s+/g, " ");
+  const aliases = {
+    "драма": "drama", "триллер": "thriller", "детектив": "mystery", "детективный": "mystery", "detective": "mystery", "містерія": "mystery", "мелодрама": "romance", "романтика": "romance",
+    "комедия": "comedy", "комедія": "comedy", "фантастика": "scifi", "научная фантастика": "scifi", "наукова фантастика": "scifi", "sci fi": "scifi", "science fiction": "scifi",
+    "фэнтези": "fantasy", "фентезі": "fantasy", "приключения": "adventure", "пригоди": "adventure", "ужасы": "horror", "жахи": "horror",
+    "криминал": "crime", "кримінал": "crime", "судебный": "courtroom", "биография": "biography", "біографія": "biography", "космос": "space", "природа": "nature",
+    "боевик": "action", "екшн": "action", "война": "war", "війна": "war", "музыка": "music", "музика": "music", "мюзикл": "music",
+    "семейный": "family", "сімейний": "family", "kids": "family", "children": "family", "мультфильм": "animation", "анимация": "animation", "анімація": "animation", "animation": "animation", "musical": "music", "dance": "music", "документальный": "documentary", "документальний": "documentary",
+    "talk show": "comedy", "fairy tale": "fantasy", "educational": "documentary", "history": "history", "история": "history", "історія": "history", "historical": "history", "period": "history", "politics": "history", "news": "documentary", "business": "documentary",
+    "time travel": "scifi", "puzzle": "mystery", "psychological": "mystery", "mind bending": "mystery", "surreal": "mystery", "suspense": "thriller", "spy": "thriller", "post apocalyptic": "scifi", "vampire": "horror", "werewolf": "horror", "zombie": "horror", "alien": "scifi", "cyberpunk": "scifi", "techno": "scifi", "road movie": "adventure", "western": "adventure",
+  };
+  return aliases[key] || key.replace(/[^a-z]/g, "") || "default";
+}
+
+function genreVisual(genre) { return GENRE_VISUALS[genreKey(genre)] || GENRE_VISUALS.default; }
+function genreIcon(genre, className = "") {
+  const visual = genreVisual(genre);
+  return `<span class="${className}" style="--genre-color:${visual.color};--genre-glow:${visual.glow}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${visual.icon}</svg></span>`;
+}
+
+function genreRow([genre, pct, count]) {
+  const percentage = Math.max(0, Math.min(100, Number(pct) || 0));
+  const countValue = Number.isFinite(Number(count)) ? Number(count) : null;
+  const visual = genreVisual(genre);
+  return `<div class="genre-stat-row" style="--genre-color:${visual.color};--genre-glow:${visual.glow}">
+    ${genreIcon(genre, "genre-stat-icon")}<div class="genre-stat-name">${esc(genre)}</div>
+    <div class="genre-stat-track"><i style="width:${Math.max(percentage ? 7 : 0, percentage)}%"></i></div>
+    <div class="genre-stat-value"><b>${percentage}%</b>${countValue != null ? `<small>${esc(t("stats_films", countValue))}</small>` : ""}</div>
+  </div>`;
+}
+
+function genreStatsCard(items, expanded) {
+  const isExpanded = expanded.genres;
+  const topAction = items.length > 3 ? `<button class="genre-more-top" type="button" data-stats-expand="genres">${esc(t(isExpanded ? "stats_less" : "stats_more"))}<span>›</span></button>` : "";
+  return `<section class="genre-stats-card">
+    <div class="genre-stats-head">${genreIcon("drama", "genre-title-icon")}<div><h2>${esc(t("chart_genres"))}</h2><p>${esc(t("stats_genres_hint"))}</p></div>${topAction}</div>
+    <div class="genre-stat-list">${statsList("genres", items, genreRow, expanded)}</div>
+  </section>`;
+}
+
+function peopleSectionIcon(type) {
+  const icon = type === "actors"
+    ? '<path d="M15 19v-1.4c0-2-1.8-3.6-4-3.6s-4 1.6-4 3.6V19"/><circle cx="11" cy="8" r="3"/><path d="m18 12 .9 1.8 2 .3-1.4 1.4.3 2-1.8-1-1.8 1 .4-2-1.5-1.4 2-.3z"/>'
+    : '<path d="M5 8h14M7 8V5h10v3M7 12h10v7H7zM4 12h16M9 16h.01M15 16h.01"/><path d="M4 20h16"/>';
+  return `<span class="people-section-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${icon}</svg></span>`;
+}
+
+function personStatCard(item, index, type) {
+  const [name, count, photoUrl] = item;
+  const favorite = index === 0;
+  const photo = photoUrl ? `<img loading="lazy" decoding="async" src="${esc(posterSrc(photoUrl))}" alt="${esc(name)}" data-img-retry data-person-photo>` : "";
+  const favoriteLabel = type === "actors" ? t("stats_favorite_actor") : t("stats_favorite_director");
+  return `<article class="person-stat-card" aria-label="${esc(`${name}, ${t("stats_films", count)}`)}">
+    <span class="person-stat-rank" aria-label="${index + 1}">${index + 1}</span>
+    <span class="person-stat-avatar"><span class="fb">${esc(initials(name))}</span>${photo}</span>
+    <div class="person-stat-copy"><b title="${esc(name)}">${esc(name)}</b><small>${esc(t("stats_films", count))}</small>${favorite ? `<span class="person-stat-favorite"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m12 3.8 2.5 5 5.5.8-4 3.9.9 5.5-4.9-2.6-4.9 2.6.9-5.5-4-3.9 5.5-.8z"/></svg>${esc(favoriteLabel)}</span>` : ""}</div>
+  </article>`;
+}
+
+function peopleStatsSection({ type, title, subtitle, items, expanded }) {
+  const list = Array.isArray(items) ? items : [];
+  const isExpanded = !!expanded[type];
+  const visible = isExpanded ? list : list.slice(0, 3);
+  const hasMore = list.length > 3;
+  const emptyKey = type === "actors" ? "stats_actors_empty" : "stats_directors_empty";
+  const action = hasMore ? `<button class="people-view-all" type="button" data-stats-expand="${type}" aria-label="${esc(t(isExpanded ? "stats_less" : "stats_view_all"))}">${esc(t(isExpanded ? "stats_less" : "stats_view_all"))}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>` : "";
+  const body = list.length
+    ? `<div class="people-stats-rail ${isExpanded ? "is-expanded" : ""}">${visible.map((item, index) => personStatCard(item, index, type)).join("")}</div>`
+    : `<div class="people-stats-empty"><b>${esc(t(emptyKey))}</b><span>${esc(t("stats_people_empty_hint"))}</span></div>`;
+  return `<section class="people-stats-section people-stats-${type}"><header class="people-stats-head">${peopleSectionIcon(type)}<div><h2>${esc(title)}</h2><p>${esc(subtitle)}</p></div>${action}</header>${body}</section>`;
+}
+
 function personalStatsHTML(s, scope = "me", expanded = { genres: false, actors: false, directors: false }) {
   const y = s.year;
   const hours = Math.floor(s.total_runtime_min / 60);
@@ -926,12 +1169,11 @@ function personalStatsHTML(s, scope = "me", expanded = { genres: false, actors: 
   const ratingFooter = rankedRatings.length ? `<div class="chart-footer">${esc(scope === "pair" ? "Больше всего ставим: " : "Больше всего ставишь: ")}<b>${rankedRatings.join(" и ")}</b></div>` : "";
   const hist = dist.some(v => v > 0) ? chartCard(t(scope === "pair" ? "chart_ratings_pair" : "chart_ratings"), `<div class="chart-badge">${esc(t("tile_avg"))} <b>${s.avg_rating ?? "—"}</b></div><div class="stats-hint">${esc(t(scope === "pair" ? "stats_ratings_hint_pair" : "stats_ratings_hint"))}</div><div class="hist">${
     dist.map((c, i) => `<div class="hist-col"><div class="hist-bar-area">${c ? `<div class="hist-val">${c}</div>` : ""}<div class="hist-bar" style="height:${c ? Math.max(6, Math.round(c / maxD * 100)) : 0}%"></div></div><div class="hist-x">${i + 1}</div></div>`).join("")}</div>${ratingFooter}`) : "";
-  const genres = s.top_genres_pct.length ? chartCard(t("chart_genres"), `<div class="section-action">${esc(t("stats_more"))}</div><div class="stats-hint">${esc(t("stats_genres_hint"))}</div>${statsList("genres", s.top_genres_pct, ([g, p]) => hbar(g, p + "%", p), expanded)}`) : "";
-  const maxA = s.top_actors.length ? s.top_actors[0][1] : 1;
-  const peopleHint = scope === "pair" ? "stats_people_hint_pair" : "stats_people_hint";
-  const actors = s.top_actors.length ? chartCard(t("chart_actors"), `<div class="section-action">${esc(t("stats_more"))}</div><div class="stats-hint">${esc(t(peopleHint))}</div>${statsList("actors", s.top_actors, ([n, c]) => personPill(n, c), expanded)}`) : "";
-  const maxDir = s.top_directors.length ? s.top_directors[0][1] : 1;
-  const directors = s.top_directors.length ? chartCard(t("chart_directors"), `<div class="section-action">${esc(t("stats_more"))}</div><div class="stats-hint">${esc(t(peopleHint))}</div>${statsList("directors", s.top_directors, ([n, c]) => personPill(n, c), expanded)}`) : "";
+  const genres = s.top_genres_pct.length ? genreStatsCard(s.top_genres_pct, expanded) : "";
+  const actorHint = scope === "pair" ? "stats_people_hint_pair" : "stats_people_hint";
+  const directorHint = scope === "pair" ? "stats_directors_hint_pair" : "stats_directors_hint";
+  const actors = peopleStatsSection({ type: "actors", title: t("chart_actors"), subtitle: t(actorHint), items: s.top_actors, expanded });
+  const directors = peopleStatsSection({ type: "directors", title: t("chart_directors"), subtitle: t(directorHint), items: s.top_directors, expanded });
   const yearCard = y.count ? `<section class="year-card">
     <div class="year-card-title">🏆 ${esc(t("year_title", y.year))}</div>
     <div class="year-line"><b>${y.count}</b> ${esc(t("count_films", y.count))}${y.avg_rating ? ` · ${esc(t("year_avg"))} <b>${y.avg_rating}</b>` : ""}</div>
@@ -1048,12 +1290,18 @@ async function showAcceptInvite(param) {
 function statTile(icon, value, label) { return `<div class="tile">${icon ? `<div class="tile-icon">${icon}</div>` : ""}<div class="tile-val">${esc(value)}</div><div class="tile-label">${esc(label)}</div></div>`; }
 function chartCard(title, inner) { return `<div class="chart-card"><div class="chart-title">${esc(title)}</div>${inner}</div>`; }
 function hbar(label, valueText, pct) { return `<div class="hbar-row"><div class="hbar-label">${esc(label)}</div><div class="hbar-track"><div class="hbar-fill" style="width:${Math.max(4, pct)}%"></div></div><div class="hbar-val">${esc(valueText)}</div></div>`; }
-function personPill(name, count) { return `<div class="person-pill"><span class="person-avatar">${esc(initials(name))}</span><span><b>${esc(name)}</b><small>${esc(t("stats_films", count))}</small></span></div>`; }
+function personPill(name, count, photoUrl = null) { return `<div class="person-pill"><span class="person-avatar"><span class="fb">${esc(initials(name))}</span>${photoUrl ? `<img loading="lazy" decoding="async" src="${posterSrc(photoUrl)}" alt="" data-img-retry data-person-photo>` : ""}</span><span><b>${esc(name)}</b><small>${esc(t("stats_films", count))}</small></span></div>`; }
 
 // ── Навигация ─────────────────────────────────────────────────────────────────
 function backBtn() { return `<button class="back" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>`; }
 function wireBack(fn) { const b = screen.querySelector(".back"); if (b) b.onclick = fn; }
-function setActiveTab(t) { document.querySelectorAll("#tabbar .tab").forEach(b => b.classList.toggle("active", b.dataset.tab === t)); }
+function setActiveTab(t) {
+  document.querySelectorAll("#tabbar .tab").forEach(b => {
+    const active = b.dataset.tab === t;
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-current", active ? "page" : "false");
+  });
+}
 function route(tab) { if (tab === "home") showHome(); else if (tab === "stats") showStats(); else showList(tab); }
 function wireTabbarAutoHide() {
   if (_tabbarScrollHandler) window.removeEventListener("scroll", _tabbarScrollHandler);
@@ -1080,7 +1328,25 @@ function wireTabbarAutoHide() {
 if (!tg) {
   screen.innerHTML = emptyState("💬", "Откройте в Telegram", "Это мини-приложение работает внутри Telegram");
 } else {
-  document.querySelectorAll("#tabbar .tab").forEach(btn => { btn.onclick = () => { setActiveTab(btn.dataset.tab); route(btn.dataset.tab); }; });
+  const activateTab = btn => {
+    if (btn.dataset.navBusy === "1") return;
+    btn.dataset.navBusy = "1";  // pointerup + click are both delivered on iOS
+    window.setTimeout(() => { delete btn.dataset.navBusy; }, 250);
+    const tab = btn.dataset.tab;
+    if (!tab) return;
+    tg.HapticFeedback?.impactOccurred("light");
+    setActiveTab(tab);
+    route(tab);
+  };
+  document.querySelectorAll("#tabbar .tab").forEach(btn => {
+    btn.addEventListener("pointerup", event => {
+      if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
+      event.preventDefault();
+      activateTab(btn);
+    });
+    // Keyboard, desktop and WebViews without Pointer Events still work through click.
+    btn.addEventListener("click", () => activateTab(btn));
+  });
   wireTabbarAutoHide();
   applyTabLabels();
   (async () => {

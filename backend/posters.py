@@ -21,6 +21,7 @@ import re
 import database as db
 import kinopoisk
 import omdb
+import wikidata
 
 logger = logging.getLogger(__name__)
 
@@ -194,40 +195,34 @@ async def upgrade_omdb_posters(limit: int = 200, _name_cap: int = 60) -> dict:
 
 
 async def backfill_actor_photos(limit: int = 200) -> dict:
-    """Добрать фото актёров фильмам каталога без actors_photos.
+    """Research cast portraits from Wikidata/Commons for older catalogue films.
 
-    Экономно к лимитам: КП отдаёт persons одним батч-запитом на 30 imdb id
-    (selectFields=persons — целиком, включая photo). Синтетические kp_<id>
-    тянутся поштучно через get_movie. Идемпотентно: не затирает已有的 фото.
+    The former backfill only filled empty ``actors_photos`` with the Kinopoisk
+    ``persons.photo`` value. That misses records where Kinopoisk supplied its
+    gray K-card as a nominally valid image. The new pass is idempotent and uses
+    no Kinopoisk budget; it also refreshes an already-present but weak cast.
     """
-    films = await db.films_missing_actor_photos(limit)
+    films = await db.films_needing_actor_photo_enrichment(limit)
     if not films:
-        return {"scanned": 0, "updated": 0, "remaining": 0}
+        return {"scanned": 0, "wikidata": 0, "checked_empty": 0, "remaining": 0}
 
-    updated = 0
+    enriched = checked_empty = 0
+    for start in range(0, len(films), 20):
+        chunk = films[start:start + 20]
+        cast_map = await wikidata.get_cast_by_imdb([film["imdb_id"] for film in chunk])
+        for film in chunk:
+            cast = cast_map.get(film["imdb_id"], [])
+            if cast:
+                actors = ", ".join(person["name"] for person in cast)
+                if await db.set_film_cast_from_wikidata(
+                    film["id"], actors, json.dumps(cast, ensure_ascii=False),
+                ):
+                    enriched += 1
+            elif await db.mark_film_actor_photos_checked(film["id"]):
+                checked_empty += 1
 
-    # 1. Фильмы с настоящим imdb (tt*) — массово батчами.
-    real = [f for f in films if f["imdb_id"].startswith("tt")]
-    if real:
-        photos_map = await kinopoisk.actor_photos_by_imdb([f["imdb_id"] for f in real])
-        for imdb_id, photos_list in photos_map.items():
-            photos_json = json.dumps(photos_list, ensure_ascii=False)
-            if await db.set_actor_photos(imdb_id, photos_json):
-                updated += 1
-
-    # 2. Синтетические (kp_<id>) — поштучно через get_movie.
-    synthetic = [f for f in films if not f["imdb_id"].startswith("tt")]
-    for f in synthetic:
-        doc = await kinopoisk.get_movie(f["imdb_id"][3:])
-        if not doc:
-            continue
-        photos_list = kinopoisk.extract_actors_with_photos(doc.get("persons") or [])
-        if photos_list:
-            photos_json = json.dumps(photos_list, ensure_ascii=False)
-            if await db.set_actor_photos(f["imdb_id"], photos_json):
-                updated += 1
-
-    remaining = len(films) - updated
-    logger.info("Бекфіл фото акторів: скан=%d обновлено=%d осталось=%d",
-                len(films), updated, remaining)
-    return {"scanned": len(films), "updated": updated, "remaining": remaining}
+    remaining = len(films) - enriched - checked_empty
+    logger.info("Бекфіл акторів Wiki/Commons: скан=%d обогащено=%d пусто=%d осталось=%d",
+                len(films), enriched, checked_empty, remaining)
+    return {"scanned": len(films), "wikidata": enriched,
+            "checked_empty": checked_empty, "remaining": remaining}

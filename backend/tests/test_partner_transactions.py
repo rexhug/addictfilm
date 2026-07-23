@@ -72,6 +72,15 @@ class PartnerTransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await db.get_pending_invite(2))
         self.assertNotEqual(inviter_token, accepting_user_token)
 
+    async def test_paired_user_cannot_create_a_late_pending_invite(self):
+        """Regression for the invite/accept interleaving that left a stale link."""
+        await self._add_users(1, 2)
+        token = await db.create_invite(1)
+        self.assertTrue((await db.accept_invite(token, 2))["ok"])
+
+        self.assertIsNone(await db.create_invite(1))
+        self.assertIsNone(await db.get_pending_invite(1))
+
     async def test_unpair_does_not_delete_a_nonreciprocal_new_partner_link(self):
         """A delayed unpair must only remove the pair it actually observed."""
         await self._add_users(1, 2, 3)

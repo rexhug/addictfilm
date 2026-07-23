@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import re
+from urllib.parse import quote, unquote, urlparse
 
 import aiohttp
 
@@ -72,6 +74,93 @@ async def get_titles_by_imdb(imdb_ids: list[str], lang: str = "ru") -> dict[str,
         if imdb_id and label and imdb_id not in out:  # первое совпадение
             out[imdb_id] = label
     return out
+
+
+def commons_thumbnail_url(raw_url: str | None, width: int = 360) -> str | None:
+    """Turn a Wikidata P18 value into a stable, modest-size Commons image URL.
+
+    Wikidata normally returns ``Special:FilePath`` URLs. Keeping that endpoint
+    rather than constructing the upload-path hash ourselves lets Wikimedia own
+    redirects and filename edge cases; the image proxy validates every redirect.
+    """
+    if not raw_url:
+        return None
+    parsed = urlparse(raw_url)
+    marker = "/wiki/Special:FilePath/"
+    if parsed.hostname not in {"commons.wikimedia.org", "www.commons.wikimedia.org"} or marker not in parsed.path:
+        return None
+    filename = unquote(parsed.path.split(marker, 1)[1]).strip()
+    if not filename or "/" in filename or "\\" in filename:
+        return None
+    return f"https://commons.wikimedia.org/wiki/Special:FilePath/{quote(filename, safe='')}?width={width}"
+
+
+def _cast_ordinal(value: str | None) -> tuple[int, str]:
+    """Wikidata casts use strings such as 1, 2a or 10; keep a natural order."""
+    text = str(value or "")
+    match = re.search(r"\d+", text)
+    return (int(match.group(0)) if match else 10_000, text)
+
+
+def _cast_from_bindings(rows: list[dict], max_actors: int) -> dict[str, list[dict]]:
+    grouped: dict[str, list[tuple[tuple[int, str], str, dict]]] = {}
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        imdb_id = row.get("imdb", {}).get("value")
+        actor_id = row.get("actor", {}).get("value")
+        name = row.get("actorLabel", {}).get("value")
+        if not imdb_id or not actor_id or not name or (imdb_id, actor_id) in seen:
+            continue
+        seen.add((imdb_id, actor_id))
+        photo_url = commons_thumbnail_url(row.get("image", {}).get("value"))
+        grouped.setdefault(imdb_id, []).append((
+            _cast_ordinal(row.get("ordinal", {}).get("value")), actor_id,
+            {"name": name, "photo_url": photo_url, "source": "wikidata"},
+        ))
+    return {
+        imdb_id: [entry for _, _, entry in sorted(cast, key=lambda item: (item[0], item[1]))[:max_actors]]
+        for imdb_id, cast in grouped.items()
+    }
+
+
+async def get_cast_by_imdb(imdb_ids: list[str], max_actors: int = 10) -> dict[str, list[dict]]:
+    """Get top-billed cast and freely licensed portraits from Wikidata/Commons.
+
+    This is deliberately batched and cached by the caller: one SPARQL request
+    can enrich several catalogue films without touching the Kinopoisk quota.
+    Records without a Commons portrait are still returned, so the UI has the
+    right names and falls back to initials only when no real image exists.
+    """
+    ids = list(dict.fromkeys(item for item in imdb_ids if re.fullmatch(r"tt\d{5,12}", item or "")))
+    if not ids:
+        return {}
+
+    values = " ".join(f'"{item}"' for item in ids)
+    query = (
+        "SELECT ?imdb ?actor ?actorLabel ?image ?ordinal WHERE {"
+        f"  VALUES ?imdb {{ {values} }}"
+        "  ?film wdt:P345 ?imdb ."
+        "  ?film p:P161 ?castStatement ."
+        "  ?castStatement ps:P161 ?actor ."
+        "  OPTIONAL { ?castStatement pq:P1545 ?ordinal . }"
+        "  OPTIONAL { ?actor wdt:P18 ?image . }"
+        "  SERVICE wikibase:label { bd:serviceParam wikibase:language \"ru,en\". }"
+        "} ORDER BY ?imdb ?ordinal"
+    )
+    try:
+        session = await _get_session()
+        async with session.get(
+            WIKIDATA_SPARQL,
+            params={"query": query, "format": "json"},
+        ) as resp:
+            if resp.status != 200:
+                return {}
+            data = await resp.json(content_type=None)
+    except Exception:
+        logger.debug("Wikidata get_cast_by_imdb failed", exc_info=True)
+        return {}
+
+    return _cast_from_bindings(data.get("results", {}).get("bindings", []), max_actors)
 
 
 async def search_movies(query: str) -> list[dict]:

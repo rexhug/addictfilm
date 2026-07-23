@@ -32,7 +32,8 @@ _QCACHE: dict[str, tuple[float, list]] = {}
 _QTTL = 6 * 3600   # свежесть L1, сек
 _QMAX = 300        # максимум запросов в L1
 # TTL постоянного кэша (БД): результаты поиска стабильны неделями. Настраивается.
-_DB_TTL = int(os.getenv("SEARCH_CACHE_TTL_SEC", str(14 * 24 * 3600)))
+_DB_TTL = int(os.getenv("SEARCH_CACHE_TTL_SEC", str(180 * 24 * 3600)))
+_EMPTY_DB_TTL = int(os.getenv("SEARCH_EMPTY_CACHE_TTL_SEC", str(6 * 3600)))
 _puts = 0  # счётчик записей в L2 — для периодической уборки протухшего
 
 
@@ -67,6 +68,36 @@ def _kp_item(doc: dict) -> dict:
         "rating": f"{rating:.1f}" if rating else None,
         "genres": ", ".join(g["name"] for g in (doc.get("genres") or [])) or None,
         "type": "series" if kinopoisk.is_series(doc) else "movie",
+    }
+
+
+def _kp_details(doc: dict) -> dict:
+    """Kinopoisk response -> permanent catalog record without another request."""
+    r = doc.get("rating") or {}
+    v = doc.get("votes") or {}
+    name = doc.get("name") or doc.get("alternativeName") or ""
+    original = doc.get("alternativeName")
+    length = doc.get("movieLength") or doc.get("seriesLength")
+    directors, actors = kinopoisk.extract_credits(doc.get("persons") or [])
+    photos = kinopoisk.extract_actor_photos(doc.get("persons") or [])
+    return {
+        "imdb_id": kinopoisk.imdb_id_of(doc),
+        "kp_id": str(doc["id"]),
+        "title": name,
+        "title_original": original if original and original != name else None,
+        "year": str(doc["year"]) if doc.get("year") else None,
+        "genres": ", ".join(g["name"] for g in (doc.get("genres") or [])) or None,
+        "directors": directors,
+        "actors": actors,
+        "runtime": f"{length} мин" if length else None,
+        "imdb_rating": f"{r['imdb']:.1f}" if r.get("imdb") else None,
+        "kp_rating": f"{r['kp']:.1f}" if r.get("kp") else None,
+        "imdb_votes": str(v["imdb"]) if v.get("imdb") else None,
+        "plot": doc.get("description") or doc.get("shortDescription"),
+        "poster_url": (doc.get("poster") or {}).get("url"),
+        "backdrop_url": (doc.get("backdrop") or {}).get("url"),
+        "age_rating": kinopoisk.age_rating_of(doc),
+        "actors_photos": json.dumps(photos, ensure_ascii=False) if photos else None,
     }
 
 
@@ -119,8 +150,10 @@ async def _expand(items: list[dict]) -> list[dict]:
     return items
 
 
-async def _enrich_items(items: list[dict]) -> None:
-    """Дотянуть постер/рейтинг/жанр/тип из OMDb для fallback-результатов (параллельно)."""
+async def _enrich_items(items: list[dict]) -> dict[str, dict]:
+    """Дотянуть детали OMDb и вернуть их для постоянного каталога."""
+    details: dict[str, dict] = {}
+
     async def fill(it: dict) -> None:
         if it["src"] != "i":
             return
@@ -130,6 +163,7 @@ async def _enrich_items(items: list[dict]) -> None:
             return
         if not d:
             return
+        details[it["ref"]] = d
         poster = d.get("Poster")
         if poster and poster != "N/A" and not it.get("poster"):
             it["poster"] = poster
@@ -144,6 +178,26 @@ async def _enrich_items(items: list[dict]) -> None:
             it["type"] = "series"
 
     await asyncio.gather(*[fill(it) for it in items])
+    return details
+
+
+def _omdb_catalog_details(data: dict, title: str, poster_url: str | None) -> dict:
+    """Persist a fallback result without spending a second Kinopoisk request."""
+    original = data.get("Title", "")
+    return {
+        "imdb_id": data["imdbID"],
+        "title": title,
+        "title_original": original if original and original != title else None,
+        "year": _clean(data.get("Year")),
+        "genres": _clean(data.get("Genre")),
+        "directors": _clean(data.get("Director")),
+        "actors": _clean(data.get("Actors")),
+        "runtime": _clean(data.get("Runtime")),
+        "imdb_rating": _clean(data.get("imdbRating")),
+        "imdb_votes": _clean(data.get("imdbVotes")),
+        "plot": _clean(data.get("Plot")),
+        "poster_url": poster_url,
+    }
 
 
 async def find_movies(query: str) -> list[dict]:
@@ -153,6 +207,15 @@ async def find_movies(query: str) -> list[dict]:
             docs = await kinopoisk.search_movies(query)
             items = [_kp_item(d) for d in docs if (d.get("name") or d.get("alternativeName"))]
             if items:
+                # A Kinopoisk search response already contains all fields we need.
+                # Save every hit now, so a later add/detail/synonym search is local.
+                for doc in docs:
+                    if not doc.get("id") or not (doc.get("name") or doc.get("alternativeName")):
+                        continue
+                    try:
+                        await db.get_or_create_film(**_kp_details(doc))
+                    except Exception:  # noqa: BLE001
+                        logger.warning("Could not cache Kinopoisk film %s", doc.get("id"), exc_info=True)
                 return items
         except Exception as e:  # noqa: BLE001
             logger.warning("Kinopoisk search failed, fallback: %s", e)
@@ -165,7 +228,7 @@ async def find_movies(query: str) -> list[dict]:
     items = await _expand(items)
     items = items[:6]
 
-    ru_titles, _ = await asyncio.gather(
+    ru_titles, omdb_details = await asyncio.gather(
         wikidata.get_titles_by_imdb([it["ref"] for it in items], "ru"),
         _enrich_items(items),
     )
@@ -173,6 +236,12 @@ async def find_movies(query: str) -> list[dict]:
         wt = ru_titles.get(it["ref"])
         if wt and has_cyrillic(wt):
             it["title"] = wt
+        data = omdb_details.get(it["ref"])
+        if data:
+            try:
+                await db.get_or_create_film(**_omdb_catalog_details(data, it["title"], it.get("poster")))
+            except Exception:  # noqa: BLE001
+                logger.warning("Could not cache OMDb film %s", it["ref"], exc_info=True)
     return items
 
 
@@ -185,12 +254,17 @@ async def cached_search(query: str, user_id: int | None = None) -> dict:
                   обращения к API — кэш-хиты бесплатны и не throttl-ятся)."""
     key = _qnorm(query)
     now = time.time()
+    # The permanent catalog is the first layer: once a film entered our database,
+    # every future title/actor lookup for it is free forever.
+    catalog_items = await db.search_catalog(key)
+    if catalog_items:
+        return {"items": catalog_items, "cached": True, "limited": False, "throttled": False}
     # L1: in-memory.
     hit = _QCACHE.get(key)
     if hit and now - hit[0] < _QTTL:
         return {"items": hit[1], "cached": True, "limited": False, "throttled": False}
     # L2: постоянный кэш в БД (переживает рестарт/деплой, общий на всех).
-    stored = await db.search_cache_get(key, _DB_TTL)
+    stored = await db.search_cache_get(key, _DB_TTL, _EMPTY_DB_TTL)
     if stored is not None:
         _QCACHE[key] = (now, stored)
         return {"items": stored, "cached": True, "limited": False, "throttled": False}
@@ -199,20 +273,15 @@ async def cached_search(query: str, user_id: int | None = None) -> dict:
     if user_id is not None and not ratelimit.allow_user(user_id):
         return {"items": [], "cached": False, "limited": False, "throttled": True}
 
-    if not await ratelimit.try_spend_search():
-        if hit:  # бюджета нет — отдаём устаревший L1-кэш, лучше чем ничего
-            return {"items": hit[1], "cached": True, "limited": False, "throttled": False}
-        logger.warning("Search budget exhausted, query %r not cached", query)
-        return {"items": [], "cached": False, "limited": True, "throttled": False}
-
     items = await find_movies(query)
     _QCACHE[key] = (now, items)
-    if items:  # пустые не кэшируем в БД (мог быть временный сбой источника)
-        await db.search_cache_put(key, items)
-        global _puts
-        _puts += 1
-        if _puts % 100 == 0:  # изредка подчищаем протухший L2
-            await purge_expired()
+    # Short-lived negative entries are also useful: repeated misspellings or bot
+    # probes must not consume a provider call every time.
+    await db.search_cache_put(key, items)
+    global _puts
+    _puts += 1
+    if _puts % 100 == 0:  # изредка подчищаем протухший L2
+        await purge_expired()
     if len(_QCACHE) > _QMAX:  # простая очистка старейших L1
         for k in sorted(_QCACHE, key=lambda k: _QCACHE[k][0])[:_QMAX // 6]:
             _QCACHE.pop(k, None)
@@ -237,37 +306,14 @@ async def fetch_details(src: str, ref: str) -> dict | None:
         doc = await kinopoisk.get_movie(ref)
         if not doc:
             return None
-        r = doc.get("rating") or {}
-        v = doc.get("votes") or {}
-        name = doc.get("name") or doc.get("alternativeName") or ""
-        original = doc.get("alternativeName")
-        length = doc.get("movieLength") or doc.get("seriesLength")
-        directors, actors = kinopoisk.extract_credits(doc.get("persons") or [])
-        photos = kinopoisk.extract_actor_photos(doc.get("persons") or [])
-        imdb_id = kinopoisk.imdb_id_of(doc)
-        poster_url = (doc.get("poster") or {}).get("url")
-        # У КП постера нет — добираем из OMDb (с апскейлом), если есть настоящий imdb.
-        # Под дневным бюджетом: при исчерпании — не добираем (бекфил закроет позже).
-        if not poster_url and imdb_id.startswith("tt") and await ratelimit.try_spend_search():
+        details = _kp_details(doc)
+        imdb_id = details["imdb_id"]
+        poster_url = details["poster_url"]
+        # У КП постера нет — добираем из OMDb, если есть настоящий imdb.
+        if not poster_url and imdb_id.startswith("tt"):
             poster_url = await posters.resolve_omdb(imdb_id)
-        return {
-            "imdb_id": imdb_id,
-            "title": name,
-            "title_original": original if original and original != name else None,
-            "year": str(doc["year"]) if doc.get("year") else None,
-            "genres": ", ".join(g["name"] for g in (doc.get("genres") or [])) or None,
-            "directors": directors,
-            "actors": actors,
-            "runtime": f"{length} мин" if length else None,
-            "imdb_rating": f"{r['imdb']:.1f}" if r.get("imdb") else None,
-            "kp_rating": f"{r['kp']:.1f}" if r.get("kp") else None,
-            "imdb_votes": str(v["imdb"]) if v.get("imdb") else None,
-            "plot": doc.get("description") or doc.get("shortDescription"),
-            "poster_url": poster_url,
-            "backdrop_url": (doc.get("backdrop") or {}).get("url"),
-            "age_rating": kinopoisk.age_rating_of(doc),
-            "actors_photos": json.dumps(photos, ensure_ascii=False) if photos else None,
-        }
+        details["poster_url"] = poster_url
+        return details
 
     # src == "i": OMDb + официальное русское название из Wikidata.
     data = await omdb.get_movie(ref)
@@ -276,23 +322,15 @@ async def fetch_details(src: str, ref: str) -> dict | None:
     original = data.get("Title", "")
     ru_titles = await wikidata.get_titles_by_imdb([data["imdbID"]], "ru")
     title = best_title(ru_titles.get(data["imdbID"]), original)
-    # Кинопоиск — приоритетный источник постера (заметно лучше качеством, чем
-    # Amazon-картинки OMDb) и backdrop/возрастного рейтинга (которых у OMDb нет
-    # вовсе): сперва по imdb, затем поиском по названию. OMDb — только запасной
-    # вариант, если кинопоиск ФАКТИЧЕСКИ не знает фильм.
-    # Под дневным бюджетом kinopoisk: при исчерпании сразу берём OMDb (без задержки).
+    # One batched Kinopoisk request is enough for optional visual metadata.
+    # If it is unavailable, OMDb remains a complete fallback without a retry loop.
     poster_url = None
     backdrop_url = None
     age_rating = None
-    if await ratelimit.try_spend_search():
-        kp = await kinopoisk.posters_by_imdb([data["imdbID"]])
-        poster_url = kp.get(data["imdbID"])
-        art = await kinopoisk.artwork_by_imdb([data["imdbID"]])
-        found = art.get(data["imdbID"]) or {}
-        backdrop_url = found.get("backdrop_url")
-        age_rating = found.get("age_rating")
-        if not poster_url:
-            poster_url = await posters.resolve_by_name(title, data.get("Year"), original)
+    asset = (await kinopoisk.assets_by_imdb([data["imdbID"]])).get(data["imdbID"]) or {}
+    poster_url = asset.get("poster_url")
+    backdrop_url = asset.get("backdrop_url")
+    age_rating = asset.get("age_rating")
     if not poster_url:
         poster_url = omdb.upscale_poster(data.get("Poster"))
     if not age_rating:

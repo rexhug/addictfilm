@@ -9,6 +9,7 @@ community-рейтинг = средняя оценка всех пользова
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import os
 import re
@@ -32,6 +33,7 @@ import posters
 import ratelimit
 import search
 import stats_cache
+import wikidata
 from auth import validate_init_data
 from config import ADMIN_TOKEN, ADMIN_USER_IDS, BOT_TOKEN, DATABASE_URL, SENTRY_DSN
 
@@ -44,6 +46,22 @@ if SENTRY_DSN:
 
 app = FastAPI(title="Movie Mini App")
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
+_HTML_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' https://telegram.org; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' https: data:; "
+    "connect-src 'self'; "
+    "object-src 'none'; base-uri 'none'; form-action 'self'; "
+    "frame-ancestors https://*.telegram.org"
+)
+
+
+def _append_vary(response: Response, field: str) -> None:
+    """Add a Vary field without dropping values set by another middleware."""
+    existing = [value.strip() for value in response.headers.get("Vary", "").split(",") if value.strip()]
+    if field.lower() not in {value.lower() for value in existing}:
+        response.headers["Vary"] = ", ".join([*existing, field])
 
 @app.middleware("http")
 async def log_slow_requests(request: Request, call_next):
@@ -55,10 +73,22 @@ async def log_slow_requests(request: Request, call_next):
         logger.warning("Slow request: %s %s -> %s in %.0fms",
                        request.method, request.url.path, response.status_code, elapsed_ms)
     response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.0f}"
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), geolocation=(), microphone=(), payment=()")
+    # Custom request headers are not automatically part of an HTTP cache key.
+    # Explicitly keep personal API data out of browser and intermediary caches.
+    if request.url.path.startswith("/api/") and not request.url.path.startswith("/api/avatar/"):
+        response.headers.setdefault("Cache-Control", "private, no-store")
+        _append_vary(response, "X-Init-Data")
     return response
 
 # Фоновий щоденний бекап SQLite (Postgres робить бекапи сам — backup_db там no-op).
 _backup_task: asyncio.Task | None = None
+_visual_enrichment_tasks: set[asyncio.Task] = set()
+_visual_enrichment_film_ids: set[int] = set()
+_people_enrichment_tasks: set[asyncio.Task] = set()
+_people_enrichment_film_ids: set[int] = set()
 
 
 async def _periodic_backup() -> None:
@@ -94,7 +124,19 @@ async def shutdown() -> None:
         except asyncio.CancelledError:
             pass
         _backup_task = None
-    for mod in (kinopoisk, omdb):
+    for task in list(_visual_enrichment_tasks):
+        task.cancel()
+    if _visual_enrichment_tasks:
+        await asyncio.gather(*_visual_enrichment_tasks, return_exceptions=True)
+    _visual_enrichment_tasks.clear()
+    _visual_enrichment_film_ids.clear()
+    for task in list(_people_enrichment_tasks):
+        task.cancel()
+    if _people_enrichment_tasks:
+        await asyncio.gather(*_people_enrichment_tasks, return_exceptions=True)
+    _people_enrichment_tasks.clear()
+    _people_enrichment_film_ids.clear()
+    for mod in (kinopoisk, omdb, wikidata):
         try:
             await mod.aclose()
         except Exception:  # noqa: BLE001
@@ -103,6 +145,13 @@ async def shutdown() -> None:
     global _img_session
     if _img_session and not _img_session.closed:
         await _img_session.close()
+    global _img_trim_task
+    if _img_trim_task is not None:
+        try:
+            await _img_trim_task
+        except asyncio.CancelledError:
+            pass
+        _img_trim_task = None
 
 
 # ── Авторизация: каждый запрос несёт initData в заголовке ────────────────────
@@ -179,26 +228,81 @@ async def movie(film_id: int, user: dict = Depends(current_user)):
     f = await db.get_film(film_id)
     if not f:
         raise HTTPException(status_code=404, detail="Фильм не найден")
-    # Старі записи каталогу могли бути створені до збереження backdrop_url.
-    # Добираємо фон ліниво при першому відкритті картки й кешуємо його в films.
-    # Це не змінює оцінки/списки та не виконується повторно після успішного знаходження.
+    # Visual enrichment must never sit on the critical path for opening a film.
+    # The current card returns from the catalog right away; a background task
+    # improves missing poster/backdrop for the next view.
     imdb_id = f.get("imdb_id")
-    if not f.get("backdrop_url") and imdb_id and imdb_id.startswith("tt"):
-        if await ratelimit.try_spend_search():
-            artwork = (await kinopoisk.artwork_by_imdb([imdb_id])).get(imdb_id) or {}
-            backdrop = artwork.get("backdrop_url")
-            if backdrop:
-                await db.set_film_artwork(imdb_id, backdrop, artwork.get("age_rating"))
-                f["backdrop_url"] = backdrop
-                if not f.get("age_rating") and artwork.get("age_rating"):
-                    f["age_rating"] = artwork["age_rating"]
-    mine = await db.get_user_film(user["id"], film_id)
-    f["community"] = await db.community_rating(film_id)
+    needs_poster = not f.get("poster_url") and not f.get("poster_checked_at")
+    needs_backdrop = not f.get("backdrop_url") and not f.get("artwork_checked_at")
+    if (needs_poster or needs_backdrop) and imdb_id and imdb_id.startswith("tt"):
+        _schedule_visual_enrichment(film_id, imdb_id)
+    needs_people = bool(f.get("actors")) and not f.get("actor_photos_checked_at")
+    if needs_people and imdb_id and imdb_id.startswith("tt"):
+        _schedule_people_enrichment(film_id, imdb_id)
+    mine, f["community"] = await asyncio.gather(
+        db.get_user_film(user["id"], film_id), db.community_rating(film_id))
     f["status"] = mine["status"] if mine else None
     f["my_rating"] = mine["rating"] if mine else None
     f["my_comment"] = mine["comment"] if mine else None
     f["share_link"] = _movie_link(film_id)
     return f
+
+
+async def _enrich_film_visuals(film_id: int, imdb_id: str) -> None:
+    """Fill missing visual assets outside the user-facing movie-detail request."""
+    try:
+        assets = (await kinopoisk.assets_by_imdb([imdb_id])).get(imdb_id)
+        if assets is not None:
+            await db.mark_film_visuals_checked(
+                imdb_id, assets.get("poster_url"), assets.get("backdrop_url"),
+                assets.get("age_rating"),
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning("Visual enrichment failed for film %s", film_id, exc_info=True)
+    finally:
+        _visual_enrichment_film_ids.discard(film_id)
+
+
+def _schedule_visual_enrichment(film_id: int, imdb_id: str) -> None:
+    """Schedule at most one in-process visual lookup per film."""
+    if film_id in _visual_enrichment_film_ids:
+        return
+    _visual_enrichment_film_ids.add(film_id)
+    task = asyncio.create_task(_enrich_film_visuals(film_id, imdb_id),
+                               name=f"film-visuals-{film_id}")
+    _visual_enrichment_tasks.add(task)
+    task.add_done_callback(_visual_enrichment_tasks.discard)
+
+
+async def _enrich_film_people(film_id: int, imdb_id: str) -> bool:
+    """Research a correct top cast and portraits without spending Kinopoisk quota."""
+    try:
+        cast = (await wikidata.get_cast_by_imdb([imdb_id])).get(imdb_id, [])
+        if cast:
+            actors = ", ".join(person["name"] for person in cast)
+            await db.set_film_cast_from_wikidata(
+                film_id, actors, json.dumps(cast, ensure_ascii=False),
+            )
+            return True
+        else:
+            await db.mark_film_actor_photos_checked(film_id)
+            return False
+    except Exception:  # noqa: BLE001
+        logger.warning("People enrichment failed for film %s", film_id, exc_info=True)
+        return False
+    finally:
+        _people_enrichment_film_ids.discard(film_id)
+
+
+def _schedule_people_enrichment(film_id: int, imdb_id: str) -> None:
+    """Schedule one free cast/portrait lookup per film, never on the UI path."""
+    if film_id in _people_enrichment_film_ids:
+        return
+    _people_enrichment_film_ids.add(film_id)
+    task = asyncio.create_task(_enrich_film_people(film_id, imdb_id),
+                               name=f"film-people-{film_id}")
+    _people_enrichment_tasks.add(task)
+    task.add_done_callback(_people_enrichment_tasks.discard)
 
 
 class RateBody(BaseModel):
@@ -272,11 +376,21 @@ async def api_search(q: str, user: dict = Depends(current_user)):
     if len(q) < 2:
         return {"items": []}
     imdb_id = search.extract_imdb_id(q)
-    if imdb_id:  # прямой запрос по tt-id идёт в OMDb → тоже под throttle
+    if imdb_id:
+        item = await db.get_catalog_item_by_source("i", imdb_id)
+        if item:
+            return {"items": [item]}
+        # A direct ID missed the catalog, so only this first lookup reaches OMDb/KP.
         if not ratelimit.allow_user(user["id"]):
             raise HTTPException(status_code=429, detail="Слишком много запросов, подождите минуту")
         d = await search.fetch_details("i", imdb_id)
-        return {"items": [d] if d else []}
+        if not d:
+            return {"items": []}
+        # A direct IMDb lookup is still a first encounter with a film: keep it
+        # in the permanent catalog immediately, not only after the user taps Add.
+        await db.get_or_create_film(**d)
+        item = await db.get_catalog_item_by_source("i", d["imdb_id"])
+        return {"items": [item] if item else []}
     # Throttle считается внутри — только если реально идём в API (кэш-хиты бесплатны).
     res = await search.cached_search(q, user["id"])
     if res["throttled"]:
@@ -294,9 +408,7 @@ async def _resolve_film_id(src: str, ref: str) -> int:
     if src == "i" and not re.fullmatch(r"tt\d{5,12}", ref):
         raise HTTPException(status_code=422, detail="Некорректный IMDb идентификатор")
 
-    film_id = None
-    if src == "i":
-        film_id = await db.get_film_id_by_imdb(ref)
+    film_id = await db.get_film_id_by_source(src, ref)
     if film_id is None:
         details = await search.fetch_details(src, ref)
         if not details or not details.get("imdb_id"):
@@ -442,31 +554,38 @@ def _movie_link(film_id: int) -> str:
     return f"https://t.me/{BOT_USERNAME}?startapp=film_{film_id}"
 
 
-def _partner_brief(u: dict | None) -> dict:
+def _partner_brief(u: dict | None, viewer_id: int | None = None) -> dict:
     if not u:
         return {"id": None, "name": "", "username": None, "photo_url": None, "avatar_url": None}
     photo_url = u.get("photo_url")
     return {"id": u["id"], "name": u.get("first_name") or "", "username": u.get("username"),
             "photo_url": photo_url,
-            "avatar_url": None if photo_url else _avatar_url(u["id"])}
+            "avatar_url": None if photo_url or viewer_id is None else _avatar_url(viewer_id, u["id"])}
 
 
-def _avatar_signature(user_id: int) -> str:
-    return hmac.new(BOT_TOKEN.encode(), f"avatar:{user_id}".encode(), hashlib.sha256).hexdigest()[:40]
+_AVATAR_URL_TTL_SECONDS = max(60, min(int(os.getenv("AVATAR_URL_TTL_SECONDS", "300")), 3600))
 
 
-def _avatar_url(user_id: int) -> str | None:
-    """Opaque, token-free URL for a partner avatar fetched through our backend."""
+def _avatar_signature(viewer_id: int, user_id: int, expires_at: int) -> str:
+    """Scoped capability: valid only for this viewer, partner and short TTL."""
+    payload = f"avatar-v2:{viewer_id}:{user_id}:{expires_at}".encode()
+    return hmac.new(BOT_TOKEN.encode(), payload, hashlib.sha256).hexdigest()[:40]
+
+
+def _avatar_url(viewer_id: int, user_id: int) -> str | None:
+    """Short-lived, revocable URL for a current partner's Telegram avatar."""
     if not BOT_TOKEN:
         return None
-    return f"/api/avatar/{user_id}?sig={_avatar_signature(user_id)}"
+    expires_at = int(time.time()) + _AVATAR_URL_TTL_SECONDS
+    sig = _avatar_signature(viewer_id, user_id, expires_at)
+    return f"/api/avatar/{user_id}?viewer={viewer_id}&exp={expires_at}&sig={sig}"
 
 
 @app.get("/api/partner")
 async def partner(user: dict = Depends(current_user)):
     pid = await db.get_partner(user["id"])
     if pid is not None:
-        return {"status": "paired", "partner": _partner_brief(await db.get_user(pid))}
+        return {"status": "paired", "partner": _partner_brief(await db.get_user(pid), user["id"])}
     token = await db.get_pending_invite(user["id"])
     if token:
         return {"status": "invited", "link": _invite_link(token), "code": token}
@@ -478,6 +597,8 @@ async def partner_invite(user: dict = Depends(current_user)):
     if await db.get_partner(user["id"]) is not None:
         raise HTTPException(status_code=409, detail="Пара уже есть")
     token = await db.create_invite(user["id"])
+    if token is None:  # pair could have been created after the pre-check above
+        raise HTTPException(status_code=409, detail="Пара уже есть")
     return {"link": _invite_link(token), "code": token}
 
 
@@ -494,7 +615,7 @@ async def partner_accept(body: AcceptBody, user: dict = Depends(current_user)):
     if not res["ok"]:
         return {"ok": False, "reason": res["reason"]}
     stats_cache.clear()
-    return {"ok": True, "partner": _partner_brief(await db.get_user(res["partner_id"]))}
+    return {"ok": True, "partner": _partner_brief(await db.get_user(res["partner_id"]), user["id"])}
 
 
 @app.post("/api/partner/unpair")
@@ -514,7 +635,7 @@ async def partner_stats(user: dict = Depends(current_user)):
     if s is None:
         s = await db.pair_period_stats(user["id"], pair["partner_id"], pair["since"])
         s = stats_cache.put(key, s)
-    s["partner"] = _partner_brief(await db.get_user(pair["partner_id"]))
+    s["partner"] = _partner_brief(await db.get_user(pair["partner_id"]), user["id"])
     return s
 
 
@@ -541,6 +662,24 @@ async def upgrade_omdb_posters(limit: int = 200, name_cap: int = 60):
     return await posters.upgrade_omdb_posters(limit=max(1, min(limit, 500)), _name_cap=max(1, min(name_cap, 200)))
 
 
+@app.post("/api/admin/backfill-actor-photos", dependencies=[Depends(require_admin)])
+async def backfill_actor_photos(limit: int = 200):
+    """Refresh top cast/portraits from Wikidata+Commons without Kinopoisk quota."""
+    return await posters.backfill_actor_photos(limit=max(1, min(limit, 500)))
+
+
+@app.post("/api/admin/enrich-film-people/{imdb_id}", dependencies=[Depends(require_admin)])
+async def enrich_film_people(imdb_id: str):
+    """Immediately refresh one catalogue film — useful when a user reports it."""
+    if not re.fullmatch(r"tt\d{5,12}", imdb_id):
+        raise HTTPException(status_code=422, detail="Некорректный IMDb ID")
+    film_id = await db.get_film_id_by_source("i", imdb_id)
+    if film_id is None:
+        raise HTTPException(status_code=404, detail="Фильм не найден")
+    enriched = await _enrich_film_people(film_id, imdb_id)
+    return {"film_id": film_id, "enriched": enriched}
+
+
 # ── Прокси постеров (обходит блокировку CDN на стороне клиента) ───────────────
 # Картинки грузятся через наш домен, а не напрямую с Amazon/Yandex — работает
 # везде, где открывается само приложение. Без авторизации (тег <img> её не шлёт).
@@ -550,30 +689,45 @@ _ALLOWED_IMG_HOSTS = {
     # Kinopoisk returns some backdrop URLs through the official TMDB image CDN.
     # `imagetmdb.com` is a different host and did not cover these real URLs.
     "image.tmdb.org", "kinopoiskapiunofficial.tech",
+    # Portraits from the free Wikidata/Commons fallback redirect through these
+    # two exact Wikimedia hosts. Keep the list explicit for SSRF protection.
+    "commons.wikimedia.org", "upload.wikimedia.org",
 }
 _ALLOWED_IMG_TYPES = {"image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"}
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
 _MAX_IMAGE_REDIRECTS = 3
+_IMG_FETCH_CONCURRENCY = max(1, min(int(os.getenv("IMG_FETCH_CONCURRENCY", "8")), 32))
+_IMG_FETCH_WAIT_SECONDS = max(0.1, min(float(os.getenv("IMG_FETCH_WAIT_SECONDS", "1")), 10.0))
 _img_session: aiohttp.ClientSession | None = None
+_img_fetch_gate = asyncio.BoundedSemaphore(_IMG_FETCH_CONCURRENCY)
+_img_trim_task: asyncio.Task | None = None
 
 
 async def _img_sess() -> aiohttp.ClientSession:
     global _img_session
     if _img_session is None or _img_session.closed:
         _img_session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=15, connect=5), headers={"User-Agent": "Mozilla/5.0"})
+            timeout=aiohttp.ClientTimeout(total=15, connect=5),
+            connector=aiohttp.TCPConnector(limit=_IMG_FETCH_CONCURRENCY, limit_per_host=4),
+            headers={"User-Agent": "Mozilla/5.0"})
     return _img_session
 
 
 @app.get("/api/avatar/{user_id}", include_in_schema=False)
-async def telegram_avatar(user_id: int, sig: str = ""):
+async def telegram_avatar(user_id: int, viewer: int = 0, exp: int = 0, sig: str = ""):
     """Проксі аватара партнера без передачі Telegram bot token у браузер.
 
     Telegram не додає photo_url партнера в initData поточного користувача, тому
     для старих профілів добираємо останнє фото через Bot API. Посилання підписане
     серверним токеном і не дозволяє довільно використовувати цей endpoint.
     """
-    if user_id <= 0 or not BOT_TOKEN or not hmac.compare_digest(sig, _avatar_signature(user_id)):
+    now = int(time.time())
+    expected_sig = _avatar_signature(viewer, user_id, exp) if BOT_TOKEN and viewer and exp else ""
+    if (user_id <= 0 or viewer <= 0 or exp < now or exp > now + _AVATAR_URL_TTL_SECONDS
+            or not expected_sig or not hmac.compare_digest(sig, expected_sig)):
+        raise HTTPException(status_code=404, detail="Аватар не знайдено")
+    pair = await db.get_pair(viewer)
+    if not pair or pair["partner_id"] != user_id:
         raise HTTPException(status_code=404, detail="Аватар не знайдено")
     api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUserProfilePhotos"
     try:
@@ -598,7 +752,7 @@ async def telegram_avatar(user_id: int, sig: str = ""):
             data = await _read_image_limited(resp.content)
         ctype = _img_ctype(data) or "image/jpeg"
         return Response(content=data, media_type=ctype,
-                        headers={"Cache-Control": "public, max-age=3600"})
+                        headers={"Cache-Control": f"private, max-age={_AVATAR_URL_TTL_SECONDS}"})
     except HTTPException:
         raise
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError):
@@ -609,6 +763,71 @@ async def telegram_avatar(user_id: int, sig: str = ""):
 # Смысл: раздача с локального диска стабильнее и быстрее, чем каждый раз ходить
 # на CDN Яндекса/Amazon — меньше шансов оборвать медленное мобильное соединение.
 _IMG_CACHE_DIR = os.getenv("IMG_CACHE_DIR") or ("/data/imgcache" if os.path.isdir("/data") else "")
+_IMG_CACHE_MAX_BYTES = max(0, int(os.getenv("IMG_CACHE_MAX_BYTES", str(256 * 1024 * 1024))))
+_IMG_CACHE_MAX_FILES = max(0, int(os.getenv("IMG_CACHE_MAX_FILES", "4000")))
+
+
+def _image_client_key(request: Request) -> str:
+    """Use Fly's client address only when a Fly proxy is known to be in front."""
+    if os.getenv("FLY_APP_NAME"):
+        fly_client_ip = request.headers.get("fly-client-ip", "").strip()
+        if fly_client_ip:
+            return fly_client_ip
+    return request.client.host if request.client else "unknown"
+
+
+def _trim_image_cache_sync() -> None:
+    """Best-effort LRU eviction; the image cache must have a hard ceiling."""
+    if not _IMG_CACHE_DIR or (_IMG_CACHE_MAX_BYTES <= 0 and _IMG_CACHE_MAX_FILES <= 0):
+        return
+    entries: list[tuple[float, str, int]] = []
+    total_bytes = 0
+    try:
+        for root, _dirs, filenames in os.walk(_IMG_CACHE_DIR):
+            for name in filenames:
+                # Another process may currently be writing an atomic tmp file.
+                if name.endswith(".tmp"):
+                    continue
+                path = os.path.join(root, name)
+                try:
+                    stat = os.stat(path)
+                except OSError:
+                    continue
+                if not os.path.isfile(path):
+                    continue
+                entries.append((stat.st_mtime, path, stat.st_size))
+                total_bytes += stat.st_size
+    except OSError:
+        return
+
+    if ((_IMG_CACHE_MAX_BYTES <= 0 or total_bytes <= _IMG_CACHE_MAX_BYTES)
+            and (_IMG_CACHE_MAX_FILES <= 0 or len(entries) <= _IMG_CACHE_MAX_FILES)):
+        return
+
+    files_left = len(entries)
+    for _mtime, path, size in sorted(entries):
+        if ((_IMG_CACHE_MAX_BYTES <= 0 or total_bytes <= _IMG_CACHE_MAX_BYTES)
+                and (_IMG_CACHE_MAX_FILES <= 0 or files_left <= _IMG_CACHE_MAX_FILES)):
+            break
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        total_bytes -= size
+        files_left -= 1
+
+
+def _schedule_image_cache_trim() -> None:
+    """Keep potentially slow filesystem traversal off the request event loop."""
+    global _img_trim_task
+    if _img_trim_task is not None and not _img_trim_task.done():
+        return
+    try:
+        _img_trim_task = asyncio.create_task(
+            asyncio.to_thread(_trim_image_cache_sync), name="image-cache-trim")
+    except RuntimeError:
+        # Isolated unit calls can invoke this helper with no running loop.
+        pass
 
 
 def _img_ctype(data: bytes) -> str | None:
@@ -652,7 +871,7 @@ async def _read_image_limited(content: aiohttp.StreamReader) -> bytes:
 
 
 @app.get("/img")
-async def img_proxy(u: str):
+async def img_proxy(request: Request, u: str):
     if len(u) > 4096:
         raise HTTPException(status_code=400, detail="Недопустимый источник")
     if not _is_allowed_image_url(u):
@@ -660,51 +879,73 @@ async def img_proxy(u: str):
 
     cache_path = _img_cache_path(u)
     if cache_path and os.path.exists(cache_path):
-        with open(cache_path, "rb") as f:
-            data = f.read()
-        cached_ctype = _img_ctype(data)
-        if cached_ctype:
-            return Response(content=data, media_type=cached_ctype,
-                            headers={"Cache-Control": "public, max-age=31536000, immutable"})
+        try:
+            if os.path.getsize(cache_path) <= _MAX_IMAGE_BYTES:
+                with open(cache_path, "rb") as f:
+                    data = f.read()
+                cached_ctype = _img_ctype(data)
+                if cached_ctype:
+                    # Treat successfully served items as recently used so the trimmer
+                    # preferentially evicts stale cache entries.
+                    os.utime(cache_path, None)
+                    return Response(content=data, media_type=cached_ctype,
+                                    headers={"Cache-Control": "public, max-age=31536000, immutable"})
+            os.remove(cache_path)
+        except OSError:
+            pass
+
+    if not ratelimit.allow_image_proxy(_image_client_key(request)):
+        raise HTTPException(
+            status_code=429,
+            detail="Забагато запитів до зображень, спробуйте за хвилину",
+            headers={"Retry-After": str(ratelimit.IMAGE_PROXY_WINDOW)},
+        )
+    try:
+        await asyncio.wait_for(_img_fetch_gate.acquire(), timeout=_IMG_FETCH_WAIT_SECONDS)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="Черга завантаження зображень переповнена")
 
     # Две попытки к CDN. Редиректы проходим вручную: каждая цель повторно
     # проверяется по allowlist, чтобы не превратить прокси в SSRF-канал.
     data = None
     ctype = None
-    for attempt in (1, 2):
-        try:
-            current_url = u
-            for _ in range(_MAX_IMAGE_REDIRECTS + 1):
-                async with (await _img_sess()).get(current_url, allow_redirects=False) as resp:
-                    if resp.status in (301, 302, 303, 307, 308):
-                        location = resp.headers.get("Location")
-                        if not location:
+    try:
+        for attempt in (1, 2):
+            try:
+                current_url = u
+                for _ in range(_MAX_IMAGE_REDIRECTS + 1):
+                    async with (await _img_sess()).get(current_url, allow_redirects=False) as resp:
+                        if resp.status in (301, 302, 303, 307, 308):
+                            location = resp.headers.get("Location")
+                            if not location:
+                                raise HTTPException(status_code=404, detail="Изображение не найдено")
+                            current_url = urljoin(current_url, location)
+                            if not _is_allowed_image_url(current_url):
+                                raise HTTPException(status_code=400, detail="Недопустимый источник")
+                            continue
+                        if resp.status != 200:
                             raise HTTPException(status_code=404, detail="Изображение не найдено")
-                        current_url = urljoin(current_url, location)
-                        if not _is_allowed_image_url(current_url):
-                            raise HTTPException(status_code=400, detail="Недопустимый источник")
-                        continue
-                    if resp.status != 200:
-                        raise HTTPException(status_code=404, detail="Изображение не найдено")
-                    ctype = resp.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-                    if ctype not in _ALLOWED_IMG_TYPES:
-                        raise HTTPException(status_code=415, detail="Неподдерживаемый формат изображения")
-                    if resp.content_length is not None and resp.content_length > _MAX_IMAGE_BYTES:
-                        raise HTTPException(status_code=413, detail="Изображение слишком большое")
-                    data = await _read_image_limited(resp.content)
-                    detected_ctype = _img_ctype(data)
-                    if not detected_ctype:
-                        raise HTTPException(status_code=415, detail="Неподдерживаемый формат изображения")
-                    ctype = detected_ctype
+                        ctype = resp.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                        if ctype not in _ALLOWED_IMG_TYPES:
+                            raise HTTPException(status_code=415, detail="Неподдерживаемый формат изображения")
+                        if resp.content_length is not None and resp.content_length > _MAX_IMAGE_BYTES:
+                            raise HTTPException(status_code=413, detail="Изображение слишком большое")
+                        data = await _read_image_limited(resp.content)
+                        detected_ctype = _img_ctype(data)
+                        if not detected_ctype:
+                            raise HTTPException(status_code=415, detail="Неподдерживаемый формат изображения")
+                        ctype = detected_ctype
+                        break
+                if data is not None:
                     break
-            if data is not None:
-                break
-            raise HTTPException(status_code=502, detail="Слишком много перенаправлений")
-        except HTTPException:
-            raise
-        except Exception:  # noqa: BLE001
-            if attempt == 2:
-                raise HTTPException(status_code=502, detail="Не удалось загрузить изображение")
+                raise HTTPException(status_code=502, detail="Слишком много перенаправлений")
+            except HTTPException:
+                raise
+            except Exception:  # noqa: BLE001
+                if attempt == 2:
+                    raise HTTPException(status_code=502, detail="Не удалось загрузить изображение")
+    finally:
+        _img_fetch_gate.release()
 
     if cache_path and data:
         try:  # атомарная запись: tmp + rename (второй инстанс может писать параллельно)
@@ -713,6 +954,7 @@ async def img_proxy(u: str):
             with open(tmp, "wb") as f:
                 f.write(data)
             os.replace(tmp, cache_path)
+            _schedule_image_cache_trim()
         except OSError:
             pass  # кэш — оптимизация, не роняем отдачу из-за диска
 
@@ -725,7 +967,8 @@ async def img_proxy(u: str):
 async def index():
     # no-store: HTML всегда свежий, чтобы новые версии app.js/style.css (?v=) подхватывались.
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"),
-                        headers={"Cache-Control": "no-store, max-age=0"})
+                        headers={"Cache-Control": "no-store, max-age=0",
+                                 "Content-Security-Policy": _HTML_CSP})
 
 class VersionedStaticFiles(StaticFiles):
     """Довго кешує лише versioned JS/CSS; HTML завжди віддає endpoint вище."""

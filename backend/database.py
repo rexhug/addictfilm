@@ -48,6 +48,11 @@ async def init_db() -> None:
     await _add_column_if_missing("films", "backdrop_url TEXT")
     await _add_column_if_missing("films", "age_rating TEXT")
     await _add_column_if_missing("films", "actors_photos TEXT")
+    await _add_column_if_missing("films", "kp_id TEXT")
+    await _add_column_if_missing("films", "search_text TEXT")
+    await _add_column_if_missing("films", "poster_checked_at TEXT")
+    await _add_column_if_missing("films", "artwork_checked_at TEXT")
+    await _add_column_if_missing("films", "actor_photos_checked_at TEXT")
     await _add_column_if_missing("users", "role TEXT")
     await _add_column_if_missing("users", "photo_url TEXT")
 
@@ -74,6 +79,7 @@ async def init_db() -> None:
             CREATE TABLE IF NOT EXISTS films (
                 id             {_film_id_col},
                 imdb_id        TEXT UNIQUE NOT NULL,
+                kp_id          TEXT,
                 title          TEXT NOT NULL,
                 title_original TEXT,
                 year           TEXT,
@@ -89,6 +95,10 @@ async def init_db() -> None:
                 backdrop_url   TEXT,
                 age_rating     TEXT,
                 actors_photos  TEXT,   -- JSON-массив name/photo_url под тех же актёров, что в actors
+                search_text    TEXT NOT NULL DEFAULT '',
+                poster_checked_at TEXT,
+                artwork_checked_at TEXT,
+                actor_photos_checked_at TEXT,
                 created_at     TEXT
             )
         """)
@@ -176,6 +186,13 @@ async def init_db() -> None:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_user_added ON user_films(user_id, status, added_at DESC)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_user_watched ON user_films(user_id, status, watched_at DESC)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_user_top ON user_films(user_id, status, rating DESC, watched_at DESC)")
+        # kp_id делает уже загруженный из Kinopoisk фильм доступным без повторного
+        # запроса даже после рестарта. У старых synthetic kp_<id> он восстанавливается.
+        await db.execute("UPDATE films SET kp_id = SUBSTR(imdb_id, 4) "
+                         "WHERE kp_id IS NULL AND imdb_id LIKE 'kp_%'")
+        await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_films_kp_id "
+                         "ON films(kp_id) WHERE kp_id IS NOT NULL")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_films_search_text ON films(search_text)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_invite_from ON partner_invites(from_user, status)")
         # Ранние версии могли создать несколько pending-инвайтов из-за гонки
         # check-then-insert. Историю сохраняем, но оставляем рабочим только самый
@@ -200,6 +217,7 @@ async def init_db() -> None:
         )
         await db.execute("CREATE INDEX IF NOT EXISTS idx_cf_collection ON collection_films(collection_id)")
         await db.commit()
+    await _backfill_catalog_search_text()
 
 
 async def ping() -> bool:
@@ -210,8 +228,8 @@ async def ping() -> bool:
 
 
 # ── Постоянный кэш поиска ─────────────────────────────────────────────────────
-async def search_cache_get(q: str, max_age_sec: int) -> list | None:
-    """Свежие (моложе max_age_sec) результаты поиска по нормализованному запросу, либо None."""
+async def search_cache_get(q: str, max_age_sec: int, empty_max_age_sec: int | None = None) -> list | None:
+    """Fresh positive results, or a deliberately short-lived cached empty result."""
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT results, created_at FROM search_cache WHERE q = ?", (q,))
@@ -222,12 +240,12 @@ async def search_cache_get(q: str, max_age_sec: int) -> list | None:
         age = (datetime.now(timezone.utc) - datetime.fromisoformat(row["created_at"])).total_seconds()
     except ValueError:
         return None
-    if age > max_age_sec:
-        return None
     try:
-        return json.loads(row["results"])
+        results = json.loads(row["results"])
     except json.JSONDecodeError:
         return None
+    max_age = empty_max_age_sec if not results and empty_max_age_sec is not None else max_age_sec
+    return results if age <= max_age else None
 
 
 async def search_cache_put(q: str, results: list) -> None:
@@ -306,42 +324,154 @@ async def upsert_user(user: dict) -> None:
 
 
 # ── Каталог фильмов ──────────────────────────────────────────────────────────
+def _catalog_search_text(title: str | None, title_original: str | None,
+                         actors: str | None, imdb_id: str, kp_id: str | None) -> str:
+    """Unicode-safe lookup text stored once with a catalog record."""
+    values = (title, title_original, actors, imdb_id, kp_id)
+    return " ".join(" ".join(str(value or "").split()).casefold() for value in values).strip()
+
+
+async def _backfill_catalog_search_text() -> None:
+    """Give legacy catalog entries the same local-search behaviour as new ones."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(
+            "SELECT id, title, title_original, actors, imdb_id, kp_id FROM films "
+            "WHERE search_text IS NULL OR search_text = ''")).fetchall()
+        for row in rows:
+            await db.execute(
+                "UPDATE films SET search_text = ? WHERE id = ?",
+                (_catalog_search_text(row["title"], row["title_original"], row["actors"],
+                                      row["imdb_id"], row["kp_id"]), row["id"]))
+        await db.commit()
+
+
+def _catalog_item(row) -> dict | None:
+    """Catalog row in the normalized shape expected by the search UI."""
+    imdb_id = str(row["imdb_id"] or "")
+    kp_id = str(row["kp_id"] or "")
+    if imdb_id.startswith("tt"):
+        src, ref = "i", imdb_id
+    elif kp_id:
+        src, ref = "k", kp_id
+    elif imdb_id.startswith("kp_"):
+        src, ref = "k", imdb_id[3:]
+    else:
+        return None
+    rating = row["imdb_rating"] or row["kp_rating"]
+    return {
+        "src": src,
+        "ref": ref,
+        "title": row["title"],
+        "year": row["year"] or "?",
+        "poster": row["poster_url"],
+        "rating": rating,
+        "genres": row["genres"],
+        "type": "movie",
+    }
+
+
+async def search_catalog(query: str, limit: int = 8) -> list[dict]:
+    """Search the permanent catalog before spending an external API request."""
+    terms = [term.casefold() for term in query.split() if term]
+    if not terms:
+        return []
+
+    def like(term: str) -> str:
+        return "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+    clauses = ["search_text LIKE ? ESCAPE '\\'" for _ in terms]
+    params = [like(term) for term in terms]
+    exact = " ".join(terms)
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM films WHERE " + " AND ".join(clauses) + " "
+            "ORDER BY CASE WHEN search_text LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END, id DESC LIMIT ?",
+            (*params, like(exact), max(1, min(limit, 20))))
+        rows = await cur.fetchall()
+    return [item for row in rows if (item := _catalog_item(row)) is not None]
+
+
+async def get_film_id_by_source(src: str, ref: str) -> int | None:
+    """Find a cataloged film by the identifier sent back to the search UI."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        if src == "i":
+            cur = await db.execute("SELECT id FROM films WHERE imdb_id = ?", (ref,))
+        else:
+            cur = await db.execute(
+                "SELECT id FROM films WHERE kp_id = ? OR imdb_id = ? LIMIT 1",
+                (ref, f"kp_{ref}"))
+        row = await cur.fetchone()
+        return row[0] if row else None
+
+
+async def get_catalog_item_by_source(src: str, ref: str) -> dict | None:
+    """Exact catalog lookup for a direct IMDb/Kinopoisk search."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        if src == "i":
+            cur = await db.execute("SELECT * FROM films WHERE imdb_id = ?", (ref,))
+        else:
+            cur = await db.execute(
+                "SELECT * FROM films WHERE kp_id = ? OR imdb_id = ? LIMIT 1",
+                (ref, f"kp_{ref}"))
+        row = await cur.fetchone()
+    return _catalog_item(row) if row else None
+
+
 async def get_or_create_film(
     imdb_id: str, title: str, year: str | None = None, genres: str | None = None,
     runtime: str | None = None, imdb_rating: str | None = None, imdb_votes: str | None = None,
     plot: str | None = None, poster_url: str | None = None, title_original: str | None = None,
     kp_rating: str | None = None, directors: str | None = None, actors: str | None = None,
     backdrop_url: str | None = None, age_rating: str | None = None, actors_photos: str | None = None,
+    kp_id: str | None = None,
 ) -> int:
     """Возвращает id фильма в общем каталоге, создавая запись при первом появлении
-    (dedup по imdb_id). Идемпотентно — один фильм на всех пользователей."""
+    (dedup по imdb_id/kp_id). Идемпотентно — один фильм на всех пользователей."""
+    kp_id = str(kp_id).strip() if kp_id else None
+    search_text = _catalog_search_text(title, title_original, actors, imdb_id, kp_id)
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT id FROM films WHERE imdb_id = ?", (imdb_id,))
+        cur = await db.execute(
+            "SELECT id FROM films WHERE imdb_id = ? OR (kp_id IS NOT NULL AND kp_id = ?) LIMIT 1",
+            (imdb_id, kp_id))
         row = await cur.fetchone()
         if row:
+            await db.execute(
+                "UPDATE films SET kp_id = COALESCE(kp_id, ?), "
+                "search_text = CASE WHEN search_text IS NULL OR search_text = '' THEN ? ELSE search_text END, "
+                "poster_url = COALESCE(NULLIF(poster_url, ''), ?), "
+                "backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
+                "age_rating = COALESCE(age_rating, ?) "
+                "WHERE id = ?",
+                (kp_id, search_text, poster_url, backdrop_url, age_rating, row["id"]))
+            await db.commit()
             return row["id"]
         # RETURNING id вместо lastrowid — портируемо (SQLite 3.35+ и Postgres одинаково).
         cur = await db.execute(
             """
             INSERT INTO films
-                (imdb_id, title, title_original, year, genres, directors, actors, runtime,
+                (imdb_id, kp_id, title, title_original, year, genres, directors, actors, runtime,
                  imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
-                 actors_photos, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(imdb_id) DO NOTHING
+                 actors_photos, search_text, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT DO NOTHING
             RETURNING id
             """,
-            (imdb_id, title, title_original, year, genres, directors, actors, runtime,
+            (imdb_id, kp_id, title, title_original, year, genres, directors, actors, runtime,
              imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
-             actors_photos, _now()),
+             actors_photos, search_text, _now()),
         )
         inserted = await cur.fetchone()
         await db.commit()
         if inserted:
             return inserted["id"]
         # Гонка: кто-то вставил параллельно — перечитываем.
-        cur = await db.execute("SELECT id FROM films WHERE imdb_id = ?", (imdb_id,))
+        cur = await db.execute(
+            "SELECT id FROM films WHERE imdb_id = ? OR (kp_id IS NOT NULL AND kp_id = ?) LIMIT 1",
+            (imdb_id, kp_id))
         return (await cur.fetchone())["id"]
 
 
@@ -368,6 +498,45 @@ async def set_film_artwork(imdb_id: str, backdrop_url: str | None,
             "WHERE imdb_id = ? AND (backdrop_url IS NULL OR backdrop_url = '')",
             (backdrop_url, age_rating, imdb_id),
         )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def mark_film_artwork_checked(imdb_id: str, backdrop_url: str | None,
+                                    age_rating: str | None = None) -> bool:
+    """Persist a completed artwork lookup, including a legitimate empty result.
+
+    Without this marker, films that simply have no backdrop would hit Kinopoisk
+    every time someone opens the detail page.
+    """
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE films SET backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
+            "age_rating = COALESCE(age_rating, ?), artwork_checked_at = ? "
+            "WHERE imdb_id = ?",
+            (backdrop_url, age_rating, _now(), imdb_id))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def mark_film_visuals_checked(
+    imdb_id: str, poster_url: str | None, backdrop_url: str | None,
+    age_rating: str | None = None,
+) -> bool:
+    """Persist one completed visual-asset lookup, including empty fields.
+
+    A provider result without an image is valid data. Both timestamps prevent a
+    film with no poster/backdrop from making the same provider call on every
+    detail-page visit.
+    """
+    now = _now()
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE films SET poster_url = COALESCE(NULLIF(poster_url, ''), ?), "
+            "backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
+            "age_rating = COALESCE(age_rating, ?), poster_checked_at = ?, artwork_checked_at = ? "
+            "WHERE imdb_id = ?",
+            (poster_url, backdrop_url, age_rating, now, now, imdb_id))
         await db.commit()
         return cur.rowcount > 0
 
@@ -447,6 +616,41 @@ async def set_actor_photos(imdb_id: str, photos_json: str) -> bool:
             "UPDATE films SET actors_photos = ? "
             "WHERE imdb_id = ? AND (actors_photos IS NULL OR actors_photos = '')",
             (photos_json, imdb_id))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def films_needing_actor_photo_enrichment(limit: int = 200) -> list[dict]:
+    """Films not yet checked against the no-quota Wikidata/Commons cast source."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT id, imdb_id, actors, actors_photos FROM films "
+            "WHERE imdb_id LIKE 'tt%' AND (actors IS NOT NULL AND actors <> '') "
+            "AND actor_photos_checked_at IS NULL ORDER BY id DESC LIMIT ?",
+            (max(1, min(limit, 500)),),
+        )
+        return [dict(row) for row in await cur.fetchall()]
+
+
+async def set_film_cast_from_wikidata(film_id: int, actors: str, photos_json: str) -> bool:
+    """Persist a researched top cast + portraits and mark the one-time lookup done."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE films SET actors = ?, actors_photos = ?, actor_photos_checked_at = ? WHERE id = ?",
+            (actors, photos_json, _now(), film_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def mark_film_actor_photos_checked(film_id: int) -> bool:
+    """Remember even an empty result, so a film never triggers repeat lookups."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE films SET actor_photos_checked_at = ? WHERE id = ?",
+            (_now(), film_id),
+        )
         await db.commit()
         return cur.rowcount > 0
 
@@ -635,6 +839,26 @@ async def get_unrated_watched(user_id: int, since_days: int = 30, limit: int = 1
 
 
 # ── Персональная статистика (без пар) ────────────────────────────────────────
+def _actor_photo_map(rows) -> dict[str, str]:
+    """Pick one known Kinopoisk photo for each actor from watched-film rows."""
+    photos: dict[str, str] = {}
+    for row in rows:
+        try:
+            entries = json.loads(row["actors_photos"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            photo_url = str(entry.get("photo_url") or "").strip()
+            if name and photo_url and name not in photos:
+                photos[name] = photo_url
+    return photos
+
+
 async def get_user_stats(user_id: int) -> dict:
     """Личная статистика пользователя: счётчики, экранное время, средняя оценка,
     топ жанров/актёров/режиссёров (ничьи честно), итоги года."""
@@ -663,13 +887,15 @@ async def get_user_stats(user_id: int) -> dict:
 
         cur = await db.execute(
             """
-            SELECT f.genres, f.actors, f.directors, f.runtime
+            SELECT f.genres, f.actors, f.actors_photos, f.directors, f.runtime
             FROM user_films uf JOIN films f ON f.id = uf.film_id
             WHERE uf.user_id = ? AND uf.status = 'watched'
             """, (user_id,))
         genre_counts, actor_counts, director_counts = {}, {}, {}
         total_runtime_min = 0
-        for r in await cur.fetchall():
+        watched_rows = await cur.fetchall()
+        actor_photos = _actor_photo_map(watched_rows)
+        for r in watched_rows:
             for g in (r["genres"] or "").split(","):
                 g = g.strip()
                 if g and g != "N/A":
@@ -688,11 +914,19 @@ async def get_user_stats(user_id: int) -> dict:
 
         total_refs = sum(genre_counts.values())
         top_genres_pct = [
-            (g, round(c / total_refs * 100))
+            # Keep the percentage for existing clients and include the exact
+            # number of films for richer statistic cards.  A third tuple value
+            # is backward compatible with clients that unpack only (genre, %).
+            (g, round(c / total_refs * 100), c)
             for g, c in sorted(genre_counts.items(), key=lambda x: -x[1])[:5]
         ] if total_refs else []
-        top_actors = [(n, c) for n, c in sorted(actor_counts.items(), key=lambda x: -x[1]) if c >= 2][:5]
-        top_directors = [(n, c) for n, c in sorted(director_counts.items(), key=lambda x: -x[1]) if c >= 2][:3]
+        # The profile initially shows three people, but it keeps the complete
+        # already-aggregated list client-side for “View all”.  Name is the
+        # stable tie-breaker, so ranks do not jump between renders.
+        top_actors = [(n, c, actor_photos.get(n))
+                      for n, c in sorted(actor_counts.items(), key=lambda x: (-x[1], x[0].casefold())) if c >= 2]
+        top_directors = [(n, c)
+                         for n, c in sorted(director_counts.items(), key=lambda x: (-x[1], x[0].casefold())) if c >= 2]
 
         row = await (await db.execute(
             "SELECT f.title FROM user_films uf JOIN films f ON f.id = uf.film_id "
@@ -891,15 +1125,50 @@ async def get_pending_invite(from_user: int) -> str | None:
         return row[0] if row else None
 
 
-async def create_invite(from_user: int) -> str:
-    """Создать (или переиспользовать) единственное активное приглашение.
+async def _lock_pair_users(db, *user_ids: int) -> None:
+    """Серіалізувати зміни pair/invite для одних і тих самих користувачів.
 
-    Частичный уникальный индекс защищает этот инвариант между процессами и
-    инстансами. В отличие от прежнего check-then-insert, одновременные запросы
-    возвращают один и тот же токен, а не создают два живых.
+    Інваріант «у користувача немає pending invite, якщо він уже в парі» не можна
+    виразити звичайним FK між двома таблицями. Тому всі шляхи, які створюють
+    пару або інвайт, беруть однаковий lock на рядки users у стабільному порядку.
+    Postgres використовує row-level ``FOR UPDATE``; SQLite не має такого
+    синтаксису, тож no-op UPDATE бере його єдиний writer lock.
     """
-    token = secrets.token_urlsafe(12)
+    ids = sorted({int(user_id) for user_id in user_ids})
+    if not ids:
+        return
+    marks = ", ".join("?" for _ in ids)
+    if db_runtime.uses_postgres(DATABASE_URL):
+        await db.execute(
+            f"SELECT id FROM users WHERE id IN ({marks}) ORDER BY id FOR UPDATE", ids)
+    else:
+        await db.execute(
+            f"UPDATE users SET last_seen = last_seen WHERE id IN ({marks})", ids)
+
+
+async def create_invite(from_user: int) -> str | None:
+    """Створити або перевикористати єдиний pending invite.
+
+    ``None`` означає, що користувач уже в парі. Перевірка виконується після
+    взяття того самого lock, що й ``accept_invite``: інакше accept між окремими
+    ``get_partner`` та INSERT міг залишити чинне запрошення у вже створеній парі.
+    """
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await _lock_pair_users(db, from_user)
+        cur = await db.execute("SELECT 1 FROM partners WHERE user_id = ?", (from_user,))
+        if await cur.fetchone():
+            await db.commit()
+            return None
+
+        cur = await db.execute(
+            "SELECT token FROM partner_invites WHERE from_user = ? AND status = 'pending' "
+            "ORDER BY created_at DESC LIMIT 1", (from_user,))
+        existing = await cur.fetchone()
+        if existing:
+            await db.commit()
+            return existing[0]
+
+        token = secrets.token_urlsafe(12)
         cur = await db.execute(
             "INSERT INTO partner_invites (token, from_user, status, created_at) VALUES (?,?, 'pending', ?) "
             "ON CONFLICT DO NOTHING RETURNING token",
@@ -909,6 +1178,8 @@ async def create_invite(from_user: int) -> str:
             await db.commit()
             return created[0]
 
+        # Defensive fallback for a legacy database without the partial unique
+        # index or for a concurrent deployment that has not yet migrated.
         cur = await db.execute(
             "SELECT token FROM partner_invites WHERE from_user = ? AND status = 'pending' "
             "ORDER BY created_at DESC LIMIT 1", (from_user,))
@@ -937,14 +1208,24 @@ async def accept_invite(token: str, accepting_user: int) -> dict:
         async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
-                "UPDATE partner_invites SET status='accepted' WHERE token = ? AND status = 'pending' "
-                "RETURNING from_user", (token,))
+                "SELECT from_user FROM partner_invites WHERE token = ? AND status = 'pending'", (token,))
             row = await cur.fetchone()
             if not row:
                 raise _InviteRejected("invalid")
             from_user = row["from_user"]
             if from_user == accepting_user:
                 raise _InviteRejected("self")
+
+            # Lock both sides before claiming the invite. create_invite() takes
+            # the same locks, so it either completes before this transaction
+            # (and is revoked below) or observes the newly created pair later.
+            await _lock_pair_users(db, from_user, accepting_user)
+            cur = await db.execute(
+                "UPDATE partner_invites SET status='accepted' WHERE token = ? AND status = 'pending' "
+                "RETURNING from_user", (token,))
+            row = await cur.fetchone()
+            if not row:
+                raise _InviteRejected("invalid")
 
             now = _now()
             cur1 = await db.execute(
@@ -1005,9 +1286,16 @@ async def get_pair(user_id: int) -> dict | None:
 async def sync_film_to_partner(user_id: int, film_id: int) -> None:
     """Синхрон «только новые»: если есть партнёр — добавить фильм ему в «Хочу»
     (идемпотентно; существующие у партнёра фильмы не трогаем)."""
-    partner = await get_partner(user_id)
-    if partner is not None:
-        await add_to_list(partner, film_id, "want_to_watch")
+    # Один INSERT ... SELECT замість get_partner() + add_to_list() у різних
+    # транзакціях: фільм потрапляє тільки до партнера, який існує саме в момент
+    # запису, а не до вже колишнього партнера після concurrent unpair.
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute(
+            "INSERT INTO user_films (user_id, film_id, status, added_at) "
+            "SELECT partner_id, ?, 'want_to_watch', ? FROM partners WHERE user_id = ? "
+            "ON CONFLICT(user_id, film_id) DO NOTHING",
+            (film_id, _now(), user_id))
+        await db.commit()
 
 
 async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
@@ -1020,7 +1308,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             """
-            SELECT f.id AS film_id, f.genres, f.actors, f.directors, f.runtime, f.title, f.poster_url,
+            SELECT f.id AS film_id, f.genres, f.actors, f.actors_photos, f.directors, f.runtime, f.title, f.poster_url,
                    a.status AS sa, a.rating AS ra, a.watched_at AS wa,
                    b.status AS sb, b.rating AS rb, b.watched_at AS wb
             FROM user_films a
@@ -1041,6 +1329,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
     rating_dist = [dist[i] for i in range(1, 11)]
 
     genre_counts, actor_counts, director_counts = {}, {}, {}
+    actor_photos = _actor_photo_map(both_watched)
     total_min = 0
     year_min, year_genre, year_actor = 0, {}, {}
     year_ratings, year_count = [], 0
@@ -1076,9 +1365,16 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
                     year_ratings.append(rv)
 
     total_refs = sum(genre_counts.values())
-    top_genres_pct = [(g, round(c / total_refs * 100)) for g, c in sorted(genre_counts.items(), key=lambda x: -x[1])[:5]] if total_refs else []
-    top_actors = [(n, c) for n, c in sorted(actor_counts.items(), key=lambda x: -x[1]) if c >= 2][:5]
-    top_directors = [(n, c) for n, c in sorted(director_counts.items(), key=lambda x: -x[1]) if c >= 2][:3]
+    top_genres_pct = [
+        # See get_user_stats: the count makes the percentage interpretable in
+        # the pair profile while preserving the original tuple prefix.
+        (g, round(c / total_refs * 100), c)
+        for g, c in sorted(genre_counts.items(), key=lambda x: -x[1])[:5]
+    ] if total_refs else []
+    top_actors = [(n, c, actor_photos.get(n))
+                  for n, c in sorted(actor_counts.items(), key=lambda x: (-x[1], x[0].casefold())) if c >= 2]
+    top_directors = [(n, c)
+                     for n, c in sorted(director_counts.items(), key=lambda x: (-x[1], x[0].casefold())) if c >= 2]
 
     # Совместимость по фильмам пар-периода, которые оценили ОБА.
     rated = [{"film_id": r["film_id"], "a": r["ra"], "b": r["rb"], "title": r["title"], "poster_url": r["poster_url"]}

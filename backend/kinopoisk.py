@@ -9,6 +9,7 @@ import logging
 
 import aiohttp
 
+import ratelimit
 from config import KINOPOISK_TOKENS
 
 logger = logging.getLogger(__name__)
@@ -95,11 +96,16 @@ async def _request(path: str, params) -> dict | None:
         return None
     start = _rr
     _rr = (_rr + 1) % len(keys)  # следующий вызов стартует со следующего ключа
-    session = await _get_session()
     last = None
     for i in range(len(keys)):
         idx = (start + i) % len(keys)
+        # This is the one budget gate for every real request to Kinopoisk:
+        # search, details, artwork and maintenance backfills alike.
+        if not await ratelimit.try_spend_search():
+            logger.warning("Kinopoisk budget exhausted before %s", path)
+            return None
         try:
+            session = await _get_session()
             async with session.get(f"{BASE}{path}", params=params,
                                    headers={"X-API-KEY": keys[idx]}) as resp:
                 if resp.status == 200:
@@ -219,6 +225,32 @@ async def artwork_by_imdb(imdb_ids: list[str]) -> dict[str, dict]:
                 "backdrop_url": (m.get("backdrop") or {}).get("url"),
                 "age_rating": age_rating_of(m),
             }
+    return out
+
+
+async def assets_by_imdb(imdb_ids: list[str]) -> dict[str, dict]:
+    """Poster, backdrop and age rating in one Kinopoisk request per batch."""
+    ids = [item for item in imdb_ids if item and item.startswith("tt")]
+    if not KINOPOISK_TOKENS or not ids:
+        return {}
+    out: dict[str, dict] = {}
+    for start in range(0, len(ids), 40):
+        chunk = ids[start:start + 40]
+        params = [("externalId.imdb", item) for item in chunk]
+        params += [("selectFields", "externalId"), ("selectFields", "poster"),
+                   ("selectFields", "backdrop"), ("selectFields", "ageRating"),
+                   ("limit", "250"), ("page", "1")]
+        data = await _request("/movie", params)
+        if not data:
+            continue
+        for movie in data.get("docs", []):
+            imdb_id = (movie.get("externalId") or {}).get("imdb")
+            if imdb_id:
+                out[imdb_id] = {
+                    "poster_url": (movie.get("poster") or {}).get("url"),
+                    "backdrop_url": (movie.get("backdrop") or {}).get("url"),
+                    "age_rating": age_rating_of(movie),
+                }
     return out
 
 
