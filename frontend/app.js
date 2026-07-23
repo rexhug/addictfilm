@@ -831,7 +831,7 @@ function pairHeroHTML(ps) {
 }
 
 function userAvatarHTML(user, name, className = "profile-avatar") {
-  const photo = user?.photo_url;
+  const photo = user?.photo_url || user?.avatar_url;
   return `<div class="${className}"><span>${esc(initials(name))}</span>${photo ? `<img src="${esc(photo)}" alt="" loading="eager" onerror="this.remove()">` : ""}</div>`;
 }
 

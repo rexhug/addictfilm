@@ -8,6 +8,7 @@ community-рейтинг = средняя оценка всех пользова
 """
 import asyncio
 import hashlib
+import hmac
 import logging
 import os
 import re
@@ -429,8 +430,23 @@ def _movie_link(film_id: int) -> str:
 
 
 def _partner_brief(u: dict | None) -> dict:
+    if not u:
+        return {"id": None, "name": "", "username": None, "photo_url": None, "avatar_url": None}
+    photo_url = u.get("photo_url")
     return {"id": u["id"], "name": u.get("first_name") or "", "username": u.get("username"),
-            "photo_url": u.get("photo_url")} if u else {"id": None, "name": "", "username": None, "photo_url": None}
+            "photo_url": photo_url,
+            "avatar_url": None if photo_url else _avatar_url(u["id"])}
+
+
+def _avatar_signature(user_id: int) -> str:
+    return hmac.new(BOT_TOKEN.encode(), f"avatar:{user_id}".encode(), hashlib.sha256).hexdigest()[:40]
+
+
+def _avatar_url(user_id: int) -> str | None:
+    """Opaque, token-free URL for a partner avatar fetched through our backend."""
+    if not BOT_TOKEN:
+        return None
+    return f"/api/avatar/{user_id}?sig={_avatar_signature(user_id)}"
 
 
 @app.get("/api/partner")
@@ -532,6 +548,46 @@ async def _img_sess() -> aiohttp.ClientSession:
         _img_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=15, connect=5), headers={"User-Agent": "Mozilla/5.0"})
     return _img_session
+
+
+@app.get("/api/avatar/{user_id}", include_in_schema=False)
+async def telegram_avatar(user_id: int, sig: str = ""):
+    """Проксі аватара партнера без передачі Telegram bot token у браузер.
+
+    Telegram не додає photo_url партнера в initData поточного користувача, тому
+    для старих профілів добираємо останнє фото через Bot API. Посилання підписане
+    серверним токеном і не дозволяє довільно використовувати цей endpoint.
+    """
+    if user_id <= 0 or not BOT_TOKEN or not hmac.compare_digest(sig, _avatar_signature(user_id)):
+        raise HTTPException(status_code=404, detail="Аватар не знайдено")
+    api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUserProfilePhotos"
+    try:
+        async with (await _img_sess()).get(api_url, params={"user_id": user_id, "limit": 1}) as resp:
+            payload = await resp.json(content_type=None)
+        photos = payload.get("result", {}).get("photos", []) if payload.get("ok") else []
+        if not photos:
+            raise HTTPException(status_code=404, detail="Аватар не знайдено")
+        file_id = photos[0][-1].get("file_id")
+        if not file_id:
+            raise HTTPException(status_code=404, detail="Аватар не знайдено")
+        file_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile"
+        async with (await _img_sess()).get(file_url, params={"file_id": file_id}) as resp:
+            file_payload = await resp.json(content_type=None)
+        file_path = file_payload.get("result", {}).get("file_path") if file_payload.get("ok") else None
+        if not file_path:
+            raise HTTPException(status_code=404, detail="Аватар не знайдено")
+        download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+        async with (await _img_sess()).get(download_url) as resp:
+            if resp.status != 200:
+                raise HTTPException(status_code=404, detail="Аватар не знайдено")
+            data = await _read_image_limited(resp.content)
+        ctype = _img_ctype(data) or "image/jpeg"
+        return Response(content=data, media_type=ctype,
+                        headers={"Cache-Control": "public, max-age=3600"})
+    except HTTPException:
+        raise
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError):
+        raise HTTPException(status_code=404, detail="Аватар не знайдено")
 
 
 # Дисковый кэш картинок на томе /data (пустует после миграции БД на Postgres).
