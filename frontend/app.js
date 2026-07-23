@@ -186,6 +186,23 @@ function posterSrc(u, small) {
   u = u.replace(/^(https:\/\/avatars\.mds\.yandex\.net\/get-ott\/.+)\/1344x756$/, "$1/672x378");
   return "/img?u=" + encodeURIComponent(u);
 }
+// Узнаём исходный CDN у URL нашего /img-прокси. Если источник вообще не входит
+// в разрешённый набор, повторять запрос бессмысленно: прокси гарантированно
+// вернёт 400, а два ретрая лишь замедлят экран в Telegram WebView.
+const RETRYABLE_IMAGE_HOSTS = new Set([
+  "m.media-amazon.com", "images-na.ssl-images-amazon.com", "ia.media-imdb.com",
+  "avatars.mds.yandex.net", "st.kp.yandex.net", "image.openmoviedb.com",
+  "image.tmdb.org", "kinopoiskapiunofficial.tech",
+]);
+function isRetryableImage(img) {
+  try {
+    const proxy = new URL(img.src, window.location.origin);
+    const source = new URL(proxy.searchParams.get("u"));
+    return RETRYABLE_IMAGE_HOSTS.has(source.hostname.toLowerCase());
+  } catch (_) {
+    return false;
+  }
+}
 // Ретрай оборванной картинки. Важно: НЕ трогаем видимый <img> — свежую копию
 // грузим в отдельном Image() и подменяем src только когда она ПОЛНОСТЬЮ доехала.
 // Частично показанный постер никогда не «моргает» и не исчезает (раньше retry
@@ -193,6 +210,10 @@ function posterSrc(u, small) {
 // обходит застрявшую в WebView-кэше битую копию. Убираем тег только если не
 // отрисовалось ВООБЩЕ ничего и все попытки провалились.
 window.__imgRetry = function (img) {
+  if (!isRetryableImage(img)) {
+    if (!img.naturalWidth) img.remove();
+    return;
+  }
   const n = +(img.dataset.r || 0);
   if (n >= 2) {
     if (!img.naturalWidth) img.remove();  // совсем пусто → плейсхолдер с названием

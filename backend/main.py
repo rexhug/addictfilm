@@ -547,7 +547,9 @@ async def upgrade_omdb_posters(limit: int = 200, name_cap: int = 60):
 _ALLOWED_IMG_HOSTS = {
     "m.media-amazon.com", "images-na.ssl-images-amazon.com", "ia.media-imdb.com",
     "avatars.mds.yandex.net", "st.kp.yandex.net", "image.openmoviedb.com",
-    "imagetmdb.com", "kinopoiskapiunofficial.tech",
+    # Kinopoisk returns some backdrop URLs through the official TMDB image CDN.
+    # `imagetmdb.com` is a different host and did not cover these real URLs.
+    "image.tmdb.org", "kinopoiskapiunofficial.tech",
 }
 _ALLOWED_IMG_TYPES = {"image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"}
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024

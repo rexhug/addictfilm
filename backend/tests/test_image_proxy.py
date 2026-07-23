@@ -18,6 +18,8 @@ class ImageProxyTests(unittest.IsolatedAsyncioTestCase):
     def test_accepts_only_configured_image_hosts(self):
         self.assertTrue(_is_allowed_image_url("https://st.kp.yandex.net/images/actor.jpg"))
         self.assertTrue(_is_allowed_image_url("https://avatars.mds.yandex.net/get-kinopoisk-image/a/360"))
+        self.assertTrue(_is_allowed_image_url("https://image.tmdb.org/t/p/w1280/backdrop.jpg"))
+        self.assertFalse(_is_allowed_image_url("https://image.tmdb.org.evil.example/backdrop.jpg"))
         self.assertFalse(_is_allowed_image_url("https://st.kp.yandex.net.evil.example/actor.jpg"))
         self.assertFalse(_is_allowed_image_url("file:///etc/passwd"))
 
