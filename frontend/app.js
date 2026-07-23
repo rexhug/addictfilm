@@ -778,7 +778,7 @@ function showSearch(mode = null) {
 async function showStats() {
   unwireDetailScroll();
   window.scrollTo(0, 0);
-  screen.innerHTML = `<div class="page-head"><h1>${esc(t("stats_title"))}</h1></div><div id="stats"><div class="empty"><div class="empty-sub">${esc(t("calc"))}</div></div></div>`;
+  screen.innerHTML = `<div class="page-head"><h1>${esc(t("stats_title"))}</h1><button class="page-head-action" data-stats-share type="button" aria-label="Share">↗</button></div><div id="stats"><div class="empty"><div class="empty-sub">${esc(t("calc"))}</div></div></div>`;
   const box = document.getElementById("stats");
 
   // 1. Пара — приоритетно, первым блоком.
@@ -812,6 +812,7 @@ async function showStats() {
     if (heading) heading.textContent = t(mode === "pair" ? "pair_title" : "stats_title");
     box.querySelectorAll("[data-stats-mode]").forEach(button => button.onclick = () => {
       mode = button.dataset.statsMode;
+      window.scrollTo(0, 0);
       render();
     });
     box.querySelectorAll("[data-stats-expand]").forEach(button => button.onclick = () => {
@@ -820,7 +821,7 @@ async function showStats() {
       render();
     });
     box.querySelectorAll("[data-film-id]").forEach(card => card.onclick = () => openDetail(+card.dataset.filmId, showStats));
-    const shareStatsButton = box.querySelector("[data-stats-share]");
+    const shareStatsButton = screen.querySelector("[data-stats-share]");
     if (shareStatsButton) shareStatsButton.onclick = () => shareStats();
     wirePartner(box);
   };
@@ -876,7 +877,6 @@ function statsProfileHTML(s) {
   const topRating = (s.rating_dist || []).reduce((best, count, index, values) => count > values[best] ? index : best, 0) + 1;
   const taste = s.rating_dist?.some(v => v > 0) ? t("stats_taste_hint", topGenre, topRating) : t("stats_profile_sub");
   return `<section class="profile-hero">
-    <div class="profile-hero-title"><span></span><button class="profile-action" data-stats-share type="button" aria-label="Share">↗</button></div>
     <div class="profile-main">${avatar}<div class="profile-copy"><div class="profile-name">${esc(name)}</div>
       <div class="profile-handle">${username ? `@${esc(username)}` : esc(t("stats_profile_sub"))}</div><p class="profile-taste">${esc(taste)}</p></div></div>
     <div class="profile-facts"><span><b>${s.watched || 0}</b> ${esc(t("tile_watched"))}</span><span><b>${s.avg_rating ?? "—"}</b> ${esc(t("tile_avg"))}</span><span><b>${hours}</b> ${esc(t("tile_hours"))}</span></div>
