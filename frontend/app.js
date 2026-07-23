@@ -820,6 +820,8 @@ async function showStats() {
       render();
     });
     box.querySelectorAll("[data-film-id]").forEach(card => card.onclick = () => openDetail(+card.dataset.filmId, showStats));
+    const shareStatsButton = box.querySelector("[data-stats-share]");
+    if (shareStatsButton) shareStatsButton.onclick = () => shareStats();
     wirePartner(box);
   };
   render();
@@ -869,13 +871,16 @@ function statsProfileHTML(s) {
   const username = me?.username || telegramUser.username;
   const photo = telegramUser.photo_url;
   const hours = Math.floor((s.total_runtime_min || 0) / 60);
-  const meta = `${s.watched || 0} ${t("tile_watched")} · ${s.avg_rating ?? "—"} ${t("tile_avg")} · ${hours} ${t("tile_hours")}`;
   const avatar = userAvatarHTML({ photo_url: photo }, name);
-  return `<section class="profile-card">
-    ${avatar}<div class="profile-copy"><div class="profile-name">${esc(name)}</div>
-      <div class="profile-handle">${username ? `@${esc(username)}` : esc(t("stats_profile_sub"))}</div>
-      <div class="profile-meta">${esc(meta)}</div></div>
-    <div class="profile-mark">✦</div></section>`;
+  const topGenre = s.top_genres_pct?.[0]?.[0];
+  const topRating = (s.rating_dist || []).reduce((best, count, index, values) => count > values[best] ? index : best, 0) + 1;
+  const taste = s.rating_dist?.some(v => v > 0) ? t("stats_taste_hint", topGenre, topRating) : t("stats_profile_sub");
+  return `<section class="profile-hero">
+    <div class="profile-hero-title"><span></span><button class="profile-action" data-stats-share type="button" aria-label="Share">↗</button></div>
+    <div class="profile-main">${avatar}<div class="profile-copy"><div class="profile-name">${esc(name)}</div>
+      <div class="profile-handle">${username ? `@${esc(username)}` : esc(t("stats_profile_sub"))}</div><p class="profile-taste">${esc(taste)}</p></div></div>
+    <div class="profile-facts"><span><b>${s.watched || 0}</b> ${esc(t("tile_watched"))}</span><span><b>${s.avg_rating ?? "—"}</b> ${esc(t("tile_avg"))}</span><span><b>${hours}</b> ${esc(t("tile_hours"))}</span></div>
+  </section>`;
 }
 
 function statsList(section, items, renderItem, expanded) {
@@ -890,27 +895,28 @@ function personalStatsHTML(s, scope = "me", expanded = { genres: false, actors: 
   const hours = Math.floor(s.total_runtime_min / 60);
   const topGenre = s.top_genres_pct?.[0]?.[0];
   const topRating = (s.rating_dist || []).reduce((best, count, index, values) => count > values[best] ? index : best, 0) + 1;
-  const introText = scope === "pair" ? ""
-    : (s.rating_dist?.some(v => v > 0) ? t("stats_taste_hint", topGenre, topRating) : "");
-  const intro = introText ? `<div class="stats-intro"><div class="stats-context">${esc(t(scope === "pair" ? "stats_together" : "stats_taste"))}</div><div>${esc(introText)}</div></div>` : "";
+  const intro = "";
   const tiles = `<div class="stats-grid">
     ${statTile("", s.watched, t(scope === "pair" ? "tile_shared_watched" : "tile_watched"))}${statTile("", s.want, t(scope === "pair" ? "tile_shared_want" : "tile_want"))}
     ${statTile("", s.avg_rating ?? "—", t("tile_avg"))}${statTile("", hours, t("tile_hours"))}</div>`;
   const dist = s.rating_dist || [];
   const maxD = Math.max(1, ...dist);
-  const hist = dist.some(v => v > 0) ? chartCard(t(scope === "pair" ? "chart_ratings_pair" : "chart_ratings"), `<div class="stats-hint">${esc(t(scope === "pair" ? "stats_ratings_hint_pair" : "stats_ratings_hint"))}</div><div class="hist">${
-    dist.map((c, i) => `<div class="hist-col"><div class="hist-bar-area">${c ? `<div class="hist-val">${c}</div>` : ""}<div class="hist-bar" style="height:${c ? Math.max(6, Math.round(c / maxD * 100)) : 0}%"></div></div><div class="hist-x">${i + 1}</div></div>`).join("")}</div>`) : "";
-  const genres = s.top_genres_pct.length ? chartCard(t("chart_genres"), `<div class="stats-hint">${esc(t("stats_genres_hint"))}</div>${statsList("genres", s.top_genres_pct, ([g, p]) => hbar(g, p + "%", p), expanded)}`) : "";
+  const rankedRatings = dist.map((count, index) => ({ rating: index + 1, count })).filter(x => x.count).sort((a, b) => b.count - a.count).slice(0, 2).map(x => x.rating);
+  const ratingFooter = rankedRatings.length ? `<div class="chart-footer">${esc(scope === "pair" ? "Больше всего ставим: " : "Больше всего ставишь: ")}<b>${rankedRatings.join(" и ")}</b></div>` : "";
+  const hist = dist.some(v => v > 0) ? chartCard(t(scope === "pair" ? "chart_ratings_pair" : "chart_ratings"), `<div class="chart-badge">${esc(t("tile_avg"))} <b>${s.avg_rating ?? "—"}</b></div><div class="stats-hint">${esc(t(scope === "pair" ? "stats_ratings_hint_pair" : "stats_ratings_hint"))}</div><div class="hist">${
+    dist.map((c, i) => `<div class="hist-col"><div class="hist-bar-area">${c ? `<div class="hist-val">${c}</div>` : ""}<div class="hist-bar" style="height:${c ? Math.max(6, Math.round(c / maxD * 100)) : 0}%"></div></div><div class="hist-x">${i + 1}</div></div>`).join("")}</div>${ratingFooter}`) : "";
+  const genres = s.top_genres_pct.length ? chartCard(t("chart_genres"), `<div class="section-action">${esc(t("stats_more"))}</div><div class="stats-hint">${esc(t("stats_genres_hint"))}</div>${statsList("genres", s.top_genres_pct, ([g, p]) => hbar(g, p + "%", p), expanded)}`) : "";
   const maxA = s.top_actors.length ? s.top_actors[0][1] : 1;
   const peopleHint = scope === "pair" ? "stats_people_hint_pair" : "stats_people_hint";
-  const actors = s.top_actors.length ? chartCard(t("chart_actors"), `<div class="stats-hint">${esc(t(peopleHint))}</div>${statsList("actors", s.top_actors, ([n, c]) => hbar(n, t("stats_films", c), Math.round(c / maxA * 100)), expanded)}`) : "";
+  const actors = s.top_actors.length ? chartCard(t("chart_actors"), `<div class="section-action">${esc(t("stats_more"))}</div><div class="stats-hint">${esc(t(peopleHint))}</div>${statsList("actors", s.top_actors, ([n, c]) => personPill(n, c), expanded)}`) : "";
   const maxDir = s.top_directors.length ? s.top_directors[0][1] : 1;
-  const directors = s.top_directors.length ? chartCard(t("chart_directors"), `<div class="stats-hint">${esc(t(peopleHint))}</div>${statsList("directors", s.top_directors, ([n, c]) => hbar(n, t("stats_films", c), Math.round(c / maxDir * 100)), expanded)}`) : "";
-  const yearCard = y.count ? chartCard(t("year_title", y.year), `
+  const directors = s.top_directors.length ? chartCard(t("chart_directors"), `<div class="section-action">${esc(t("stats_more"))}</div><div class="stats-hint">${esc(t(peopleHint))}</div>${statsList("directors", s.top_directors, ([n, c]) => personPill(n, c), expanded)}`) : "";
+  const yearCard = y.count ? `<section class="year-card">
+    <div class="year-card-title">🏆 ${esc(t("year_title", y.year))}</div>
     <div class="year-line"><b>${y.count}</b> ${esc(t("count_films", y.count))}${y.avg_rating ? ` · ${esc(t("year_avg"))} <b>${y.avg_rating}</b>` : ""}</div>
     ${y.top_genre ? `<div class="year-line">${esc(t("year_fav_genre"))}${esc(y.top_genre)}</div>` : ""}
     ${y.top_actor ? `<div class="year-line">${esc(t("year_actor"))}${esc(y.top_actor[0])} <small>(${y.top_actor[1]})</small></div>` : ""}
-    ${y.best_films && y.best_films.length ? `<div class="year-line">${esc(t("year_best"))} <small>(${y.best_avg})</small>: ${y.best_films.map(item => `<button class="stats-film-link" data-film-id="${item.film_id}" type="button">${esc(item.title)}</button>`).join(", ")}</div>` : y.best_titles && y.best_titles.length ? `<div class="year-line">${esc(t("year_best"))} <small>(${y.best_avg})</small>: ${y.best_titles.map(esc).join(", ")}</div>` : ""}`) : "";
+    ${y.best_films && y.best_films.length ? `<div class="year-line">${esc(t("year_best"))} <small>(${y.best_avg})</small>: ${y.best_films.map(item => `<button class="stats-film-link" data-film-id="${item.film_id}" type="button">${esc(item.title)}</button>`).join(", ")}</div>` : y.best_titles && y.best_titles.length ? `<div class="year-line">${esc(t("year_best"))} <small>(${y.best_avg})</small>: ${y.best_titles.map(esc).join(", ")}</div>` : ""}</section>` : "";
   return intro + tiles + hist + genres + actors + directors + yearCard;
 }
 
@@ -988,6 +994,11 @@ function sharePartnerLink(link) {
   const url = "https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent(t("partner_share_text"));
   if (tg.openTelegramLink) tg.openTelegramLink(url); else window.open(url, "_blank");
 }
+function shareStats() {
+  const text = lang === "ru" ? "Моя статистика в Addict Film" : "My Addict Film profile";
+  const url = "https://t.me/share/url?url=" + encodeURIComponent("https://t.me/addictfilmbot") + "&text=" + encodeURIComponent(text);
+  if (tg.openTelegramLink) tg.openTelegramLink(url); else window.open(url, "_blank");
+}
 
 async function showAcceptInvite(param) {
   unwireDetailScroll();
@@ -1016,6 +1027,7 @@ async function showAcceptInvite(param) {
 function statTile(icon, value, label) { return `<div class="tile">${icon ? `<div class="tile-icon">${icon}</div>` : ""}<div class="tile-val">${esc(value)}</div><div class="tile-label">${esc(label)}</div></div>`; }
 function chartCard(title, inner) { return `<div class="chart-card"><div class="chart-title">${esc(title)}</div>${inner}</div>`; }
 function hbar(label, valueText, pct) { return `<div class="hbar-row"><div class="hbar-label">${esc(label)}</div><div class="hbar-track"><div class="hbar-fill" style="width:${Math.max(4, pct)}%"></div></div><div class="hbar-val">${esc(valueText)}</div></div>`; }
+function personPill(name, count) { return `<div class="person-pill"><span class="person-avatar">${esc(initials(name))}</span><span><b>${esc(name)}</b><small>${esc(t("stats_films", count))}</small></span></div>`; }
 
 // ── Навигация ─────────────────────────────────────────────────────────────────
 function backBtn() { return `<button class="back" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>`; }
