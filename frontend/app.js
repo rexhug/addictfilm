@@ -819,6 +819,7 @@ async function showStats() {
       expanded[section] = !expanded[section];
       render();
     });
+    box.querySelectorAll("[data-film-id]").forEach(card => card.onclick = () => openDetail(+card.dataset.filmId, showStats));
     wirePartner(box);
   };
   render();
@@ -849,8 +850,8 @@ function pairHighlightsHTML(ps) {
   const favorites = ps.common_favorites || (ps.best ? [ps.best] : []);
   const disagreements = ps.disagreements || (ps.controversial ? [ps.controversial] : []);
   const poster = item => item.poster_url ? `<img loading="lazy" src="${esc(posterSrc(item.poster_url, true))}" alt="" onerror="this.remove()">` : `<span class="pair-poster-fallback">✦</span>`;
-  const favoriteRows = favorites.map(item => `<div class="pair-film"><div class="pair-film-poster">${poster(item)}</div><div><b>${esc(item.title)}</b><small>${esc(t("partner_shared_best"))}</small></div><strong>★ ${item.avg ?? "—"}</strong></div>`).join("");
-  const differenceRows = disagreements.map(item => `<div class="pair-difference"><div class="pair-film-poster">${poster(item)}</div><b>${esc(item.title)}</b><span><em>${item.a}</em> <i>vs</i> <em>${item.b}</em><small>Δ ${item.diff ?? Math.abs(item.a - item.b)}</small></span></div>`).join("");
+  const favoriteRows = favorites.map(item => `<div class="pair-film ${item.film_id ? "is-clickable" : ""}" ${item.film_id ? `data-film-id="${item.film_id}" role="button" tabindex="0"` : ""}><div class="pair-film-poster">${poster(item)}</div><div><b>${esc(item.title)}</b><small>${esc(t("partner_shared_best"))}</small></div><strong>★ ${item.avg ?? "—"}</strong></div>`).join("");
+  const differenceRows = disagreements.map(item => `<div class="pair-difference ${item.film_id ? "is-clickable" : ""}" ${item.film_id ? `data-film-id="${item.film_id}" role="button" tabindex="0"` : ""}><div class="pair-film-poster">${poster(item)}</div><b>${esc(item.title)}</b><span><em>${item.a}</em> <i>vs</i> <em>${item.b}</em><small>Δ ${item.diff ?? Math.abs(item.a - item.b)}</small></span></div>`).join("");
   return `<div class="pair-highlight-grid">
     ${favoriteRows ? `<section class="chart-card pair-highlight"><h2>${esc(t("pair_common_favorites"))}</h2><p class="stats-hint">${esc(t("pair_common_favorites_hint"))}</p>${favoriteRows}</section>` : ""}
     ${differenceRows ? `<section class="chart-card pair-highlight"><h2>${esc(t("pair_disagreements"))}</h2><p class="stats-hint">${esc(t("pair_disagreements_hint"))}</p>${differenceRows}</section>` : ""}

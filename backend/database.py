@@ -999,7 +999,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             """
-            SELECT f.genres, f.actors, f.directors, f.runtime, f.title, f.poster_url,
+            SELECT f.id AS film_id, f.genres, f.actors, f.directors, f.runtime, f.title, f.poster_url,
                    a.status AS sa, a.rating AS ra, a.watched_at AS wa,
                    b.status AS sb, b.rating AS rb, b.watched_at AS wb
             FROM user_films a
@@ -1060,7 +1060,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
     top_directors = [(n, c) for n, c in sorted(director_counts.items(), key=lambda x: -x[1]) if c >= 2][:3]
 
     # Совместимость по фильмам пар-периода, которые оценили ОБА.
-    rated = [{"a": r["ra"], "b": r["rb"], "title": r["title"], "poster_url": r["poster_url"]}
+    rated = [{"film_id": r["film_id"], "a": r["ra"], "b": r["rb"], "title": r["title"], "poster_url": r["poster_url"]}
              for r in rows if r["ra"] is not None and r["rb"] is not None]
     agreement = matches = None
     controversial = best = None
@@ -1071,11 +1071,11 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         agreement = round(100 - (sum(diffs) / len(rated)) / 9 * 100)
         matches = sum(1 for item in rated if item["a"] == item["b"])
         ranked_favorites = sorted(rated, key=lambda item: (item["a"] + item["b"], item["a"], item["b"]), reverse=True)
-        common_favorites = [{"title": item["title"], "poster_url": item["poster_url"],
+        common_favorites = [{"film_id": item["film_id"], "title": item["title"], "poster_url": item["poster_url"],
                              "avg": round((item["a"] + item["b"]) / 2, 1)} for item in ranked_favorites[:3]]
         ranked_disagreements = [item for item in sorted(rated, key=lambda item: abs(item["a"] - item["b"]), reverse=True)
                                 if item["a"] != item["b"]]
-        disagreements = [{"title": item["title"], "poster_url": item["poster_url"],
+        disagreements = [{"film_id": item["film_id"], "title": item["title"], "poster_url": item["poster_url"],
                           "a": item["a"], "b": item["b"], "diff": abs(item["a"] - item["b"])}
                          for item in ranked_disagreements[:3]]
         top_dispute = disagreements[0] if disagreements else None
