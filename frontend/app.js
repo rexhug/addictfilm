@@ -831,10 +831,13 @@ function statsProfileHTML(s) {
   const name = me?.label || telegramUser.first_name || t("stats_profile_fallback");
   const username = me?.username || telegramUser.username;
   const photo = telegramUser.photo_url;
+  const hours = Math.floor((s.total_runtime_min || 0) / 60);
+  const meta = `${s.watched || 0} ${t("tile_watched")} · ${s.avg_rating ?? "—"} ${t("tile_avg")} · ${hours} ${t("tile_hours")}`;
   const avatar = `<div class="profile-avatar"><span>${esc(initials(name))}</span>${photo ? `<img src="${esc(photo)}" alt="" loading="eager" onerror="this.remove()">` : ""}</div>`;
   return `<section class="profile-card">
     ${avatar}<div class="profile-copy"><div class="profile-name">${esc(name)}</div>
-      <div class="profile-handle">${username ? `@${esc(username)}` : esc(t("stats_profile_sub"))}</div></div>
+      <div class="profile-handle">${username ? `@${esc(username)}` : esc(t("stats_profile_sub"))}</div>
+      <div class="profile-meta">${esc(meta)}</div></div>
     <div class="profile-mark">✦</div></section>`;
 }
 
