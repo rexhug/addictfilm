@@ -703,7 +703,7 @@ async def get_year_stats(user_id: int, year: int) -> dict:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
-            SELECT f.runtime, f.genres, f.actors, uf.rating, f.title
+            SELECT f.id AS film_id, f.runtime, f.genres, f.actors, uf.rating, f.title
             FROM user_films uf JOIN films f ON f.id = uf.film_id
             WHERE uf.user_id = ? AND uf.status='watched' AND uf.watched_at LIKE ?
             """, (user_id, like))
@@ -724,7 +724,7 @@ async def get_year_stats(user_id: int, year: int) -> dict:
                 if a:
                     actor_counts[a] = actor_counts.get(a, 0) + 1
             if r["rating"] is not None:
-                ratings.append((r["title"], r["rating"]))
+                ratings.append({"film_id": r["film_id"], "title": r["title"], "rating": r["rating"]})
 
         top_genre = max(genre_counts.items(), key=lambda x: x[1])[0] if genre_counts else None
         ranked = sorted(actor_counts.items(), key=lambda x: -x[1])
@@ -732,9 +732,10 @@ async def get_year_stats(user_id: int, year: int) -> dict:
         if ranked and ranked[0][1] >= 2 and (len(ranked) == 1 or ranked[0][1] > ranked[1][1]):
             top_actor = ranked[0]
 
-        avg_rating = round(sum(r for _, r in ratings) / len(ratings), 1) if ratings else None
-        best = max((r for _, r in ratings), default=None)
-        best_titles = [t for t, r in ratings if r == best] if best is not None else []
+        avg_rating = round(sum(item["rating"] for item in ratings) / len(ratings), 1) if ratings else None
+        best = max((item["rating"] for item in ratings), default=None)
+        best_items = [item for item in ratings if item["rating"] == best] if best is not None else []
+        best_titles = [item["title"] for item in best_items]
 
         return {
             "year": year,
@@ -745,6 +746,7 @@ async def get_year_stats(user_id: int, year: int) -> dict:
             "avg_rating": avg_rating,
             "best_avg": best,
             "best_titles": best_titles,
+            "best_films": best_items,
         }
 
 
