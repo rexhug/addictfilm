@@ -179,6 +179,19 @@ async def movie(film_id: int, user: dict = Depends(current_user)):
     f = await db.get_film(film_id)
     if not f:
         raise HTTPException(status_code=404, detail="Фильм не найден")
+    # Старі записи каталогу могли бути створені до збереження backdrop_url.
+    # Добираємо фон ліниво при першому відкритті картки й кешуємо його в films.
+    # Це не змінює оцінки/списки та не виконується повторно після успішного знаходження.
+    imdb_id = f.get("imdb_id")
+    if not f.get("backdrop_url") and imdb_id and imdb_id.startswith("tt"):
+        if await ratelimit.try_spend_search():
+            artwork = (await kinopoisk.artwork_by_imdb([imdb_id])).get(imdb_id) or {}
+            backdrop = artwork.get("backdrop_url")
+            if backdrop:
+                await db.set_film_artwork(imdb_id, backdrop, artwork.get("age_rating"))
+                f["backdrop_url"] = backdrop
+                if not f.get("age_rating") and artwork.get("age_rating"):
+                    f["age_rating"] = artwork["age_rating"]
     mine = await db.get_user_film(user["id"], film_id)
     f["community"] = await db.community_rating(film_id)
     f["status"] = mine["status"] if mine else None

@@ -353,6 +353,25 @@ async def get_film(film_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+async def set_film_artwork(imdb_id: str, backdrop_url: str | None,
+                           age_rating: str | None = None) -> bool:
+    """Записать найденный backdrop для уже существующего фильма.
+
+    Не затираем ранее сохранённые данные: обогащение вызывается лениво при
+    открытии карточки фильма и должно быть безопасным при повторных запросах.
+    """
+    if not imdb_id or not backdrop_url:
+        return False
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE films SET backdrop_url = ?, age_rating = COALESCE(age_rating, ?) "
+            "WHERE imdb_id = ? AND (backdrop_url IS NULL OR backdrop_url = '')",
+            (backdrop_url, age_rating, imdb_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
 async def get_film_id_by_imdb(imdb_id: str) -> int | None:
     """id фильма в каталоге по imdb_id, если уже есть (без вставки). Нужно, чтобы
     /api/add не ходил в внешние API за фильмом, который уже в каталоге."""
