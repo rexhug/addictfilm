@@ -793,7 +793,7 @@ async function showStats() {
     if (mode === "pair" && paired) {
       const name = esc(pstats.partner.name || t("partner_word"));
       const hasData = pstats.watched || pstats.want || pstats.rated_together;
-      content = `<div class="stats-context">${esc(t("partner_with"))} ${name}</div>` + pairHeroHTML(pstats) +
+      content = pairHeroHTML(pstats) +
         (hasData ? personalStatsHTML(pstats, "pair", expanded) : `<div class="chart-card">${emptyState("💙", t("stats_together"), t("pair_empty"))}</div>`);
     } else {
       content = !paired && partner.status !== "none" ? partnerCardHTML(partner, null) + personal : personal;
@@ -814,6 +814,10 @@ async function showStats() {
 }
 
 function pairHeroHTML(ps) {
+  const partner = ps.partner || {};
+  const partnerName = partner.name || t("partner_word");
+  const partnerAvatar = userAvatarHTML(partner, partnerName, "pair-avatar");
+  const partnerHandle = partner.username ? `@${partner.username}` : t("partner_with");
   const empty = !ps.watched && !ps.want && !ps.rated_together;
   const body = empty
     ? `<div class="partner-sub">${esc(t("pair_empty"))}</div>`
@@ -823,7 +827,12 @@ function pairHeroHTML(ps) {
       ${ps.matches ? `<div class="pair-fact"><span>${esc(t("partner_exact_hint"))}</span><b>${ps.matches}</b></div>` : ""}
       ${ps.best ? `<div class="pair-fact"><span>${esc(t("partner_shared_best"))}</span><b>${esc(ps.best.title)} <small>(${ps.best.avg})</small></b></div>` : ""}
       ${ps.controversial ? `<div class="pair-fact"><span>${esc(t("partner_shared_dispute"))}</span><b>${esc(ps.controversial.title)} <small>(${ps.controversial.a} / ${ps.controversial.b})</small></b></div>` : ""}`;
-  return `<div class="chart-card partner">${body}<details class="pair-settings"><summary>${esc(t("partner_settings"))}</summary><button class="pbtn danger" id="p-unpair">${esc(t("partner_unpair_btn"))}</button></details></div>`;
+  return `<div class="chart-card partner"><div class="pair-profile">${partnerAvatar}<div><div class="pair-name">${esc(partnerName)}</div><div class="pair-handle">${esc(partnerHandle)}</div></div></div>${body}<details class="pair-settings"><summary>${esc(t("partner_settings"))}</summary><button class="pbtn danger" id="p-unpair">${esc(t("partner_unpair_btn"))}</button></details></div>`;
+}
+
+function userAvatarHTML(user, name, className = "profile-avatar") {
+  const photo = user?.photo_url;
+  return `<div class="${className}"><span>${esc(initials(name))}</span>${photo ? `<img src="${esc(photo)}" alt="" loading="eager" onerror="this.remove()">` : ""}</div>`;
 }
 
 function statsProfileHTML(s) {
@@ -833,7 +842,7 @@ function statsProfileHTML(s) {
   const photo = telegramUser.photo_url;
   const hours = Math.floor((s.total_runtime_min || 0) / 60);
   const meta = `${s.watched || 0} ${t("tile_watched")} · ${s.avg_rating ?? "—"} ${t("tile_avg")} · ${hours} ${t("tile_hours")}`;
-  const avatar = `<div class="profile-avatar"><span>${esc(initials(name))}</span>${photo ? `<img src="${esc(photo)}" alt="" loading="eager" onerror="this.remove()">` : ""}</div>`;
+  const avatar = userAvatarHTML({ photo_url: photo }, name);
   return `<section class="profile-card">
     ${avatar}<div class="profile-copy"><div class="profile-name">${esc(name)}</div>
       <div class="profile-handle">${username ? `@${esc(username)}` : esc(t("stats_profile_sub"))}</div>
@@ -853,8 +862,7 @@ function personalStatsHTML(s, scope = "me", expanded = { genres: false, actors: 
   const hours = Math.floor(s.total_runtime_min / 60);
   const topGenre = s.top_genres_pct?.[0]?.[0];
   const topRating = (s.rating_dist || []).reduce((best, count, index, values) => count > values[best] ? index : best, 0) + 1;
-  const introText = scope === "pair"
-    ? (s.rated_together ? t("partner_explainer", s.rated_together) : t("pair_empty"))
+  const introText = scope === "pair" ? ""
     : (s.rating_dist?.some(v => v > 0) ? t("stats_taste_hint", topGenre, topRating) : "");
   const intro = introText ? `<div class="stats-intro"><div class="stats-context">${esc(t(scope === "pair" ? "stats_together" : "stats_taste"))}</div><div>${esc(introText)}</div></div>` : "";
   const tiles = `<div class="stats-grid">

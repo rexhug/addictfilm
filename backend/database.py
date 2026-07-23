@@ -49,6 +49,7 @@ async def init_db() -> None:
     await _add_column_if_missing("films", "age_rating TEXT")
     await _add_column_if_missing("films", "actors_photos TEXT")
     await _add_column_if_missing("users", "role TEXT")
+    await _add_column_if_missing("users", "photo_url TEXT")
 
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         # WAL: чтение не блокирует запись — публичный трафик без «database is locked».
@@ -61,6 +62,7 @@ async def init_db() -> None:
                 first_name TEXT,
                 username   TEXT,
                 role       TEXT,
+                photo_url  TEXT,
                 created_at TEXT,
                 last_seen  TEXT
             )
@@ -290,14 +292,15 @@ async def upsert_user(user: dict) -> None:
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         await db.execute(
             """
-            INSERT INTO users (id, first_name, username, created_at, last_seen)
-            VALUES (?,?,?,?,?)
+            INSERT INTO users (id, first_name, username, photo_url, created_at, last_seen)
+            VALUES (?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
                 first_name = excluded.first_name,
                 username   = excluded.username,
+                photo_url  = COALESCE(excluded.photo_url, users.photo_url),
                 last_seen  = excluded.last_seen
             """,
-            (user.get("id"), user.get("first_name"), user.get("username"), _now(), _now()),
+            (user.get("id"), user.get("first_name"), user.get("username"), user.get("photo_url"), _now(), _now()),
         )
         await db.commit()
 
@@ -845,7 +848,7 @@ async def list_genres() -> list[dict]:
 async def get_user(user_id: int) -> dict | None:
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT id, first_name, username FROM users WHERE id = ?", (user_id,))
+        cur = await db.execute("SELECT id, first_name, username, photo_url FROM users WHERE id = ?", (user_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
 

@@ -156,7 +156,8 @@ async def require_editor(user: dict = Depends(current_user)) -> dict:
 @app.get("/api/me")
 async def me(user: dict = Depends(current_user)):
     return {"id": user["id"], "label": user.get("first_name", ""),
-            "username": user.get("username"), "role": await _effective_role(user["id"])}
+            "username": user.get("username"), "photo_url": user.get("photo_url"),
+            "role": await _effective_role(user["id"])}
 
 
 @app.get("/api/movies")
@@ -428,7 +429,8 @@ def _movie_link(film_id: int) -> str:
 
 
 def _partner_brief(u: dict | None) -> dict:
-    return {"id": u["id"], "name": u.get("first_name") or ""} if u else {"id": None, "name": ""}
+    return {"id": u["id"], "name": u.get("first_name") or "", "username": u.get("username"),
+            "photo_url": u.get("photo_url")} if u else {"id": None, "name": "", "username": None, "photo_url": None}
 
 
 @app.get("/api/partner")
