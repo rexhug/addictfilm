@@ -999,7 +999,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             """
-            SELECT f.genres, f.actors, f.directors, f.runtime, f.title,
+            SELECT f.genres, f.actors, f.directors, f.runtime, f.title, f.poster_url,
                    a.status AS sa, a.rating AS ra, a.watched_at AS wa,
                    b.status AS sb, b.rating AS rb, b.watched_at AS wb
             FROM user_films a
@@ -1060,18 +1060,28 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
     top_directors = [(n, c) for n, c in sorted(director_counts.items(), key=lambda x: -x[1]) if c >= 2][:3]
 
     # Совместимость по фильмам пар-периода, которые оценили ОБА.
-    rated = [(r["ra"], r["rb"], r["title"]) for r in rows if r["ra"] is not None and r["rb"] is not None]
+    rated = [{"a": r["ra"], "b": r["rb"], "title": r["title"], "poster_url": r["poster_url"]}
+             for r in rows if r["ra"] is not None and r["rb"] is not None]
     agreement = matches = None
     controversial = best = None
+    common_favorites = []
+    disagreements = []
     if rated:
-        diffs = [abs(a - b) for a, b, _ in rated]
+        diffs = [abs(item["a"] - item["b"]) for item in rated]
         agreement = round(100 - (sum(diffs) / len(rated)) / 9 * 100)
-        matches = sum(1 for a, b, _ in rated if a == b)
-        ca, cb, ct = max(rated, key=lambda x: abs(x[0] - x[1]))
-        if abs(ca - cb) > 0:
-            controversial = {"title": ct, "a": ca, "b": cb}
-        ba, bb, bt = max(rated, key=lambda x: x[0] + x[1])
-        best = {"title": bt, "avg": round((ba + bb) / 2, 1)}
+        matches = sum(1 for item in rated if item["a"] == item["b"])
+        ranked_favorites = sorted(rated, key=lambda item: (item["a"] + item["b"], item["a"], item["b"]), reverse=True)
+        common_favorites = [{"title": item["title"], "poster_url": item["poster_url"],
+                             "avg": round((item["a"] + item["b"]) / 2, 1)} for item in ranked_favorites[:3]]
+        ranked_disagreements = [item for item in sorted(rated, key=lambda item: abs(item["a"] - item["b"]), reverse=True)
+                                if item["a"] != item["b"]]
+        disagreements = [{"title": item["title"], "poster_url": item["poster_url"],
+                          "a": item["a"], "b": item["b"], "diff": abs(item["a"] - item["b"])}
+                         for item in ranked_disagreements[:3]]
+        top_dispute = disagreements[0] if disagreements else None
+        controversial = top_dispute
+        top_favorite = common_favorites[0] if common_favorites else None
+        best = top_favorite
 
     ranked = sorted(year_actor.items(), key=lambda x: -x[1])
     year_top_actor = ranked[0] if ranked and ranked[0][1] >= 2 and (len(ranked) == 1 or ranked[0][1] > ranked[1][1]) else None
@@ -1091,6 +1101,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         "year": year,
         "agreement": agreement, "rated_together": len(rated),
         "matches": matches, "controversial": controversial, "best": best,
+        "common_favorites": common_favorites, "disagreements": disagreements,
     }
 
 

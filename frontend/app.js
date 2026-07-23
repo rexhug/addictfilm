@@ -64,6 +64,10 @@ const DICT = {
     partner_invite_btn: "Добавить партнёра", partner_invited_sub: "Приглашение готово. Отправь ссылку партнёру в Telegram.",
     partner_share_btn: "Поделиться ссылкой", partner_share_text: "Давай смотреть фильмы вместе ❤️",
     partner_with: "Пара с", partner_word: "партнёром", partner_compat: "совместимость",
+    pair_title: "Мы вместе", pair_subtitle: "Общие фильмы и ваш вкус", pair_compat_title: "Совместимость вкусов",
+    pair_common_favorites: "Общие любимчики", pair_common_favorites_hint: "Фильмы, которые понравились вам обоим",
+    pair_disagreements: "Наши расхождения", pair_disagreements_hint: "Где ваши оценки расходятся сильнее всего",
+    pair_more: "Показать все",
     partner_explainer: (n) => `Считаем по разнице ваших оценок у ${n} ${pl(n, ["общего фильма", "общих фильмов", "общих фильмов"])}. Чем ближе к 100%, тем чаще вы согласны.`,
     partner_settings: "Настройки пары", partner_exact_hint: "Одинаковые оценки", partner_shared_best: "Ваш фаворит", partner_shared_dispute: "Самое большое расхождение",
     partner_no_common: "Пока нет фильмов, которые оценили оба",
@@ -127,6 +131,10 @@ const DICT = {
     partner_invite_btn: "Add partner", partner_invited_sub: "Invite ready. Send the link to your partner in Telegram.",
     partner_share_btn: "Share link", partner_share_text: "Let's watch movies together ❤️",
     partner_with: "Paired with", partner_word: "partner", partner_compat: "compatibility",
+    pair_title: "Together", pair_subtitle: "Shared films and your taste", pair_compat_title: "Taste compatibility",
+    pair_common_favorites: "Shared favorites", pair_common_favorites_hint: "Films you both enjoyed",
+    pair_disagreements: "Where you differ", pair_disagreements_hint: "Films with the biggest rating gaps",
+    pair_more: "Show all",
     partner_explainer: (n) => `Based on the gap between your ratings across ${n} shared ${n === 1 ? "film" : "films"}. Closer to 100% means you agree more often.`,
     partner_settings: "Pair settings", partner_exact_hint: "Same ratings", partner_shared_best: "Your shared favorite", partner_shared_dispute: "Biggest difference",
     partner_no_common: "No films you both rated yet",
@@ -794,11 +802,13 @@ async function showStats() {
       const name = esc(pstats.partner.name || t("partner_word"));
       const hasData = pstats.watched || pstats.want || pstats.rated_together;
       content = pairHeroHTML(pstats) +
-        (hasData ? personalStatsHTML(pstats, "pair", expanded) : `<div class="chart-card">${emptyState("💙", t("stats_together"), t("pair_empty"))}</div>`);
+        (hasData ? personalStatsHTML(pstats, "pair", expanded) + pairHighlightsHTML(pstats) : `<div class="chart-card">${emptyState("💙", t("stats_together"), t("pair_empty"))}</div>`);
     } else {
       content = !paired && partner.status !== "none" ? partnerCardHTML(partner, null) + personal : personal;
     }
     box.innerHTML = tabs + content;
+    const heading = screen.querySelector(".page-head h1");
+    if (heading) heading.textContent = t(mode === "pair" ? "pair_title" : "stats_title");
     box.querySelectorAll("[data-stats-mode]").forEach(button => button.onclick = () => {
       mode = button.dataset.statsMode;
       render();
@@ -814,20 +824,36 @@ async function showStats() {
 }
 
 function pairHeroHTML(ps) {
+  const meUser = tg?.initDataUnsafe?.user || {};
+  const myName = me?.label || meUser.first_name || t("stats_profile_fallback");
   const partner = ps.partner || {};
   const partnerName = partner.name || t("partner_word");
-  const partnerAvatar = userAvatarHTML(partner, partnerName, "pair-avatar");
-  const partnerHandle = partner.username ? `@${partner.username}` : t("partner_with");
+  const myAvatar = userAvatarHTML({ photo_url: meUser.photo_url }, myName, "pair-avatar pair-avatar-me");
+  const partnerAvatar = userAvatarHTML(partner, partnerName, "pair-avatar pair-avatar-partner");
+  const partnerHandle = partner.username ? `@${partner.username}` : "";
+  const myHandle = me?.username || meUser.username ? `@${me?.username || meUser.username}` : "";
   const empty = !ps.watched && !ps.want && !ps.rated_together;
-  const body = empty
-    ? `<div class="partner-sub">${esc(t("pair_empty"))}</div>`
-    : `${ps.agreement != null
-        ? `<div class="compat"><div class="compat-num">${ps.agreement}%</div><div class="compat-lbl">${esc(t("partner_compat"))}</div></div><div class="stats-hint pair-hint">${esc(t("partner_explainer", ps.rated_together))}</div>`
-        : `<div class="partner-sub">${esc(t("partner_no_common"))}</div>`}
-      ${ps.matches ? `<div class="pair-fact"><span>${esc(t("partner_exact_hint"))}</span><b>${ps.matches}</b></div>` : ""}
-      ${ps.best ? `<div class="pair-fact"><span>${esc(t("partner_shared_best"))}</span><b>${esc(ps.best.title)} <small>(${ps.best.avg})</small></b></div>` : ""}
-      ${ps.controversial ? `<div class="pair-fact"><span>${esc(t("partner_shared_dispute"))}</span><b>${esc(ps.controversial.title)} <small>(${ps.controversial.a} / ${ps.controversial.b})</small></b></div>` : ""}`;
-  return `<div class="chart-card partner"><div class="pair-profile">${partnerAvatar}<div><div class="pair-name">${esc(partnerName)}</div><div class="pair-handle">${esc(partnerHandle)}</div></div></div>${body}<details class="pair-settings"><summary>${esc(t("partner_settings"))}</summary><button class="pbtn danger" id="p-unpair">${esc(t("partner_unpair_btn"))}</button></details></div>`;
+  const compatibility = ps.agreement != null ? `${ps.agreement}%` : "—";
+  const explainer = ps.agreement != null ? t("partner_explainer", ps.rated_together) : t("pair_empty");
+  return `<section class="pair-hero">
+    <div class="pair-heading"><div class="pair-avatar-stack">${myAvatar}<span class="pair-heart">♥</span>${partnerAvatar}</div>
+      <div class="pair-names"><div><b>${esc(myName)}</b>${myHandle ? `<small>${esc(myHandle)}</small>` : ""}<i>×</i><b>${esc(partnerName)}</b>${partnerHandle ? `<small>${esc(partnerHandle)}</small>` : ""}</div><p>${esc(t("pair_subtitle"))}</p></div></div>
+    <div class="pair-compat"><div class="pair-compat-copy"><span>♥ ${esc(t("pair_compat_title"))}</span><strong>${compatibility}</strong><p>${esc(explainer)}</p></div><div class="pair-gauge"><div class="pair-gauge-track"><i style="--pair-score:${ps.agreement ?? 0}%"></i></div><b>${compatibility}</b></div></div>
+    ${ps.matches != null ? `<div class="pair-fact"><span>${esc(t("partner_exact_hint"))}</span><b>${ps.matches}</b></div>` : ""}
+    <details class="pair-settings"><summary>${esc(t("partner_settings"))}</summary><button class="pbtn danger" id="p-unpair">${esc(t("partner_unpair_btn"))}</button></details>
+  </section>`;
+}
+
+function pairHighlightsHTML(ps) {
+  const favorites = ps.common_favorites || (ps.best ? [ps.best] : []);
+  const disagreements = ps.disagreements || (ps.controversial ? [ps.controversial] : []);
+  const poster = item => item.poster_url ? `<img loading="lazy" src="${esc(posterSrc(item.poster_url, true))}" alt="" onerror="this.remove()">` : `<span class="pair-poster-fallback">✦</span>`;
+  const favoriteRows = favorites.map(item => `<div class="pair-film"><div class="pair-film-poster">${poster(item)}</div><div><b>${esc(item.title)}</b><small>${esc(t("partner_shared_best"))}</small></div><strong>★ ${item.avg ?? "—"}</strong></div>`).join("");
+  const differenceRows = disagreements.map(item => `<div class="pair-difference"><div class="pair-film-poster">${poster(item)}</div><b>${esc(item.title)}</b><span><em>${item.a}</em> <i>vs</i> <em>${item.b}</em><small>Δ ${item.diff ?? Math.abs(item.a - item.b)}</small></span></div>`).join("");
+  return `<div class="pair-highlight-grid">
+    ${favoriteRows ? `<section class="chart-card pair-highlight"><h2>${esc(t("pair_common_favorites"))}</h2><p class="stats-hint">${esc(t("pair_common_favorites_hint"))}</p>${favoriteRows}</section>` : ""}
+    ${differenceRows ? `<section class="chart-card pair-highlight"><h2>${esc(t("pair_disagreements"))}</h2><p class="stats-hint">${esc(t("pair_disagreements_hint"))}</p>${differenceRows}</section>` : ""}
+  </div>`;
 }
 
 function userAvatarHTML(user, name, className = "profile-avatar") {
