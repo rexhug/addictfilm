@@ -203,6 +203,13 @@ async def init_db() -> None:
         await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_films_kp_id "
                          "ON films(kp_id) WHERE kp_id IS NOT NULL")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_films_search_text ON films(search_text)")
+        if _PG:
+            # PostgreSQL needs pattern_ops for prefix LIKE to use a btree index
+            # under non-C collations; SQLite uses GLOB below.
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_films_search_text_prefix "
+                "ON films (search_text text_pattern_ops)"
+            )
         # Derived table: exact, indexed genre filtering instead of a full scan
         # through comma-separated films.genres on every browse request.
         await db.execute("""
@@ -447,12 +454,15 @@ async def search_catalog(query: str, limit: int = 8) -> list[dict]:
         safe_prefix = terms[0] if re.fullmatch(r"[\w-]+", terms[0], flags=re.UNICODE) else None
         rows = []
         # Most title searches start with the movie title. GLOB prefix can use
-        # idx_films_search_text; fallback below preserves actor/infix discovery.
+        # SQLite's idx_films_search_text; PostgreSQL uses LIKE + text_pattern_ops.
+        # Fallback below preserves actor/infix discovery.
         if safe_prefix:
+            prefix_clause = "search_text LIKE ? ESCAPE '\\'" if _PG else "search_text GLOB ?"
+            prefix_value = safe_prefix + ("%" if _PG else "*")
             cur = await db.execute(
-                "SELECT * FROM films WHERE search_text GLOB ? AND " + " AND ".join(clauses) + " "
+                "SELECT * FROM films WHERE " + prefix_clause + " AND " + " AND ".join(clauses) + " "
                 "ORDER BY CASE WHEN search_text LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END, id DESC LIMIT ?",
-                (safe_prefix + "*", *params, like(exact), max(1, min(limit, 20))),
+                (prefix_value, *params, like(exact), max(1, min(limit, 20))),
             )
             rows = await cur.fetchall()
         if len(rows) < max(1, min(limit, 20)):
