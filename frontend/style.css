@@ -389,6 +389,15 @@ section{margin-top:32px;}
   .d-backdrop img,.d-poster-wrap,.hero-ghost{transition:none!important;}
 }
 
+/* Safari WebView can make several live backdrop-filter layers expensive on
+   older phones. Motion-sensitive users get the same hierarchy without forcing
+   the GPU to blur the whole page behind the fixed controls. */
+@media (prefers-reduced-motion:reduce){
+  #tabbar,.d-sticky.show,.d-ctrl{ -webkit-backdrop-filter:none;backdrop-filter:none; }
+  #tabbar{background:rgba(18,20,24,.96);}
+  .d-sticky.show{background:rgba(5,5,5,.96);}
+}
+
 /* ── Movie detail v2 ────────────────────────── */
 /* The detail template uses d-* classes. Keep these styles with the template;
    without them the browser renders raw, unlaid-out HTML. */

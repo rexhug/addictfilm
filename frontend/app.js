@@ -15,6 +15,16 @@ let _heroSource = null;      // {rect, src} стартовой точки hero-t
 let _detailScrollHandler = null;  // текущий scroll-listener страницы фильма (снимается при уходе)
 let _detailLoadController = null; // отменяет устаревший detail-fetch при быстром переходе
 let _tabbarScrollHandler = null;
+// Короткий session cache для тяжёлых home-rails. Он живёт только пока открыт
+// Mini App и сбрасывается после любого изменения списка/оценки, поэтому UI не
+// показывает устаревший статус фильма.
+const _readCache = new Map();
+const _READ_CACHE_TTL = 30_000;
+
+function cacheableRead(path, opts) {
+  const method = (opts.method || "GET").toUpperCase();
+  return method === "GET" && (path.startsWith("/api/browse") || path === "/api/genres" || path === "/api/collections");
+}
 
 // ── Локализация ───────────────────────────────────────────────────────────────
 function pl(n, f) { const a = Math.abs(n) % 100, b = a % 10; if (a > 10 && a < 20) return f[2]; if (b > 1 && b < 5) return f[1]; if (b === 1) return f[0]; return f[2]; }
@@ -164,12 +174,19 @@ function applyTabLabels() {
 }
 
 async function api(path, opts = {}) {
+  const method = (opts.method || "GET").toUpperCase();
+  const canCache = cacheableRead(path, opts);
+  const cached = canCache && _readCache.get(path);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
   const res = await fetch(path, {
     ...opts,
     headers: { "Content-Type": "application/json", "X-Init-Data": tg.initData, ...(opts.headers || {}) },
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
-  return res.json();
+  const value = await res.json();
+  if (canCache) _readCache.set(path, { value, expiresAt: Date.now() + _READ_CACHE_TTL });
+  if (method !== "GET") _readCache.clear();
+  return value;
 }
 
 // ── Утилиты ───────────────────────────────────────────────────────────────────

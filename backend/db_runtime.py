@@ -97,17 +97,26 @@ class PostgresCursor:
 class PostgresConnection:
     """Адаптер asyncpg под используемый в проекте интерфейс aiosqlite.
 
-    Каждое соединение оборачивается в реальную asyncpg-транзакцию (см. connect()):
-    несколько execute() внутри одного `async with connect()` — атомарны и невидимы
-    другим соединениям до явного commit(). Это тот же контракт, что у SQLite/aiosqlite
-    (где withoutCommit == потеря изменений) — код прикладного слоя не меняется.
+    Транзакция стартует лениво — только с первой записью. Обычные SELECT больше не
+    платят за BEGIN/ROLLBACK, а операции с изменениями сохраняют прежний контракт:
+    несколько execute() внутри одного `async with connect()` атомарны и требуют
+    явный commit(), как в SQLite.
     """
 
-    def __init__(self, connection: Any, transaction: Any):
+    def __init__(self, connection: Any):
         self._connection = connection
-        self._transaction = transaction
+        self._transaction: Any | None = None
         self._done = False  # commit()/rollback() уже вызывали (или это сделает connect() сам)
         self.row_factory: Any = None
+
+    async def _ensure_transaction(self) -> None:
+        if self._transaction is None:
+            self._transaction = self._connection.transaction()
+            await self._transaction.start()
+
+    @property
+    def has_transaction(self) -> bool:
+        return self._transaction is not None
 
     async def execute(self, sql: str, parameters: Sequence[Any] = ()) -> PostgresCursor:
         statement = sql.strip()
@@ -117,7 +126,14 @@ class PostgresConnection:
 
         statement = _postgres_sql(sql)
         query_type = statement.lstrip().split(None, 1)[0].upper()
-        if query_type in {"SELECT", "WITH"} or " RETURNING " in statement.upper():
+        # SELECT — read-only fast path: asyncpg safely executes it without an
+        # explicit transaction. WITH can contain mutations, therefore remains
+        # transactional; all project writes with RETURNING also must be atomic.
+        if query_type == "SELECT":
+            rows = await self._connection.fetch(statement, *parameters)
+            return PostgresCursor(rows, len(rows))
+        await self._ensure_transaction()
+        if query_type == "WITH" or " RETURNING " in statement.upper():
             rows = await self._connection.fetch(statement, *parameters)
             return PostgresCursor(rows, len(rows))
         status = await self._connection.execute(statement, *parameters)
@@ -125,12 +141,14 @@ class PostgresConnection:
 
     async def commit(self) -> None:
         if not self._done:
-            await self._transaction.commit()
+            if self._transaction is not None:
+                await self._transaction.commit()
             self._done = True
 
     async def rollback(self) -> None:
         if not self._done:
-            await self._transaction.rollback()
+            if self._transaction is not None:
+                await self._transaction.rollback()
             self._done = True
 
 
@@ -148,20 +166,16 @@ async def connect(sqlite_path: str, database_url: str) -> AsyncIterator[Any]:
         if _pool is None:
             await start(database_url)
         async with _pool.acquire() as connection:
-            tr = connection.transaction()
-            await tr.start()
-            conn = PostgresConnection(connection, tr)
+            conn = PostgresConnection(connection)
             try:
                 yield conn
             except BaseException:
                 if not conn._done:
-                    await tr.rollback()
-                    conn._done = True
+                    await conn.rollback()
                 raise
             else:
                 if not conn._done:  # забыли commit() — откатываем, а не тихо теряем контракт
-                    await tr.rollback()
-                    conn._done = True
+                    await conn.rollback()
         return
 
     # A short busy timeout prevents transient "database is locked" failures when

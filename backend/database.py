@@ -22,10 +22,20 @@ from config import DATABASE_URL
 # через DATABASE_URL, см. db_runtime.py. DB_PATH используется только для SQLite-режима.
 DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "movies.db"))
 _PG = db_runtime.uses_postgres(DATABASE_URL)
+_GENRES_CACHE_TTL_SECONDS = max(30, int(os.getenv("GENRES_CACHE_TTL_SEC", "300")))
+_genres_cache: tuple[float, list[dict]] | None = None
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _split_genres(value: str | None) -> list[str]:
+    """Canonical genre values for the derived, indexable film_genres table."""
+    return list(dict.fromkeys(
+        genre.strip() for genre in (value or "").split(",")
+        if genre.strip() and genre.strip() != "N/A"
+    ))
 
 
 async def _add_column_if_missing(table: str, col_def: str) -> None:
@@ -193,6 +203,17 @@ async def init_db() -> None:
         await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_films_kp_id "
                          "ON films(kp_id) WHERE kp_id IS NOT NULL")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_films_search_text ON films(search_text)")
+        # Derived table: exact, indexed genre filtering instead of a full scan
+        # through comma-separated films.genres on every browse request.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS film_genres (
+                film_id INTEGER NOT NULL,
+                genre TEXT NOT NULL,
+                PRIMARY KEY (film_id, genre),
+                FOREIGN KEY (film_id) REFERENCES films(id)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_film_genres_genre ON film_genres(genre, film_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_invite_from ON partner_invites(from_user, status)")
         # Ранние версии могли создать несколько pending-инвайтов из-за гонки
         # check-then-insert. Историю сохраняем, но оставляем рабочим только самый
@@ -218,6 +239,7 @@ async def init_db() -> None:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_cf_collection ON collection_films(collection_id)")
         await db.commit()
     await _backfill_catalog_search_text()
+    await _backfill_film_genres()
 
 
 async def ping() -> bool:
@@ -306,7 +328,14 @@ async def backup_db(keep: int = 7) -> str | None:
 
 # ── Пользователи ─────────────────────────────────────────────────────────────
 async def upsert_user(user: dict) -> None:
-    """Регистрация/обновление любого пользователя Telegram (белого списка нет)."""
+    """Регистрация/обновление любого пользователя Telegram без write-amplification.
+
+    InitData приходит с каждым API запросом. Профиль обновляем сразу при реальном
+    изменении, а last_seen — максимум раз в 15 минут, поэтому обычная навигация
+    больше не создаёт коммит в Postgres на каждый GET.
+    """
+    now = _now()
+    last_seen_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         await db.execute(
             """
@@ -317,8 +346,13 @@ async def upsert_user(user: dict) -> None:
                 username   = excluded.username,
                 photo_url  = COALESCE(excluded.photo_url, users.photo_url),
                 last_seen  = excluded.last_seen
+            WHERE users.first_name IS DISTINCT FROM excluded.first_name
+               OR users.username IS DISTINCT FROM excluded.username
+               OR (excluded.photo_url IS NOT NULL AND users.photo_url IS DISTINCT FROM excluded.photo_url)
+               OR users.last_seen IS NULL OR users.last_seen < ?
             """,
-            (user.get("id"), user.get("first_name"), user.get("username"), user.get("photo_url"), _now(), _now()),
+            (user.get("id"), user.get("first_name"), user.get("username"), user.get("photo_url"), now, now,
+             last_seen_cutoff),
         )
         await db.commit()
 
@@ -344,6 +378,31 @@ async def _backfill_catalog_search_text() -> None:
                 (_catalog_search_text(row["title"], row["title_original"], row["actors"],
                                       row["imdb_id"], row["kp_id"]), row["id"]))
         await db.commit()
+
+
+async def _backfill_film_genres() -> None:
+    """Populate the indexable genre projection for legacy catalog rows."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute("SELECT id, genres FROM films")).fetchall()
+        for row in rows:
+            for genre in _split_genres(row["genres"]):
+                await db.execute(
+                    "INSERT INTO film_genres (film_id, genre) VALUES (?,?) ON CONFLICT DO NOTHING",
+                    (row["id"], genre),
+                )
+        await db.commit()
+
+
+async def _set_film_genres(db, film_id: int, genres: str | None) -> None:
+    await db.execute("DELETE FROM film_genres WHERE film_id = ?", (film_id,))
+    for genre in _split_genres(genres):
+        await db.execute("INSERT INTO film_genres (film_id, genre) VALUES (?,?)", (film_id, genre))
+
+
+def _invalidate_genres_cache() -> None:
+    global _genres_cache
+    _genres_cache = None
 
 
 def _catalog_item(row) -> dict | None:
@@ -385,11 +444,26 @@ async def search_catalog(query: str, limit: int = 8) -> list[dict]:
     exact = " ".join(terms)
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute(
-            "SELECT * FROM films WHERE " + " AND ".join(clauses) + " "
-            "ORDER BY CASE WHEN search_text LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END, id DESC LIMIT ?",
-            (*params, like(exact), max(1, min(limit, 20))))
-        rows = await cur.fetchall()
+        safe_prefix = terms[0] if re.fullmatch(r"[\w-]+", terms[0], flags=re.UNICODE) else None
+        rows = []
+        # Most title searches start with the movie title. GLOB prefix can use
+        # idx_films_search_text; fallback below preserves actor/infix discovery.
+        if safe_prefix:
+            cur = await db.execute(
+                "SELECT * FROM films WHERE search_text GLOB ? AND " + " AND ".join(clauses) + " "
+                "ORDER BY CASE WHEN search_text LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END, id DESC LIMIT ?",
+                (safe_prefix + "*", *params, like(exact), max(1, min(limit, 20))),
+            )
+            rows = await cur.fetchall()
+        if len(rows) < max(1, min(limit, 20)):
+            existing_ids = [row["id"] for row in rows]
+            exclusion = "" if not existing_ids else " AND id NOT IN (" + ",".join("?" for _ in existing_ids) + ")"
+            cur = await db.execute(
+                "SELECT * FROM films WHERE " + " AND ".join(clauses) + exclusion + " "
+                "ORDER BY CASE WHEN search_text LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END, id DESC LIMIT ?",
+                (*params, *existing_ids, like(exact), max(1, min(limit, 20)) - len(rows)),
+            )
+            rows += await cur.fetchall()
     return [item for row in rows if (item := _catalog_item(row)) is not None]
 
 
@@ -465,8 +539,11 @@ async def get_or_create_film(
              actors_photos, search_text, _now()),
         )
         inserted = await cur.fetchone()
+        if inserted:
+            await _set_film_genres(db, inserted["id"], genres)
         await db.commit()
         if inserted:
+            _invalidate_genres_cache()
             return inserted["id"]
         # Гонка: кто-то вставил параллельно — перечитываем.
         cur = await db.execute(
@@ -814,11 +891,19 @@ async def count_user_films(user_id: int, status: str) -> int:
 async def get_random_want(user_id: int) -> dict | None:
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
+        count_row = await (await db.execute(
+            "SELECT COUNT(*) FROM user_films WHERE user_id = ? AND status = 'want_to_watch'", (user_id,)
+        )).fetchone()
+        count = int(count_row[0]) if count_row else 0
+        if not count:
+            return None
+        offset = secrets.randbelow(count)
         cur = await db.execute(
             """
             SELECT f.*, uf.rating AS my_rating FROM user_films uf JOIN films f ON f.id = uf.film_id
-            WHERE uf.user_id = ? AND uf.status = 'want_to_watch' ORDER BY RANDOM() LIMIT 1
-            """, (user_id,))
+            WHERE uf.user_id = ? AND uf.status = 'want_to_watch'
+            ORDER BY uf.added_at DESC LIMIT 1 OFFSET ?
+            """, (user_id, offset))
         row = await cur.fetchone()
         return dict(row) if row else None
 
@@ -1029,17 +1114,33 @@ _BROWSE_COLS = """
     me.status AS my_status, me.rating AS my_rating
 """
 
+_BROWSE_AGGREGATES = """
+    WITH film_activity AS (
+        SELECT film_id, AVG(rating) AS community_avg, COUNT(rating) AS community_count,
+               COUNT(*) AS popularity
+        FROM user_films
+        GROUP BY film_id
+    )
+"""
+
+_BROWSE_AGGREGATE_COLS = """
+    f.*, COALESCE(a.community_avg, 0) AS community_avg,
+    COALESCE(a.community_count, 0) AS community_count, COALESCE(a.popularity, 0) AS popularity,
+    me.status AS my_status, me.rating AS my_rating
+"""
+
 
 async def browse_popular(user_id: int, limit: int = 30, offset: int = 0) -> list[dict]:
     """Популярное: по числу пользователей, добавивших фильм."""
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            f"""
-            SELECT {_BROWSE_COLS}
+            _BROWSE_AGGREGATES + f"""
+            SELECT {_BROWSE_AGGREGATE_COLS}
             FROM films f
+            LEFT JOIN film_activity a ON a.film_id = f.id
             LEFT JOIN user_films me ON me.film_id = f.id AND me.user_id = ?
-            ORDER BY popularity DESC, f.created_at DESC
+            ORDER BY COALESCE(a.popularity, 0) DESC, f.created_at DESC
             LIMIT ? OFFSET ?
             """, (user_id, limit, offset))
         return [_browse_dict(r) for r in await cur.fetchall()]
@@ -1052,18 +1153,14 @@ async def browse_top(user_id: int, limit: int = 30, offset: int = 0,
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            """
-            SELECT f.*,
-                   AVG(uf.rating) AS community_avg,
-                   COUNT(uf.rating) AS community_count,
-                   (SELECT COUNT(*) FROM user_films WHERE film_id=f.id) AS popularity,
-                   MAX(me.status) AS my_status, MAX(me.rating) AS my_rating
+            _BROWSE_AGGREGATES + """
+            SELECT f.*, a.community_avg, a.community_count, a.popularity,
+                   me.status AS my_status, me.rating AS my_rating
             FROM films f
-            JOIN user_films uf ON uf.film_id = f.id AND uf.rating IS NOT NULL
+            JOIN film_activity a ON a.film_id = f.id
             LEFT JOIN user_films me ON me.film_id = f.id AND me.user_id = ?
-            GROUP BY f.id
-            HAVING COUNT(uf.rating) >= ?
-            ORDER BY community_avg DESC, community_count DESC
+            WHERE a.community_count >= ?
+            ORDER BY a.community_avg DESC, a.community_count DESC
             LIMIT ? OFFSET ?
             """, (user_id, mv, limit, offset))
         return [_browse_dict(r) for r in await cur.fetchall()]
@@ -1074,29 +1171,33 @@ async def browse_by_genre(user_id: int, genre: str, limit: int = 30, offset: int
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            f"""
-            SELECT {_BROWSE_COLS}
+            _BROWSE_AGGREGATES + f"""
+            SELECT {_BROWSE_AGGREGATE_COLS}
             FROM films f
+            JOIN film_genres fg ON fg.film_id = f.id AND fg.genre = ?
+            LEFT JOIN film_activity a ON a.film_id = f.id
             LEFT JOIN user_films me ON me.film_id = f.id AND me.user_id = ?
-            WHERE f.genres LIKE '%' || ? || '%'
-            ORDER BY popularity DESC, f.created_at DESC
+            ORDER BY COALESCE(a.popularity, 0) DESC, f.created_at DESC
             LIMIT ? OFFSET ?
-            """, (user_id, genre, limit, offset))
+            """, (genre, user_id, limit, offset))
         return [_browse_dict(r) for r in await cur.fetchall()]
 
 
 async def list_genres() -> list[dict]:
     """Жанры, присутствующие в каталоге, по убыванию частоты: [{name, count}]."""
+    global _genres_cache
+    now = datetime.now(timezone.utc).timestamp()
+    if _genres_cache and _genres_cache[0] > now:
+        return [dict(item) for item in _genres_cache[1]]
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT genres FROM films")
-        counts: dict[str, int] = {}
-        for r in await cur.fetchall():
-            for g in (r["genres"] or "").split(","):
-                g = g.strip()
-                if g and g != "N/A":
-                    counts[g] = counts.get(g, 0) + 1
-        return [{"name": n, "count": c} for n, c in sorted(counts.items(), key=lambda x: -x[1])]
+        cur = await db.execute(
+            "SELECT genre AS name, COUNT(*) AS count FROM film_genres "
+            "GROUP BY genre ORDER BY count DESC, genre ASC"
+        )
+        items = [dict(row) for row in await cur.fetchall()]
+    _genres_cache = (now + _GENRES_CACHE_TTL_SECONDS, items)
+    return [dict(item) for item in items]
 
 
 # ── Пара (Фаза E): приглашения, пары, совместная статистика ───────────────────

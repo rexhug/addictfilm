@@ -21,6 +21,13 @@ DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip()
 # Мониторинг ошибок (Sentry, провижн через `fly ext sentry`). Пусто → выключен (локально).
 SENTRY_DSN: str = os.getenv("SENTRY_DSN", "").strip()
 
+# Невелика вибірка transaction traces дає реальні latency-показники в Sentry,
+# не передаючи персональні дані. 0 повністю вимикає performance telemetry.
+try:
+    SENTRY_TRACES_SAMPLE_RATE: float = max(0.0, min(float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.05")), 1.0))
+except ValueError:
+    SENTRY_TRACES_SAMPLE_RATE = 0.05
+
 # Токен обслуживания (бекфил постеров и т.п.). Пусто → админ-эндпоинты выключены.
 ADMIN_TOKEN: str = os.getenv("ADMIN_TOKEN", "")
 

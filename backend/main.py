@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import time
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 
@@ -23,6 +24,7 @@ import sentry_sdk
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 
 import database as db
@@ -35,16 +37,21 @@ import search
 import stats_cache
 import wikidata
 from auth import validate_init_data
-from config import ADMIN_TOKEN, ADMIN_USER_IDS, BOT_TOKEN, DATABASE_URL, SENTRY_DSN
+from config import (ADMIN_TOKEN, ADMIN_USER_IDS, BOT_TOKEN, DATABASE_URL, SENTRY_DSN,
+                    SENTRY_TRACES_SAMPLE_RATE)
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)  # урок: иначе лог распухает
 logger = logging.getLogger(__name__)
 
 if SENTRY_DSN:
-    sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=0.0, send_default_pii=False)
+    sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=SENTRY_TRACES_SAMPLE_RATE,
+                    send_default_pii=False)
 
 app = FastAPI(title="Movie Mini App")
+# Fly не стискає ці файли за нас. GZip значно зменшує 95KB JS і 50KB CSS на
+# першому відкритті Mini App; already-compressed image responses не чіпає.
+app.add_middleware(GZipMiddleware, minimum_size=512, compresslevel=5)
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 _HTML_CSP = (
     "default-src 'self'; "
@@ -63,12 +70,48 @@ def _append_vary(response: Response, field: str) -> None:
     if field.lower() not in {value.lower() for value in existing}:
         response.headers["Vary"] = ", ".join([*existing, field])
 
+
+_REQUEST_METRICS_MAX_SAMPLES = max(50, int(os.getenv("REQUEST_METRICS_MAX_SAMPLES", "500")))
+_request_metrics: dict[str, deque[tuple[float, int]]] = defaultdict(
+    lambda: deque(maxlen=_REQUEST_METRICS_MAX_SAMPLES)
+)
+
+
+def _record_request_metric(request: Request, status: int, elapsed_ms: float) -> None:
+    """Small bounded in-process latency window, available only to the admin token."""
+    route = request.scope.get("route")
+    path = getattr(route, "path", None) or request.url.path
+    key = f"{request.method} {path}"
+    _request_metrics[key].append((elapsed_ms, status))
+
+
+def _performance_snapshot() -> dict:
+    routes = []
+    for route, samples in _request_metrics.items():
+        if not samples:
+            continue
+        timings = sorted(sample[0] for sample in samples)
+        p95_index = min(len(timings) - 1, max(0, int(len(timings) * 0.95) - 1))
+        errors = sum(1 for _elapsed, status in samples if status >= 500)
+        routes.append({
+            "route": route, "samples": len(samples), "avg_ms": round(sum(timings) / len(timings), 1),
+            "p95_ms": round(timings[p95_index], 1), "errors_5xx": errors,
+        })
+    return {"routes": sorted(routes, key=lambda item: item["p95_ms"], reverse=True)}
+
 @app.middleware("http")
 async def log_slow_requests(request: Request, call_next):
     """Даёт в Fly/Sentry реальное время медленных запросов без новых сервисов."""
     started = time.perf_counter()
-    response = await call_next(request)
-    elapsed_ms = (time.perf_counter() - started) * 1000
+    response = None
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+    finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        _record_request_metric(request, status, elapsed_ms)
+    assert response is not None
     if elapsed_ms >= 750:
         logger.warning("Slow request: %s %s -> %s in %.0fms",
                        request.method, request.url.path, response.status_code, elapsed_ms)
@@ -219,8 +262,11 @@ async def movies(status: str = "want_to_watch", sort: str = "date",
         raise HTTPException(status_code=422, detail="Неизвестная сортировка")
     limit = max(1, min(limit, 100))   # защита от чрезмерной выборки
     offset = max(0, offset)
-    items = await db.get_user_films(user["id"], status, limit=limit, offset=offset, sort=sort)
-    return {"items": items, "total": await db.count_user_films(user["id"], status)}
+    items, total = await asyncio.gather(
+        db.get_user_films(user["id"], status, limit=limit, offset=offset, sort=sort),
+        db.count_user_films(user["id"], status),
+    )
+    return {"items": items, "total": total}
 
 
 @app.get("/api/movie/{film_id}")
@@ -448,8 +494,10 @@ async def stats(user: dict = Depends(current_user)):
     cached = stats_cache.get(key)
     if cached is not None:
         return cached
-    s = await db.get_user_stats(user["id"])
-    s["year"] = await db.get_year_stats(user["id"], year)
+    s, year_stats = await asyncio.gather(
+        db.get_user_stats(user["id"]), db.get_year_stats(user["id"], year)
+    )
+    s["year"] = year_stats
     return stats_cache.put(key, s)
 
 
@@ -648,6 +696,12 @@ def require_admin(x_admin_token: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="Не авторизован")
 
 
+@app.get("/api/admin/performance", dependencies=[Depends(require_admin)])
+async def performance_snapshot():
+    """Bounded in-process route timings for production triage (never public)."""
+    return _performance_snapshot()
+
+
 @app.post("/api/admin/backfill-posters", dependencies=[Depends(require_admin)])
 async def backfill_posters(limit: int = 200, omdb_cap: int = 60):
     """Добрать постеры фильмам без картинки (kinopoisk → OMDb). Идемпотентно;
@@ -765,6 +819,8 @@ async def telegram_avatar(user_id: int, viewer: int = 0, exp: int = 0, sig: str 
 _IMG_CACHE_DIR = os.getenv("IMG_CACHE_DIR") or ("/data/imgcache" if os.path.isdir("/data") else "")
 _IMG_CACHE_MAX_BYTES = max(0, int(os.getenv("IMG_CACHE_MAX_BYTES", str(256 * 1024 * 1024))))
 _IMG_CACHE_MAX_FILES = max(0, int(os.getenv("IMG_CACHE_MAX_FILES", "4000")))
+_IMG_CACHE_TRIM_INTERVAL_SECONDS = max(5.0, float(os.getenv("IMG_CACHE_TRIM_INTERVAL_SECONDS", "60")))
+_img_last_trim_scheduled = 0.0
 
 
 def _image_client_key(request: Request) -> str:
@@ -819,9 +875,13 @@ def _trim_image_cache_sync() -> None:
 
 def _schedule_image_cache_trim() -> None:
     """Keep potentially slow filesystem traversal off the request event loop."""
-    global _img_trim_task
+    global _img_trim_task, _img_last_trim_scheduled
     if _img_trim_task is not None and not _img_trim_task.done():
         return
+    now = time.monotonic()
+    if now - _img_last_trim_scheduled < _IMG_CACHE_TRIM_INTERVAL_SECONDS:
+        return
+    _img_last_trim_scheduled = now
     try:
         _img_trim_task = asyncio.create_task(
             asyncio.to_thread(_trim_image_cache_sync), name="image-cache-trim")
@@ -852,6 +912,32 @@ def _img_cache_path(u: str) -> str | None:
     return os.path.join(_IMG_CACHE_DIR, key[:2], key)
 
 
+def _read_cached_image_sync(path: str) -> tuple[bytes | None, str | None]:
+    """Disk cache IO belongs in a thread, not in the asyncio event loop."""
+    try:
+        if os.path.getsize(path) > _MAX_IMAGE_BYTES:
+            os.remove(path)
+            return None, None
+        with open(path, "rb") as handle:
+            data = handle.read()
+        ctype = _img_ctype(data)
+        if not ctype:
+            os.remove(path)
+            return None, None
+        os.utime(path, None)
+        return data, ctype
+    except OSError:
+        return None, None
+
+
+def _write_cached_image_sync(path: str, data: bytes) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "wb") as handle:
+        handle.write(data)
+    os.replace(tmp, path)
+
+
 def _is_allowed_image_url(url: str) -> bool:
     """Проверить URL до каждого запроса, включая промежуточные редиректы."""
     parsed = urlparse(url)
@@ -879,20 +965,10 @@ async def img_proxy(request: Request, u: str):
 
     cache_path = _img_cache_path(u)
     if cache_path and os.path.exists(cache_path):
-        try:
-            if os.path.getsize(cache_path) <= _MAX_IMAGE_BYTES:
-                with open(cache_path, "rb") as f:
-                    data = f.read()
-                cached_ctype = _img_ctype(data)
-                if cached_ctype:
-                    # Treat successfully served items as recently used so the trimmer
-                    # preferentially evicts stale cache entries.
-                    os.utime(cache_path, None)
-                    return Response(content=data, media_type=cached_ctype,
-                                    headers={"Cache-Control": "public, max-age=31536000, immutable"})
-            os.remove(cache_path)
-        except OSError:
-            pass
+        cached_data, cached_ctype = await asyncio.to_thread(_read_cached_image_sync, cache_path)
+        if cached_data is not None and cached_ctype is not None:
+            return Response(content=cached_data, media_type=cached_ctype,
+                            headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
     if not ratelimit.allow_image_proxy(_image_client_key(request)):
         raise HTTPException(
@@ -949,11 +1025,7 @@ async def img_proxy(request: Request, u: str):
 
     if cache_path and data:
         try:  # атомарная запись: tmp + rename (второй инстанс может писать параллельно)
-            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-            tmp = f"{cache_path}.{os.getpid()}.tmp"
-            with open(tmp, "wb") as f:
-                f.write(data)
-            os.replace(tmp, cache_path)
+            await asyncio.to_thread(_write_cached_image_sync, cache_path, data)
             _schedule_image_cache_trim()
         except OSError:
             pass  # кэш — оптимизация, не роняем отдачу из-за диска

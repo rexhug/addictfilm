@@ -6,6 +6,7 @@
 """
 import asyncio
 import logging
+from collections import OrderedDict
 
 import aiohttp
 
@@ -22,8 +23,17 @@ _session: aiohttp.ClientSession | None = None
 _rr = 0
 
 # Детали по id не меняются — кэшируем (экономим лимит 200 запросов/сутки).
-_cache: dict[str, dict] = {}
+_cache: OrderedDict[str, dict] = OrderedDict()
 _CACHE_MAX = 500
+
+
+def _cache_put(kp_id: str, doc: dict) -> None:
+    """LRU без cache cliff: новый фильм вытесняет один самый старый, а не все 500."""
+    key = str(kp_id)
+    _cache.pop(key, None)
+    _cache[key] = doc
+    if len(_cache) > _CACHE_MAX:
+        _cache.popitem(last=False)
 
 # Поля, которые точно нужны — просим только их (меньше трафика).
 _FIELDS = [
@@ -137,9 +147,7 @@ async def search_movies(query: str, limit: int = 8) -> list[dict]:
     docs = data.get("docs", [])
     for d in docs:
         if d.get("id"):
-            if len(_cache) >= _CACHE_MAX:
-                _cache.clear()
-            _cache[str(d["id"])] = d
+            _cache_put(str(d["id"]), d)
     return docs
 
 
@@ -147,13 +155,14 @@ async def get_movie(kp_id: str) -> dict | None:
     """Полные данные по id Кинопоиска (из кэша, если поиск их уже принёс)."""
     cached = _cache.get(str(kp_id))
     if cached is not None:
+        _cache.move_to_end(str(kp_id))
         return cached
     if not KINOPOISK_TOKENS:
         return None
     params = [("selectFields", f) for f in _FIELDS]
     data = await _request(f"/movie/{kp_id}", params)
     if data and data.get("id"):
-        _cache[str(kp_id)] = data
+        _cache_put(str(kp_id), data)
     return data
 
 

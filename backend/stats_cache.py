@@ -13,6 +13,7 @@ from typing import Any
 
 
 _TTL_SECONDS = max(15, int(os.getenv("STATS_CACHE_TTL_SEC", "90")))
+_MAX_ENTRIES = max(100, int(os.getenv("STATS_CACHE_MAX_ENTRIES", "2000")))
 _cache: dict[tuple[Any, ...], tuple[float, Any]] = {}
 
 
@@ -25,7 +26,17 @@ def get(key: tuple[Any, ...]) -> Any | None:
 
 
 def put(key: tuple[Any, ...], value: Any) -> Any:
-    _cache[key] = (time.monotonic() + _TTL_SECONDS, deepcopy(value))
+    now = time.monotonic()
+    # A public app can have many users who each open stats once. Expired entries
+    # otherwise remain forever because they are only removed on a matching get.
+    if len(_cache) >= _MAX_ENTRIES:
+        expired = [cache_key for cache_key, (expires, _) in _cache.items() if expires <= now]
+        for cache_key in expired:
+            _cache.pop(cache_key, None)
+    if len(_cache) >= _MAX_ENTRIES:
+        for cache_key, _ in sorted(_cache.items(), key=lambda item: item[1][0])[:max(1, _MAX_ENTRIES // 10)]:
+            _cache.pop(cache_key, None)
+    _cache[key] = (now + _TTL_SECONDS, deepcopy(value))
     return deepcopy(value)
 
 

@@ -38,6 +38,7 @@ USER_WINDOW: int = int(os.getenv("USER_SEARCH_WINDOW", "60"))
 # in main.py. It protects the application from becoming an open bandwidth proxy.
 IMAGE_PROXY_MAX: int = int(os.getenv("IMAGE_PROXY_MAX", "120"))
 IMAGE_PROXY_WINDOW: int = int(os.getenv("IMAGE_PROXY_WINDOW", "60"))
+_MAX_TRACKED_KEYS: int = max(1_000, int(os.getenv("RATE_LIMIT_MAX_TRACKED_KEYS", "20_000")))
 
 _hits: dict[int, deque] = defaultdict(deque)
 _calls: int = 0  # счётчик обращений для периодической уборки _hits
@@ -70,7 +71,7 @@ def allow_user(user_id: int) -> bool:
     global _calls
     now = time.monotonic()
     _calls += 1
-    if _calls % 500 == 0:  # периодическая уборка «мёртвых» пользователей
+    if _calls % 500 == 0 or len(_hits) >= _MAX_TRACKED_KEYS:  # не даём публичному трафику раздувать память
         _sweep(now)
     dq = _hits[user_id]
     while dq and now - dq[0] > USER_WINDOW:
@@ -92,7 +93,7 @@ def allow_image_proxy(client_key: str) -> bool:
     global _image_calls
     now = time.monotonic()
     _image_calls += 1
-    if _image_calls % 500 == 0:
+    if _image_calls % 500 == 0 or len(_image_hits) >= _MAX_TRACKED_KEYS:
         for key in list(_image_hits):
             dq = _image_hits[key]
             while dq and now - dq[0] > IMAGE_PROXY_WINDOW:
