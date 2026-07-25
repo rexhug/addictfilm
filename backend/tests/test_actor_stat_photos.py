@@ -146,3 +146,57 @@ class ActorStatPhotoTests(unittest.IsolatedAsyncioTestCase):
             ("Alex Director", 2, photo_url),
             ("Solo Director", 1, None),
         ])
+
+    async def test_people_with_equal_counts_follow_credit_prominence(self):
+        """Billing order is the deterministic tiebreaker, not the alphabet."""
+        film_id = await db.get_or_create_film(
+            "tt0000014", "Credits", runtime="100 min",
+            actors="Zed Lead, Alpha Supporting",
+            directors="Zeta Director, Alpha Director",
+        )
+        await db.set_status(1, film_id, "watched")
+
+        stats = await db.get_user_stats(1)
+
+        self.assertEqual([person[0] for person in stats["top_actors"]], [
+            "Zed Lead", "Alpha Supporting",
+        ])
+        self.assertEqual([person[0] for person in stats["top_directors"]], [
+            "Zeta Director", "Alpha Director",
+        ])
+
+    async def test_people_count_remains_the_primary_rank(self):
+        first = await db.get_or_create_film(
+            "tt0000015", "First", runtime="100 min",
+            actors="Leading Name, Repeated Supporting",
+        )
+        second = await db.get_or_create_film(
+            "tt0000016", "Second", runtime="100 min", actors="Repeated Supporting",
+        )
+        await db.set_status(1, first, "watched")
+        await db.set_status(1, second, "watched")
+
+        stats = await db.get_user_stats(1)
+
+        self.assertEqual([person[0] for person in stats["top_actors"]], [
+            "Repeated Supporting", "Leading Name",
+        ])
+
+    async def test_pair_stats_use_the_same_credit_prominence_tiebreaker(self):
+        await db.upsert_user({"id": 2, "first_name": "Two", "username": None})
+        film_id = await db.get_or_create_film(
+            "tt0000017", "Pair credits", runtime="100 min",
+            actors="Zed Lead, Alpha Supporting",
+            directors="Zeta Director, Alpha Director",
+        )
+        await db.set_status(1, film_id, "watched")
+        await db.set_status(2, film_id, "watched")
+
+        stats = await db.pair_period_stats(1, 2, "2000-01-01T00:00:00+00:00")
+
+        self.assertEqual([person[0] for person in stats["top_actors"]], [
+            "Zed Lead", "Alpha Supporting",
+        ])
+        self.assertEqual([person[0] for person in stats["top_directors"]], [
+            "Zeta Director", "Alpha Director",
+        ])

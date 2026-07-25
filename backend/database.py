@@ -1337,6 +1337,32 @@ def _actor_photo_map(rows) -> dict[str, str]:
     return _person_photo_map(rows, "actors_photos")
 
 
+def _person_credit_prominence(rows, column: str) -> dict[str, tuple[int, int]]:
+    """Return (sum of credit positions, appearances) for each shown person.
+
+    Both catalog providers return credits in billing order.  When two people
+    appear in the same number of watched films, the one normally placed closer
+    to the start of the credits is the best available, local popularity signal.
+    It is deterministic, requires no third-party request, and works for old
+    catalogue records too.
+    """
+    positions: dict[str, tuple[int, int]] = {}
+    for row in rows:
+        for index, name in enumerate(_split_people(row[column])):
+            total, appearances = positions.get(name, (0, 0))
+            positions[name] = (total + index, appearances + 1)
+    return positions
+
+
+def _rank_people(counts: dict[str, int], prominence: dict[str, tuple[int, int]]) -> list[tuple[str, int]]:
+    """Sort by watched count first, then by how prominently credits list them."""
+    def sort_key(item: tuple[str, int]) -> tuple[int, float, str]:
+        name, count = item
+        total, appearances = prominence.get(name, (10_000, 1))
+        return (-count, total / max(1, appearances), name.casefold())
+    return sorted(counts.items(), key=sort_key)
+
+
 async def get_user_stats(user_id: int) -> dict:
     """Личная статистика пользователя: счётчики, экранное время, средняя оценка,
     топ жанров/актёров/режиссёров (ничьи честно), итоги года."""
@@ -1374,6 +1400,8 @@ async def get_user_stats(user_id: int) -> dict:
         watched_rows = await cur.fetchall()
         actor_photo_sources = _person_photo_sources(watched_rows, "actors_photos")
         director_photo_sources = _person_photo_sources(watched_rows, "directors_photos")
+        actor_prominence = _person_credit_prominence(watched_rows, "actors")
+        director_prominence = _person_credit_prominence(watched_rows, "directors")
         for r in watched_rows:
             for g in (r["genres"] or "").split(","):
                 g = g.strip()
@@ -1399,12 +1427,13 @@ async def get_user_stats(user_id: int) -> dict:
             (g, round(c / total_refs * 100), c)
             for g, c in sorted(genre_counts.items(), key=lambda x: -x[1])[:5]
         ] if total_refs else []
-        # Lists are fully aggregated in one query. The UI displays them in a
-        # horizontal rail, and name is the stable tie-breaker for ranks.
+        # Lists are fully aggregated in one query.  Count stays the primary
+        # rank; when it is tied, billing prominence makes the rail feel like
+        # a real film profile rather than an alphabetical dump.
         top_actors = [(n, c, *(actor_photo_sources.get(n) or [None]))
-                      for n, c in sorted(actor_counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
+                      for n, c in _rank_people(actor_counts, actor_prominence)]
         top_directors = [(n, c, *(director_photo_sources.get(n) or [None]))
-                         for n, c in sorted(director_counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
+                         for n, c in _rank_people(director_counts, director_prominence)]
 
         row = await (await db.execute(
             "SELECT f.title FROM user_films uf JOIN films f ON f.id = uf.film_id "
@@ -1824,6 +1853,8 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
     genre_counts, actor_counts, director_counts = {}, {}, {}
     actor_photo_sources = _person_photo_sources(both_watched, "actors_photos")
     director_photo_sources = _person_photo_sources(both_watched, "directors_photos")
+    actor_prominence = _person_credit_prominence(both_watched, "actors")
+    director_prominence = _person_credit_prominence(both_watched, "directors")
     total_min = 0
     year_min, year_genre, year_actor = 0, {}, {}
     year_ratings, year_count = [], 0
@@ -1866,9 +1897,9 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         for g, c in sorted(genre_counts.items(), key=lambda x: -x[1])[:5]
     ] if total_refs else []
     top_actors = [(n, c, *(actor_photo_sources.get(n) or [None]))
-                  for n, c in sorted(actor_counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
+                  for n, c in _rank_people(actor_counts, actor_prominence)]
     top_directors = [(n, c, *(director_photo_sources.get(n) or [None]))
-                     for n, c in sorted(director_counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
+                     for n, c in _rank_people(director_counts, director_prominence)]
 
     # Совместимость по фильмам пар-периода, которые оценили ОБА.
     rated = [{"film_id": r["film_id"], "a": r["ra"], "b": r["rb"], "title": r["title"], "poster_url": r["poster_url"]}
