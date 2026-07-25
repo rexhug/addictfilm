@@ -33,6 +33,7 @@ _genres_cache: tuple[float, list[dict]] | None = None
 # and makes every future data/schema change an explicit, auditable step.
 _SCHEMA_MIGRATION_LEGACY_COLUMNS = "2026-07-25-legacy-columns"
 _SCHEMA_MIGRATION_DIRECTOR_PHOTOS = "2026-07-25-director-photos"
+_SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY = "2026-07-25-person-portrait-retry"
 
 
 def _now() -> str:
@@ -45,6 +46,11 @@ def _split_genres(value: str | None) -> list[str]:
         genre.strip() for genre in (value or "").split(",")
         if genre.strip() and genre.strip() != "N/A"
     ))
+
+
+def _split_people(value: str | None) -> list[str]:
+    """Return the canonical comma-separated person names stored on a film."""
+    return list(dict.fromkeys(name.strip() for name in (value or "").split(",") if name.strip()))
 
 
 async def _add_column_if_missing(table: str, col_def: str) -> None:
@@ -118,11 +124,32 @@ async def _apply_director_photo_migration() -> None:
         await _add_column_if_missing(table, col_def)
 
 
+async def _apply_person_portrait_retry_migration() -> None:
+    """Allow one immediate repair pass for portraits blanked by the first rollout.
+
+    The original migration correctly remembered a completed Wikidata lookup,
+    but a transient Commons miss then stayed blank forever.  Resetting only
+    rows with no stored URL is data-safe: existing working portraits are never
+    touched, and the new 14-day retry guard prevents repeated work afterwards.
+    """
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        for photos, checked in (
+            ("actors_photos", "actor_photos_checked_at"),
+            ("directors_photos", "director_photos_checked_at"),
+        ):
+            await db.execute(
+                f"UPDATE films SET {checked} = NULL WHERE {photos} IS NULL OR {photos} = '' "
+                f"OR {photos} NOT LIKE '%https://%'"
+            )
+        await db.commit()
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
         (_SCHEMA_MIGRATION_LEGACY_COLUMNS, _apply_legacy_column_migration),
         (_SCHEMA_MIGRATION_DIRECTOR_PHOTOS, _apply_director_photo_migration),
+        (_SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY, _apply_person_portrait_retry_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -816,18 +843,49 @@ async def films_needing_director_photo_enrichment(limit: int = 200) -> list[dict
         return [dict(row) for row in await cur.fetchall()]
 
 
-async def watched_films_needing_director_photo_enrichment(user_id: int, limit: int = 100) -> list[dict]:
-    """Bounded list for a user's profile-triggered background portrait refresh."""
+async def watched_films_needing_people_photo_enrichment(user_id: int, people_column: str,
+                                                         photo_column: str, checked_column: str, limit: int = 100,
+                                                         retry_days: int = 14) -> list[dict]:
+    """Return watched films with missing portraits, with a calm retry policy.
+
+    Wikimedia can temporarily fail and some people receive a Commons portrait
+    after the first lookup.  A one-time ``checked_at`` marker therefore must
+    not turn a temporary blank into a permanent one.  We retry only portrait
+    sets that still contain no URL, and no more often than every ``retry_days``.
+    Column names are fixed by internal callers, never taken from the request.
+    """
+    if (people_column, photo_column, checked_column) not in {
+        ("actors", "actors_photos", "actor_photos_checked_at"),
+        ("directors", "directors_photos", "director_photos_checked_at"),
+    }:
+        raise ValueError("Unsupported person portrait columns")
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retry_days)).isoformat()
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT f.id, f.imdb_id FROM user_films uf JOIN films f ON f.id = uf.film_id "
             "WHERE uf.user_id = ? AND uf.status = 'watched' AND f.imdb_id LIKE 'tt%' "
-            "AND f.directors IS NOT NULL AND f.directors <> '' "
-            "AND f.director_photos_checked_at IS NULL ORDER BY f.id DESC LIMIT ?",
-            (user_id, max(1, min(limit, 100))),
+            f"AND f.{people_column} IS NOT NULL AND f.{people_column} <> '' "
+            f"AND (f.{photo_column} IS NULL OR f.{photo_column} = '' OR f.{photo_column} NOT LIKE '%https://%') "
+            f"AND (f.{checked_column} IS NULL OR f.{checked_column} < ?) "
+            f"ORDER BY f.id DESC LIMIT ?",
+            (user_id, cutoff, max(1, min(limit, 100))),
         )
         return [dict(row) for row in await cur.fetchall()]
+
+
+async def watched_films_needing_director_photo_enrichment(user_id: int, limit: int = 100) -> list[dict]:
+    """Backward-compatible director wrapper for existing callers."""
+    return await watched_films_needing_people_photo_enrichment(
+        user_id, "directors", "directors_photos", "director_photos_checked_at", limit,
+    )
+
+
+async def watched_films_needing_actor_photo_enrichment(user_id: int, limit: int = 100) -> list[dict]:
+    """Actor equivalent of the director portrait refresh."""
+    return await watched_films_needing_people_photo_enrichment(
+        user_id, "actors", "actors_photos", "actor_photos_checked_at", limit,
+    )
 
 
 async def set_film_cast_from_wikidata(film_id: int, actors: str, photos_json: str) -> bool:
@@ -1018,6 +1076,57 @@ async def get_user_films(user_id: int, status: str, limit: int = 50, offset: int
         return [dict(r) for r in await cur.fetchall()]
 
 
+def _person_column(role: str) -> str:
+    """Map the public role enum to a fixed SQL column name."""
+    if role == "actor":
+        return "actors"
+    if role == "director":
+        return "directors"
+    raise ValueError("Unknown person role")
+
+
+def _films_for_person(rows, column: str, name: str) -> list[dict]:
+    """Keep exact comma-separated name matches; never use a loose SQL LIKE.
+
+    A substring query would make a request for e.g. ``Tom`` leak unrelated
+    people named ``Tommy``.  The watched collection is deliberately bounded
+    (200 rows) and this exact matching is portable across SQLite and Postgres.
+    """
+    target = name.strip().casefold()
+    return [dict(row) for row in rows if target in {person.casefold() for person in _split_people(row[column])}]
+
+
+async def get_person_watched_films(user_id: int, role: str, name: str, limit: int = 200) -> list[dict]:
+    """Films this user watched that contain the selected actor or director."""
+    column = _person_column(role)
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"SELECT f.*, uf.rating AS my_rating, uf.watched_at AS watched_at FROM user_films uf "
+            f"JOIN films f ON f.id = uf.film_id WHERE uf.user_id = ? AND uf.status = 'watched' "
+            f"ORDER BY uf.watched_at DESC LIMIT ?",
+            (user_id, max(1, min(limit, 200))),
+        )
+        return _films_for_person(await cur.fetchall(), column, name)
+
+
+async def get_pair_person_watched_films(user_id: int, partner_id: int, since: str,
+                                         role: str, name: str, limit: int = 200) -> list[dict]:
+    """Shared watched films in the current pair that contain a selected person."""
+    column = _person_column(role)
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"SELECT f.*, a.rating AS my_rating, b.rating AS partner_rating, "
+            f"a.watched_at AS watched_at FROM user_films a JOIN user_films b ON a.film_id = b.film_id "
+            f"JOIN films f ON f.id = a.film_id "
+            f"WHERE a.user_id = ? AND b.user_id = ? AND a.status = 'watched' AND b.status = 'watched' "
+            f"AND a.added_at >= ? AND b.added_at >= ? ORDER BY a.watched_at DESC LIMIT ?",
+            (user_id, partner_id, since, since, max(1, min(limit, 200))),
+        )
+        return _films_for_person(await cur.fetchall(), column, name)
+
+
 async def count_user_films(user_id: int, status: str) -> int:
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         if status == "top":
@@ -1156,7 +1265,7 @@ async def get_user_stats(user_id: int) -> dict:
         # Lists are fully aggregated in one query. The UI displays them in a
         # horizontal rail, and name is the stable tie-breaker for ranks.
         top_actors = [(n, c, actor_photos.get(n))
-                      for n, c in sorted(actor_counts.items(), key=lambda x: (-x[1], x[0].casefold())) if c >= 2]
+                      for n, c in sorted(actor_counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
         top_directors = [(n, c, director_photos.get(n))
                          for n, c in sorted(director_counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
 
@@ -1620,7 +1729,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         for g, c in sorted(genre_counts.items(), key=lambda x: -x[1])[:5]
     ] if total_refs else []
     top_actors = [(n, c, actor_photos.get(n))
-                  for n, c in sorted(actor_counts.items(), key=lambda x: (-x[1], x[0].casefold())) if c >= 2]
+                  for n, c in sorted(actor_counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
     top_directors = [(n, c, director_photos.get(n))
                      for n, c in sorted(director_counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
 

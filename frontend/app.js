@@ -70,7 +70,7 @@ const DICT = {
     stats_me_tab: "Я", stats_together_tab: "Мы вместе", stats_taste: "Твой вкус", stats_together: "Ваша история",
     stats_ratings_hint: "Сколько фильмов ты поставил(а) на каждую оценку", stats_ratings_hint_pair: "Сколько общих фильмов попало в каждую оценку", stats_genres_hint: "Доля жанра среди просмотренных фильмов",
     stats_people_hint: "Сколько просмотренных фильмов связано с каждым человеком", stats_directors_hint: "Сколько просмотренных фильмов снято каждым режиссёром", stats_people_hint_pair: "В скольких общих просмотренных фильмах встречается человек", stats_directors_hint_pair: "Сколько общих просмотренных фильмов снято каждым режиссёром", stats_films: (n) => `${n} ${pl(n, ["фильм", "фильма", "фильмов"])}`,
-    stats_favorite_actor: "Любимый актёр", stats_favorite_director: "Любимый режиссёр", stats_actors_empty: "Недостаточно данных об актёрах", stats_directors_empty: "Недостаточно данных о режиссёрах", stats_people_empty_hint: "Статистика появится после просмотра фильмов.",
+    stats_favorite_actor: "Любимый актёр", stats_favorite_director: "Любимый режиссёр", stats_actors_empty: "Недостаточно данных об актёрах", stats_directors_empty: "Недостаточно данных о режиссёрах", stats_people_empty_hint: "Статистика появится после просмотра фильмов.", stats_person_films: (name) => `Фильмы с ${name}`, stats_person_films_pair: (name) => `Общие фильмы с ${name}`, stats_person_open: (name) => `Открыть фильмы с ${name}`, stats_person_empty: "Таких просмотренных фильмов пока нет",
     stats_taste_hint: (genre, rating) => genre ? `Тебе особенно нравятся ${genre}; чаще всего ты ставишь ${rating}.` : `Чаще всего ты ставишь ${rating}.`,
     tile_watched: "просмотрено", tile_want: "в «Хочу»", tile_shared_watched: "вместе посмотрено", tile_shared_want: "вместе в «Хочу»", tile_avg: "средняя", tile_hours: "часов",
     chart_ratings: "Как ты оцениваешь фильмы", chart_ratings_pair: "Общие оценки", chart_genres: "Жанры", chart_actors: "Актёры", chart_directors: "Режиссёры",
@@ -137,7 +137,7 @@ const DICT = {
     stats_me_tab: "Me", stats_together_tab: "Together", stats_taste: "Your taste", stats_together: "Your story",
     stats_ratings_hint: "How many films you gave each rating", stats_ratings_hint_pair: "How many shared films received each rating", stats_genres_hint: "Genre share among watched films",
     stats_people_hint: "How many watched films feature each person", stats_directors_hint: "How many watched films each director made", stats_people_hint_pair: "How often a person appears in films you watched together", stats_directors_hint_pair: "How many shared watched films each director made", stats_films: (n) => `${n} ${n === 1 ? "film" : "films"}`,
-    stats_favorite_actor: "Favorite actor", stats_favorite_director: "Favorite director", stats_actors_empty: "Not enough actor data", stats_directors_empty: "Not enough director data", stats_people_empty_hint: "Statistics will appear after you watch films.",
+    stats_favorite_actor: "Favorite actor", stats_favorite_director: "Favorite director", stats_actors_empty: "Not enough actor data", stats_directors_empty: "Not enough director data", stats_people_empty_hint: "Statistics will appear after you watch films.", stats_person_films: (name) => `Films with ${name}`, stats_person_films_pair: (name) => `Shared films with ${name}`, stats_person_open: (name) => `Open films with ${name}`, stats_person_empty: "No watched films found yet",
     stats_taste_hint: (genre, rating) => genre ? `You lean toward ${genre} and most often give ${rating}.` : `You most often give ${rating}.`,
     tile_watched: "watched", tile_want: "wishlist", tile_shared_watched: "watched together", tile_shared_want: "shared wishlist", tile_avg: "average", tile_hours: "hours",
     chart_ratings: "How you rate movies", chart_ratings_pair: "Shared ratings", chart_genres: "Genres", chart_actors: "Actors", chart_directors: "Directors",
@@ -957,7 +957,7 @@ function showSearch(mode = null) {
 }
 
 // ── Статистика: личный вкус и совместная история — отдельные режимы ───────────
-async function showStats() {
+async function showStats(initialMode = "me") {
   unwireDetailScroll();
   window.scrollTo(0, 0);
   screen.innerHTML = `<div class="page-head"><h1>${esc(t("stats_title"))}</h1><button class="page-head-action" data-stats-share type="button" aria-label="Share">↗</button></div><div id="stats"><div class="empty"><div class="empty-sub">${esc(t("calc"))}</div></div></div>`;
@@ -974,7 +974,7 @@ async function showStats() {
   // horizontal rail, so the whole list is reachable with a normal swipe.
   const expanded = { genres: false };
   const paired = partner.status === "paired" && pstats;
-  let mode = "me";
+  let mode = paired && initialMode === "pair" ? "pair" : "me";
 
   const render = () => {
     const tabs = paired ? `<div class="stats-switch" role="tablist">
@@ -1009,12 +1009,49 @@ async function showStats() {
       render();
     });
     box.querySelectorAll("[data-film-id]").forEach(card => card.onclick = () => openDetail(+card.dataset.filmId, showStats));
+    box.querySelectorAll("[data-stats-person-name]").forEach(card => card.onclick = () => {
+      showPersonFilms({
+        name: card.dataset.statsPersonName,
+        role: card.dataset.statsPersonRole,
+        scope: mode,
+      });
+    });
     const shareStatsButton = screen.querySelector("[data-stats-share]");
     if (shareStatsButton) shareStatsButton.onclick = () => shareStats();
     wirePartner(box);
     revealLoadedPersonPhotos(box);
   };
   render();
+}
+
+async function showPersonFilms({ name, role, scope }) {
+  unwireDetailScroll();
+  window.scrollTo(0, 0);
+  const title = t(scope === "pair" ? "stats_person_films_pair" : "stats_person_films", name);
+  screen.innerHTML = `<div class="sub-head">${backBtn()}<h1>${esc(title)}</h1></div>
+    <div class="person-films-intro"><span>${esc(role === "director" ? t("chart_directors") : t("chart_actors"))}</span><b>${esc(name)}</b></div>
+    <div id="person-films-grid">${skeletonGrid(6)}</div>`;
+  wireBack(() => showStats(scope));
+  try {
+    const path = `/api/stats/person?role=${encodeURIComponent(role)}&name=${encodeURIComponent(name)}&scope=${encodeURIComponent(scope)}`;
+    const { items } = await api(path);
+    const grid = document.getElementById("person-films-grid");
+    if (!grid) return;
+    if (!items.length) {
+      grid.innerHTML = emptyState("🎬", t("stats_person_empty"));
+      return;
+    }
+    const back = () => showPersonFilms({ name, role, scope });
+    grid.replaceChildren(gridOf(items, movie => {
+      const rating = scope === "pair" && movie.partner_rating != null
+        ? `★ ${movie.my_rating ?? "—"} · ${movie.partner_rating}`
+        : (movie.my_rating != null ? `★ ${movie.my_rating}` : undefined);
+      return posterTile(movie, { badge: rating, onClick: () => openDetail(movie.id, back, movie) });
+    }));
+  } catch (_) {
+    const grid = document.getElementById("person-films-grid");
+    if (grid) grid.innerHTML = emptyState("⚠️", t("load_err"));
+  }
 }
 
 function pairHeroHTML(ps) {
@@ -1159,11 +1196,11 @@ function personStatCard(item, index, type) {
   const favorite = index === 0;
   const photo = photoUrl ? `<img loading="lazy" decoding="async" src="${esc(posterSrc(photoUrl))}" alt="${esc(name)}" data-img-retry data-person-photo>` : "";
   const favoriteLabel = type === "actors" ? t("stats_favorite_actor") : t("stats_favorite_director");
-  return `<article class="person-stat-card" aria-label="${esc(`${name}, ${t("stats_films", count)}`)}">
+  return `<button class="person-stat-card" type="button" data-stats-person-name="${esc(name)}" data-stats-person-role="${type === "actors" ? "actor" : "director"}" aria-label="${esc(t("stats_person_open", name))}">
     <span class="person-stat-rank" aria-label="${index + 1}">${index + 1}</span>
     <span class="person-stat-avatar"><span class="fb">${esc(initials(name))}</span>${photo}</span>
     <div class="person-stat-copy"><b title="${esc(name)}">${esc(name)}</b><small>${esc(t("stats_films", count))}</small>${favorite ? `<span class="person-stat-favorite"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m12 3.8 2.5 5 5.5.8-4 3.9.9 5.5-4.9-2.6-4.9 2.6.9-5.5-4-3.9 5.5-.8z"/></svg>${esc(favoriteLabel)}</span>` : ""}</div>
-  </article>`;
+  </button>`;
 }
 
 function peopleStatsSection({ type, title, subtitle, items }) {

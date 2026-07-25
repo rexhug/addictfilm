@@ -477,14 +477,57 @@ async def stats(user: dict = Depends(current_user)):
     return stats_cache.put(key, s)
 
 
-async def _enrich_profile_director_photos(user_id: int) -> None:
-    """Fill director portraits for the opened profile in a single bounded batch."""
+@app.get("/api/stats/person")
+async def stats_person_films(role: str = "actor", name: str = "", scope: str = "me",
+                             user: dict = Depends(current_user)):
+    """Exact watched-film drill-down for an actor/director profile card."""
+    person_name = name.strip()
+    if role not in {"actor", "director"}:
+        raise HTTPException(status_code=422, detail="Неизвестная роль")
+    if scope not in {"me", "pair"}:
+        raise HTTPException(status_code=422, detail="Неизвестный режим")
+    if not person_name or len(person_name) > 160:
+        raise HTTPException(status_code=422, detail="Некорректное имя")
+    if scope == "pair":
+        pair = await db.get_pair(user["id"])
+        if pair is None:
+            raise HTTPException(status_code=409, detail="Пара не подключена")
+        items = await db.get_pair_person_watched_films(
+            user["id"], pair["partner_id"], pair["since"], role, person_name,
+        )
+    else:
+        items = await db.get_person_watched_films(user["id"], role, person_name)
+    return {"name": person_name, "role": role, "scope": scope, "items": items, "total": len(items)}
+
+
+async def _enrich_profile_people_photos(user_id: int) -> None:
+    """Refresh genuinely missing cast/director portraits off the profile path.
+
+    The profile always opens from local data. This bounded task uses only
+    Wikidata/Commons and retries an empty portrait no more than once in 14
+    days, so a temporary upstream miss does not become permanent.
+    """
     try:
-        films = await db.watched_films_needing_director_photo_enrichment(user_id)
-        if not films:
+        actor_films, director_films = await asyncio.gather(
+            db.watched_films_needing_actor_photo_enrichment(user_id),
+            db.watched_films_needing_director_photo_enrichment(user_id),
+        )
+        if not actor_films and not director_films:
             return
-        director_map = await wikidata.get_directors_by_imdb([film["imdb_id"] for film in films])
-        for film in films:
+        actor_map, director_map = await asyncio.gather(
+            wikidata.get_cast_by_imdb([film["imdb_id"] for film in actor_films]),
+            wikidata.get_directors_by_imdb([film["imdb_id"] for film in director_films]),
+        )
+        for film in actor_films:
+            cast = actor_map.get(film["imdb_id"], [])
+            if cast:
+                await db.set_film_cast_from_wikidata(
+                    film["id"], ", ".join(person["name"] for person in cast),
+                    json.dumps(cast, ensure_ascii=False),
+                )
+            else:
+                await db.mark_film_actor_photos_checked(film["id"])
+        for film in director_films:
             directors = director_map.get(film["imdb_id"], [])
             if directors:
                 await db.set_film_directors_from_wikidata(
@@ -495,7 +538,7 @@ async def _enrich_profile_director_photos(user_id: int) -> None:
                 await db.mark_film_director_photos_checked(film["id"])
         stats_cache.clear()
     except Exception:  # noqa: BLE001
-        logger.warning("Profile director enrichment failed for user %s", user_id, exc_info=True)
+        logger.warning("Profile people enrichment failed for user %s", user_id, exc_info=True)
     finally:
         _director_profile_enrichment_users.discard(user_id)
 
@@ -504,7 +547,7 @@ def _schedule_profile_director_enrichment(user_id: int) -> None:
     if user_id in _director_profile_enrichment_users:
         return
     _director_profile_enrichment_users.add(user_id)
-    task = asyncio.create_task(_enrich_profile_director_photos(user_id), name=f"profile-directors-{user_id}")
+    task = asyncio.create_task(_enrich_profile_people_photos(user_id), name=f"profile-people-{user_id}")
     _director_profile_enrichment_tasks.add(task)
     task.add_done_callback(_director_profile_enrichment_tasks.discard)
 

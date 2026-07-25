@@ -36,7 +36,9 @@ async function openStats(page, paired = false) {
       ? { id: 1, label: "Denys", username: "denys", role: null }
       : path === "/api/partner"
         ? (paired ? { status: "paired", partner: { name: "Kristina", username: "kristina" } } : { status: "none" })
-        : path === "/api/partner/stats" ? pairStats : personalStats;
+        : path === "/api/partner/stats" ? pairStats
+          : path === "/api/stats/person" ? { items: [{ id: 17, title: "Donnie Darko", year: "2001", poster_url: null, my_rating: 9 }] }
+            : personalStats;
     await route.fulfill({ contentType: "application/json", body: JSON.stringify(json) });
   });
   await page.goto("/");
@@ -52,6 +54,11 @@ test("personal profile fits a 390px phone without a hidden final card", async ({
   await expect(page.getByText("Посмотреть всех")).toHaveCount(0);
   await expect(page.locator(".people-stats-actors .person-stat-card")).toHaveCount(4);
   await expect(page.locator(".people-stats-directors .person-stat-card")).toHaveCount(4);
+  await page.locator(".people-stats-actors .person-stat-card").first().click();
+  await expect(page.getByRole("heading", { name: "Фильмы с Jake Gyllenhaal" })).toBeVisible();
+  await expect(page.locator(".poster .meta .t", { hasText: "Donnie Darko" })).toBeVisible();
+  await page.locator(".sub-head .back").click();
+  await expect(page.getByRole("heading", { name: "Мой кинопрофиль" })).toBeVisible();
   await page.getByRole("button", { name: "Показать ещё" }).click();
   await expect(page.getByText("Action")).toBeVisible();
   await expect(page.getByRole("button", { name: "Свернуть" })).toBeVisible();

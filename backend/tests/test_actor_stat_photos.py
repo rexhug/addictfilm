@@ -29,9 +29,33 @@ class ActorStatPhotoTests(unittest.IsolatedAsyncioTestCase):
                 runtime="100 min", actors_photos=actors_photos)
             await db.set_status(1, film_id, "watched")
 
+        solo_film = await db.get_or_create_film(
+            "tt0000003", "Solo film", actors="Solo Actor", runtime="100 min",
+        )
+        await db.set_status(1, solo_film, "watched")
+
         stats = await db.get_user_stats(1)
 
-        self.assertEqual(stats["top_actors"], [("Alex Actor", 2, photo_url)])
+        self.assertEqual(stats["top_actors"], [
+            ("Alex Actor", 2, photo_url),
+            ("Solo Actor", 1, None),
+        ])
+
+    async def test_person_drilldown_uses_an_exact_name_and_role(self):
+        wanted = await db.get_or_create_film(
+            "tt0000010", "Exact", actors="Alex Actor", directors="Alex Director", runtime="100 min",
+        )
+        similarly_named = await db.get_or_create_film(
+            "tt0000011", "Different", actors="Alexandra Actor", directors="Another Director", runtime="100 min",
+        )
+        await db.set_status(1, wanted, "watched")
+        await db.set_status(1, similarly_named, "watched")
+
+        actor_films = await db.get_person_watched_films(1, "actor", "Alex Actor")
+        director_films = await db.get_person_watched_films(1, "director", "Alex Director")
+
+        self.assertEqual([film["id"] for film in actor_films], [wanted])
+        self.assertEqual([film["id"] for film in director_films], [wanted])
 
     async def test_wikidata_cast_replaces_weak_source_once_and_is_not_requeued(self):
         film_id = await db.get_or_create_film(
