@@ -15,7 +15,6 @@ import os
 import re
 import secrets
 import time
-from collections import defaultdict, deque
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 
@@ -31,6 +30,7 @@ import database as db
 import db_runtime
 import kinopoisk
 import omdb
+from observability import RequestMetrics, observe_request
 import posters
 import ratelimit
 import search
@@ -64,67 +64,17 @@ _HTML_CSP = (
 )
 
 
-def _append_vary(response: Response, field: str) -> None:
-    """Add a Vary field without dropping values set by another middleware."""
-    existing = [value.strip() for value in response.headers.get("Vary", "").split(",") if value.strip()]
-    if field.lower() not in {value.lower() for value in existing}:
-        response.headers["Vary"] = ", ".join([*existing, field])
-
-
 _REQUEST_METRICS_MAX_SAMPLES = max(50, int(os.getenv("REQUEST_METRICS_MAX_SAMPLES", "500")))
-_request_metrics: dict[str, deque[tuple[float, int]]] = defaultdict(
-    lambda: deque(maxlen=_REQUEST_METRICS_MAX_SAMPLES)
-)
-
-
-def _record_request_metric(request: Request, status: int, elapsed_ms: float) -> None:
-    """Small bounded in-process latency window, available only to the admin token."""
-    route = request.scope.get("route")
-    path = getattr(route, "path", None) or request.url.path
-    key = f"{request.method} {path}"
-    _request_metrics[key].append((elapsed_ms, status))
+_request_metrics = RequestMetrics(_REQUEST_METRICS_MAX_SAMPLES)
 
 
 def _performance_snapshot() -> dict:
-    routes = []
-    for route, samples in _request_metrics.items():
-        if not samples:
-            continue
-        timings = sorted(sample[0] for sample in samples)
-        p95_index = min(len(timings) - 1, max(0, int(len(timings) * 0.95) - 1))
-        errors = sum(1 for _elapsed, status in samples if status >= 500)
-        routes.append({
-            "route": route, "samples": len(samples), "avg_ms": round(sum(timings) / len(timings), 1),
-            "p95_ms": round(timings[p95_index], 1), "errors_5xx": errors,
-        })
-    return {"routes": sorted(routes, key=lambda item: item["p95_ms"], reverse=True)}
+    return _request_metrics.snapshot()
 
 @app.middleware("http")
 async def log_slow_requests(request: Request, call_next):
-    """Даёт в Fly/Sentry реальное время медленных запросов без новых сервисов."""
-    started = time.perf_counter()
-    response = None
-    status = 500
-    try:
-        response = await call_next(request)
-        status = response.status_code
-    finally:
-        elapsed_ms = (time.perf_counter() - started) * 1000
-        _record_request_metric(request, status, elapsed_ms)
-    assert response is not None
-    if elapsed_ms >= 750:
-        logger.warning("Slow request: %s %s -> %s in %.0fms",
-                       request.method, request.url.path, response.status_code, elapsed_ms)
-    response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.0f}"
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("Permissions-Policy", "camera=(), geolocation=(), microphone=(), payment=()")
-    # Custom request headers are not automatically part of an HTTP cache key.
-    # Explicitly keep personal API data out of browser and intermediary caches.
-    if request.url.path.startswith("/api/") and not request.url.path.startswith("/api/avatar/"):
-        response.headers.setdefault("Cache-Control", "private, no-store")
-        _append_vary(response, "X-Init-Data")
-    return response
+    """Give Fly/Sentry real latency and keep private API responses uncacheable."""
+    return await observe_request(_request_metrics, request, call_next, logger)
 
 # Фоновий щоденний бекап SQLite (Postgres робить бекапи сам — backup_db там no-op).
 _backup_task: asyncio.Task | None = None

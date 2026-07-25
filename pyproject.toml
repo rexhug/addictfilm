@@ -1,0 +1,9 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 110
+extend-exclude = [".venv", "frontend/e2e"]
+
+[tool.ruff.lint]
+# Runtime correctness rules only. Formatting can be introduced gradually without
+# creating a noisy, unrelated rewrite of production code.
+select = ["E9", "F"]

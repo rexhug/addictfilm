@@ -1,0 +1,13 @@
+{
+  "name": "addict-film-quality-checks",
+  "private": true,
+  "scripts": {
+    "lint": "eslint frontend --max-warnings=0",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.0",
+    "eslint": "10.8.0",
+    "globals": "16.3.0"
+  }
+}

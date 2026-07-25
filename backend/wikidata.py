@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import re
 from urllib.parse import quote, unquote, urlparse

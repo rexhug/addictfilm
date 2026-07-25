@@ -85,6 +85,14 @@ Read-only `SELECT` больше не открывает явную транза�
 Это важно для атомарного accept invite и write-операций при нескольких Fly
 инстансах.
 
+### Миграции
+
+`schema_migrations` хранит журнал успешно применённых изменений схемы. Старые
+колонки добавляются отдельной идемпотентной миграцией; ожидаемое «колонка уже
+есть» безопасно пропускается, но ошибки сети, прав, синтаксиса или диска больше
+не скрываются. Новое изменение схемы добавляется как отдельный шаг миграции и
+отмечается в журнале только после успешного выполнения.
+
 ## Производительность и наблюдаемость
 
 - FastAPI GZip сжимает JS/CSS/API-ответы больше 512 байт;
@@ -102,14 +110,26 @@ Read-only `SELECT` больше не открывает явную транза�
 
 ## Проверки и деплой
 
-GitHub Actions на каждом PR/main запускает compileall, `node --check`, unit tests,
-контрактные PostgreSQL tests в PostgreSQL 16 service и `pip-audit`. Только после
-успеха main автоматически деплоится в Fly.
+GitHub Actions на каждом PR/main запускает Ruff, ESLint, compileall,
+`node --check`, unit tests, контрактные PostgreSQL tests в PostgreSQL 16 service,
+`pip-audit` и Playwright-проверки мобильной статистики (390px: личный и парный
+режимы, отсутствие горизонтального скролла и перекрытия нижней навигацией).
+Только после успеха main автоматически деплоится в Fly.
 
 Локально тесты запускаются из `backend/`:
 
 ```bash
 ../.venv/bin/python -m unittest discover -s tests -v
+```
+
+Из корня репозитория:
+
+```bash
+ruff check backend scripts
+npm ci
+npm run lint
+npx playwright install chromium
+npm run test:e2e
 ```
 
 Production health: `GET /healthz` проверяет доступность активной базы данных,

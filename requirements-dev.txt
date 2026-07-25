@@ -1,0 +1,3 @@
+# Tooling is intentionally separate from runtime dependencies: Fly images stay
+# small, while local development and CI still use the same checks.
+ruff==0.12.5

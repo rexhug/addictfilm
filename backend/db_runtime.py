@@ -106,7 +106,7 @@ class PostgresConnection:
     def __init__(self, connection: Any):
         self._connection = connection
         self._transaction: Any | None = None
-        self._done = False  # commit()/rollback() уже вызывали (или это сделает connect() сам)
+        self._done = False  # rollback() after an error; normal commits may be repeated.
         self.row_factory: Any = None
 
     async def _ensure_transaction(self) -> None:
@@ -140,15 +140,26 @@ class PostgresConnection:
         return PostgresCursor(rowcount=_rowcount(status))
 
     async def commit(self) -> None:
-        if not self._done:
-            if self._transaction is not None:
-                await self._transaction.commit()
-            self._done = True
+        """Commit the current unit of work and allow another one in this scope.
+
+        SQLite permits multiple commits on one connection.  Keeping the same
+        behaviour here matters for schema bootstrapping, where a base table is
+        committed before an isolated compatibility migration opens another
+        connection.  A later write must start and commit a fresh transaction,
+        not be silently left open because an earlier commit marked the adapter
+        as permanently done.
+        """
+        if self._done:
+            return
+        if self._transaction is not None:
+            await self._transaction.commit()
+            self._transaction = None
 
     async def rollback(self) -> None:
         if not self._done:
             if self._transaction is not None:
                 await self._transaction.rollback()
+                self._transaction = None
             self._done = True
 
 

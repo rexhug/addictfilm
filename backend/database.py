@@ -10,6 +10,7 @@ Community-рейтинг = средняя оценка всех юзеров п�
 """
 import glob
 import json
+import logging
 import os
 import re
 import secrets
@@ -18,12 +19,19 @@ import db_runtime
 from datetime import datetime, timezone, timedelta
 from config import DATABASE_URL
 
+logger = logging.getLogger(__name__)
+
 # SQLite локально (DB_PATH=movies.db рядом с проектом); в облаке — Postgres (Neon)
 # через DATABASE_URL, см. db_runtime.py. DB_PATH используется только для SQLite-режима.
 DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "movies.db"))
 _PG = db_runtime.uses_postgres(DATABASE_URL)
 _GENRES_CACHE_TTL_SECONDS = max(30, int(os.getenv("GENRES_CACHE_TTL_SEC", "300")))
 _genres_cache: tuple[float, list[dict]] | None = None
+
+# A migration record is deliberately stored in the database, not in a deploy
+# variable.  It lets an operator answer "which schema is this instance on?"
+# and makes every future data/schema change an explicit, auditable step.
+_SCHEMA_MIGRATION_LEGACY_COLUMNS = "2026-07-25-legacy-columns"
 
 
 def _now() -> str:
@@ -47,25 +55,66 @@ async def _add_column_if_missing(table: str, col_def: str) -> None:
         async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
             await db.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
             await db.commit()
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - drivers expose different exception classes.
+        # Fresh databases call this only after the base tables are created.  On
+        # existing databases the only harmless failure is "already exists".
+        # Do not hide syntax, permission, disk, or connectivity errors: those
+        # used to leave an instance on a partially upgraded schema unnoticed.
+        message = str(exc).lower()
+        duplicate_markers = ("duplicate column", "already exists", "duplicate key")
+        if any(marker in message for marker in duplicate_markers):
+            return
+        logger.exception("Schema migration failed while adding %s.%s", table, col_def)
+        raise
+
+
+async def _schema_migration_applied(version: str) -> bool:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        row = await (await db.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
+        )).fetchone()
+        return row is not None
+
+
+async def _record_schema_migration(version: str) -> None:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?) "
+            "ON CONFLICT(version) DO NOTHING",
+            (version, _now()),
+        )
+        await db.commit()
+
+
+async def _apply_legacy_column_migration() -> None:
+    """Upgrade databases created before the current film/user columns existed."""
+    for table, col_def in (
+        ("films", "backdrop_url TEXT"),
+        ("films", "age_rating TEXT"),
+        ("films", "actors_photos TEXT"),
+        ("films", "kp_id TEXT"),
+        ("films", "search_text TEXT"),
+        ("films", "poster_checked_at TEXT"),
+        ("films", "artwork_checked_at TEXT"),
+        ("films", "actor_photos_checked_at TEXT"),
+        ("users", "role TEXT"),
+        ("users", "photo_url TEXT"),
+    ):
+        await _add_column_if_missing(table, col_def)
+
+
+async def _run_schema_migrations() -> None:
+    """Run ordered, idempotent schema upgrades and journal them on success."""
+    migrations = ((_SCHEMA_MIGRATION_LEGACY_COLUMNS, _apply_legacy_column_migration),)
+    for version, migration in migrations:
+        if await _schema_migration_applied(version):
+            continue
+        await migration()
+        await _record_schema_migration(version)
 
 
 # ── Инициализация ────────────────────────────────────────────────────────────
 async def init_db() -> None:
-    # Миграция для БД, созданных до backdrop_url/age_rating/actors_photos/role — до
-    # основного блока и в изолированных транзакциях (см. _add_column_if_missing).
-    await _add_column_if_missing("films", "backdrop_url TEXT")
-    await _add_column_if_missing("films", "age_rating TEXT")
-    await _add_column_if_missing("films", "actors_photos TEXT")
-    await _add_column_if_missing("films", "kp_id TEXT")
-    await _add_column_if_missing("films", "search_text TEXT")
-    await _add_column_if_missing("films", "poster_checked_at TEXT")
-    await _add_column_if_missing("films", "artwork_checked_at TEXT")
-    await _add_column_if_missing("films", "actor_photos_checked_at TEXT")
-    await _add_column_if_missing("users", "role TEXT")
-    await _add_column_if_missing("users", "photo_url TEXT")
-
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         # WAL: чтение не блокирует запись — публичный трафик без «database is locked».
         await db.execute("PRAGMA journal_mode=WAL")
@@ -188,6 +237,20 @@ async def init_db() -> None:
                 FOREIGN KEY (film_id) REFERENCES films(id)
             )
         """)
+
+        # Journal each completed schema step.  Base tables must be present
+        # before legacy ALTER TABLE migrations are allowed to run.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version    TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+        """)
+        await db.commit()
+
+        # Each legacy ALTER runs in an isolated transaction: PostgreSQL marks
+        # a transaction failed after an expected duplicate-column error.
+        await _run_schema_migrations()
 
         # Индексы под горячие запросы: список юзера и community-агрегат по фильму.
         await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_user ON user_films(user_id, status)")
@@ -1414,7 +1477,6 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
     Формат как личная статистика + поля совместимости. Просмотрено = оба
     посмотрели; оценки/гистограмма = оценки обоих; жанры/актёры — из оба-просмотренных."""
     year_now = datetime.now(timezone.utc).year
-    like = f"{year_now}-%"
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(

@@ -38,12 +38,18 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: python -m pip check
+      - run: ruff check backend scripts
       - run: python -m compileall -q backend scripts
       - run: node --check frontend/app.js
+      - run: npm ci
+      - run: npm run lint
+      - run: npm audit --audit-level=high
       - run: python -m unittest discover -s tests -v
         working-directory: backend
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
       - run: pip install pip-audit==2.10.1
       - run: pip-audit -r requirements.txt
 
