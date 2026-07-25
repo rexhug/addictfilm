@@ -1913,13 +1913,15 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         agreement = round(100 - (sum(diffs) / len(rated)) / 9 * 100)
         matches = sum(1 for item in rated if item["a"] == item["b"])
         ranked_favorites = sorted(rated, key=lambda item: (item["a"] + item["b"], item["a"], item["b"]), reverse=True)
+        # These rails are swipeable, not paginated.  A bounded 10/5 payload
+        # keeps the profile immediate even for a couple with a large history.
         common_favorites = [{"film_id": item["film_id"], "title": item["title"], "poster_url": item["poster_url"],
-                             "avg": round((item["a"] + item["b"]) / 2, 1)} for item in ranked_favorites[:3]]
+                             "avg": round((item["a"] + item["b"]) / 2, 1)} for item in ranked_favorites[:10]]
         ranked_disagreements = [item for item in sorted(rated, key=lambda item: abs(item["a"] - item["b"]), reverse=True)
                                 if item["a"] != item["b"]]
         disagreements = [{"film_id": item["film_id"], "title": item["title"], "poster_url": item["poster_url"],
                           "a": item["a"], "b": item["b"], "diff": abs(item["a"] - item["b"])}
-                         for item in ranked_disagreements[:3]]
+                         for item in ranked_disagreements[:5]]
         top_dispute = disagreements[0] if disagreements else None
         controversial = top_dispute
         top_favorite = common_favorites[0] if common_favorites else None

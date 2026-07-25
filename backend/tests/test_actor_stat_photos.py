@@ -200,3 +200,18 @@ class ActorStatPhotoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([person[0] for person in stats["top_directors"]], [
             "Zeta Director", "Alpha Director",
         ])
+
+    async def test_pair_highlights_are_generous_but_bounded(self):
+        """The swipe rails stay useful without letting a large history bloat the API."""
+        await db.upsert_user({"id": 2, "first_name": "Two", "username": None})
+        for index in range(11):
+            film_id = await db.get_or_create_film(
+                f"tt10000{index:02d}", f"Film {index}", runtime="100 min",
+            )
+            await db.set_rating(1, film_id, 10)
+            await db.set_rating(2, film_id, 9)
+
+        stats = await db.pair_period_stats(1, 2, "2000-01-01T00:00:00+00:00")
+
+        self.assertEqual(len(stats["common_favorites"]), 10)
+        self.assertEqual(len(stats["disagreements"]), 5)
