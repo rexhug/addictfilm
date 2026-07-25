@@ -1158,7 +1158,7 @@ async def get_user_stats(user_id: int) -> dict:
         top_actors = [(n, c, actor_photos.get(n))
                       for n, c in sorted(actor_counts.items(), key=lambda x: (-x[1], x[0].casefold())) if c >= 2]
         top_directors = [(n, c, director_photos.get(n))
-                         for n, c in sorted(director_counts.items(), key=lambda x: (-x[1], x[0].casefold())) if c >= 2]
+                         for n, c in sorted(director_counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
 
         row = await (await db.execute(
             "SELECT f.title FROM user_films uf JOIN films f ON f.id = uf.film_id "
@@ -1622,7 +1622,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
     top_actors = [(n, c, actor_photos.get(n))
                   for n, c in sorted(actor_counts.items(), key=lambda x: (-x[1], x[0].casefold())) if c >= 2]
     top_directors = [(n, c, director_photos.get(n))
-                     for n, c in sorted(director_counts.items(), key=lambda x: (-x[1], x[0].casefold())) if c >= 2]
+                     for n, c in sorted(director_counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
 
     # Совместимость по фильмам пар-периода, которые оценили ОБА.
     rated = [{"film_id": r["film_id"], "a": r["ra"], "b": r["rb"], "title": r["title"], "poster_url": r["poster_url"]}

@@ -21,7 +21,7 @@ class StaticAssetCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("#tabbar .tab::before", css)
         self.assertIn('btn.addEventListener("pointerup"', app)
         self.assertIn("style.css?v=39", index)
-        self.assertIn("app.js?v=45", index)
+        self.assertIn("app.js?v=46", index)
         self.assertIn("tg.disableVerticalSwipes?.()", app)
         self.assertIn("renderDetailPreview", app)
         self.assertIn("AbortController", app)

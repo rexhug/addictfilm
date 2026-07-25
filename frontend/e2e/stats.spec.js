@@ -52,6 +52,9 @@ test("personal profile fits a 390px phone without a hidden final card", async ({
   await expect(page.getByText("Посмотреть всех")).toHaveCount(0);
   await expect(page.locator(".people-stats-actors .person-stat-card")).toHaveCount(4);
   await expect(page.locator(".people-stats-directors .person-stat-card")).toHaveCount(4);
+  await page.getByRole("button", { name: "Показать ещё" }).click();
+  await expect(page.getByText("Action")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Свернуть" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));

@@ -64,6 +64,16 @@ class ActorStatPhotoTests(unittest.IsolatedAsyncioTestCase):
             )
             await db.set_status(1, film_id, "watched")
 
+        single_film = await db.get_or_create_film(
+            "tt0000005", "Film 5", directors="Solo Director", runtime="100 min")
+        await db.set_film_directors_from_wikidata(
+            single_film, "Solo Director", json.dumps([{"name": "Solo Director", "photo_url": None}], ensure_ascii=False),
+        )
+        await db.set_status(1, single_film, "watched")
+
         stats = await db.get_user_stats(1)
 
-        self.assertEqual(stats["top_directors"], [("Alex Director", 2, photo_url)])
+        self.assertEqual(stats["top_directors"], [
+            ("Alex Director", 2, photo_url),
+            ("Solo Director", 1, None),
+        ])

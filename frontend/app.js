@@ -973,7 +973,6 @@ async function showStats() {
   // Only genres use a compact/expanded state. People cards always stay in one
   // horizontal rail, so the whole list is reachable with a normal swipe.
   const expanded = { genres: false };
-  const personal = statsProfileHTML(s) + ((!s.watched && !s.want) ? emptyState("📊", t("stats_empty_t"), t("stats_empty_s")) : personalStatsHTML(s, "me", expanded));
   const paired = partner.status === "paired" && pstats;
   let mode = "me";
 
@@ -989,6 +988,11 @@ async function showStats() {
       content = pairHeroHTML(pstats) +
         (hasData ? personalStatsHTML(pstats, "pair", expanded) + pairHighlightsHTML(pstats) : `<div class="chart-card">${emptyState("💙", t("stats_together"), t("pair_empty"))}</div>`);
     } else {
+      // Build this at render time: expanded genres are UI state, so reusing a
+      // prebuilt string would make the “Show more” button look inert.
+      const personal = statsProfileHTML(s) + ((!s.watched && !s.want)
+        ? emptyState("📊", t("stats_empty_t"), t("stats_empty_s"))
+        : personalStatsHTML(s, "me", expanded));
       content = !paired && partner.status !== "none" ? partnerCardHTML(partner, null) + personal : personal;
     }
     box.innerHTML = tabs + content;
