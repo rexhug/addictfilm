@@ -25,9 +25,10 @@ body{
 #stats{padding-bottom:124px;scroll-padding-bottom:124px;}
 
 /* ── header ─────────────────────────────────── */
-.app-head{display:flex;align-items:flex-start;justify-content:space-between;padding:14px 20px 0;}
-.brand h1{font-size:29px;font-weight:700;letter-spacing:-0.035em;line-height:1.05;}
-.brand p{margin-top:5px;font-size:15px;color:var(--ink-2);font-weight:450;}
+.app-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 20px 0;}
+.brand{min-width:0;flex:1;}
+.brand h1{font-size:26px;font-weight:700;letter-spacing:-0.03em;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.brand p{margin-top:4px;font-size:14.5px;color:var(--ink-2);font-weight:450;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .bell{flex:none;width:42px;height:42px;border-radius:50%;background:var(--s2);border:1px solid var(--hair);
   display:grid;place-items:center;position:relative;color:var(--ink);box-shadow:var(--shadow);}
 .bell svg{width:20px;height:20px;}
@@ -56,7 +57,7 @@ body{
   font-size:13.5px;font-weight:550;background:var(--s2);color:#D7D9DE;border:1px solid var(--hair);cursor:pointer;
   transition:transform .15s,background .16s,color .16s;}
 .chip:active{transform:scale(.95);}
-.chip.active{background:var(--accent);color:#fff;border-color:transparent;box-shadow:0 6px 16px -10px rgba(123,97,255,.7);}
+.chip.active{background:linear-gradient(180deg,#7B61FF,#6A50EC);color:#fff;border-color:transparent;box-shadow:0 4px 12px -9px rgba(123,97,255,.5);}
 .chip .e{font-size:13.5px;line-height:1;}
 
 /* ── section + rail ─────────────────────────── */
@@ -90,10 +91,11 @@ section{margin-top:30px;}
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .meta-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;}
 .meta .y{font-size:12.5px;color:var(--ink-2);font-variant-numeric:tabular-nums;}
-/* компактная оценка в мета-строке (вынесена из-под постера) */
-.rate-pill{flex:none;display:inline-flex;align-items:center;gap:3px;padding:3px 8px;border-radius:8px;
-  font-size:12px;font-weight:600;color:var(--ink);background:var(--s2);border:1px solid var(--hair);
+/* компактная оценка в мета-строке (вынесена из-под постера): деликатная, не спорит с годом */
+.rate-pill{flex:none;display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:7px;
+  font-size:12px;font-weight:600;color:var(--ink);background:rgba(255,255,255,.05);
   font-variant-numeric:tabular-nums;letter-spacing:-.01em;}
+.rate-pill .s{color:#F4B740;font-size:11px;line-height:1;}
 
 /* ── grid (списки, поиск, жанр) ─────────────── */
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;padding:0 20px;}
@@ -526,11 +528,17 @@ section{margin-top:30px;}
   font:600 13px var(--font);cursor:pointer;transition:transform .12s,opacity .12s;}
 .reco-btn:active{transform:scale(.95);opacity:.9;}
 /* веер из настоящих постеров подборки «Популярное» (декор справа) */
-.reco-arts{flex:none;position:relative;width:96px;height:78px;align-self:stretch;margin:-4px -4px -4px 0;}
-.reco-art{position:absolute;top:8px;width:50px;aspect-ratio:2/3;border-radius:9px;overflow:hidden;
-  border:1px solid var(--hair-2);box-shadow:0 10px 22px -12px rgba(0,0,0,.9);background:var(--s3);}
+.reco-arts{flex:none;position:relative;width:112px;height:92px;align-self:center;margin:-2px -2px -2px 0;}
+.reco-art{position:absolute;top:6px;width:56px;aspect-ratio:2/3;border-radius:10px;overflow:hidden;
+  border:1px solid var(--hair-2);box-shadow:0 12px 24px -12px rgba(0,0,0,.9);background:var(--s3);}
 .reco-art img{width:100%;height:100%;object-fit:cover;display:block;}
-.reco-art:nth-child(1){right:46px;transform:rotate(-9deg);}
-.reco-art:nth-child(2){right:24px;top:2px;z-index:2;}
-.reco-art:nth-child(3){right:2px;transform:rotate(9deg);}
+.reco-art:nth-child(1){right:52px;transform:rotate(-9deg);}
+.reco-art:nth-child(2){right:26px;top:0;z-index:2;}
+.reco-art:nth-child(3){right:0;transform:rotate(9deg);}
 @media(max-width:360px){.reco-arts{display:none;}}
+
+/* кнопка «+» в заголовке «Подборки» — в стиле системы (не квадрат .back) */
+.icon-add{flex:none;width:32px;height:32px;border:1px solid var(--hair);border-radius:10px;background:var(--s2);
+  color:var(--ink);display:grid;place-items:center;cursor:pointer;transition:transform .15s;}
+.icon-add:active{transform:scale(.9);}
+.icon-add svg{width:18px;height:18px;}

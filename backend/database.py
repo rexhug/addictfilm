@@ -41,8 +41,41 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Каталог наполняется из kinopoisk (жанры по-русски) и OMDb (по-английски) — из-за
+# этого в film_genres встречаются дубли одного жанра на двух языках («драма» и
+# «Drama»). Приводим к единому русскому канону: при записи (см. _split_genres) и
+# при чтении (list_genres мёржит, browse_by_genre матчит все алиасы) — без миграции.
+_GENRE_CANON: dict[str, str] = {
+    "drama": "драма", "comedy": "комедия", "thriller": "триллер", "action": "боевик",
+    "crime": "криминал", "mystery": "детектив", "detective": "детектив", "horror": "ужасы",
+    "sci-fi": "фантастика", "science fiction": "фантастика", "fantasy": "фэнтези",
+    "adventure": "приключения", "biography": "биография", "history": "история",
+    "romance": "мелодрама", "melodrama": "мелодрама", "sport": "спорт", "war": "военный",
+    "documentary": "документальный", "family": "семейный", "animation": "мультфильм",
+    "cartoon": "мультфильм", "anime": "аниме", "western": "вестерн", "musical": "мюзикл",
+    "music": "музыка", "film-noir": "фильм-нуар", "short": "короткометражка",
+}
+
+
+def _canon_genre(genre: str | None) -> str:
+    """Единый (русский) канон жанра; неизвестные значения — как есть (обрезанные)."""
+    s = (genre or "").strip()
+    return _GENRE_CANON.get(s.casefold(), s)
+
+
+def _genre_query_aliases(genre: str) -> list[str]:
+    """Все варианты написания жанра (рус+англ, lower) для матча в film_genres."""
+    canon = _canon_genre(genre)
+    aliases = {canon.casefold(), (genre or "").strip().casefold()}
+    aliases.update(en for en, ru in _GENRE_CANON.items() if ru == canon)
+    return [a for a in aliases if a]
+
+
 def _split_genres(value: str | None) -> list[str]:
-    """Canonical genre values for the derived, indexable film_genres table."""
+    """Genre values for the derived, indexable film_genres table. Храним КАК ЕСТЬ
+    (kinopoisk даёт рус., OMDb — англ.); к единому канону приводим только при
+    чтении (list_genres мёржит, browse_by_genre матчит все алиасы) — без миграции
+    и без риска задвоить счётчики при повторном бэкфилле проекции."""
     return list(dict.fromkeys(
         genre.strip() for genre in (value or "").split(",")
         if genre.strip() and genre.strip() != "N/A"
@@ -1589,19 +1622,22 @@ async def browse_top(user_id: int, limit: int = 30, offset: int = 0,
 
 
 async def browse_by_genre(user_id: int, genre: str, limit: int = 30, offset: int = 0) -> list[dict]:
-    """Каталог по жанру (подстрока в поле genres), по популярности."""
+    """Каталог по жанру, по популярности. Матчим все языковые алиасы жанра
+    (напр. «драма» и «Drama»), чтобы русский канон собирал оба источника."""
+    aliases = _genre_query_aliases(genre)
+    placeholders = ",".join("?" for _ in aliases)
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             _BROWSE_AGGREGATES + f"""
             SELECT {_BROWSE_AGGREGATE_COLS}
             FROM films f
-            JOIN film_genres fg ON fg.film_id = f.id AND fg.genre = ?
             LEFT JOIN film_activity a ON a.film_id = f.id
             LEFT JOIN user_films me ON me.film_id = f.id AND me.user_id = ?
+            WHERE f.id IN (SELECT film_id FROM film_genres WHERE lower(genre) IN ({placeholders}))
             ORDER BY COALESCE(a.popularity, 0) DESC, f.created_at DESC
             LIMIT ? OFFSET ?
-            """, (genre, user_id, limit, offset))
+            """, (user_id, *aliases, limit, offset))
         return [_browse_dict(r) for r in await cur.fetchall()]
 
 
@@ -1614,10 +1650,15 @@ async def list_genres() -> list[dict]:
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "SELECT genre AS name, COUNT(*) AS count FROM film_genres "
-            "GROUP BY genre ORDER BY count DESC, genre ASC"
+            "SELECT genre AS name, COUNT(*) AS count FROM film_genres GROUP BY genre"
         )
-        items = [dict(row) for row in await cur.fetchall()]
+        rows = await cur.fetchall()
+    # Мёржим языковые дубли одного жанра под русский канон и суммируем счётчики.
+    merged: dict[str, int] = {}
+    for row in rows:
+        merged[_canon_genre(row["name"])] = merged.get(_canon_genre(row["name"]), 0) + row["count"]
+    items = [{"name": name, "count": count} for name, count in
+             sorted(merged.items(), key=lambda kv: (-kv[1], kv[0]))]
     _genres_cache = (now + _GENRES_CACHE_TTL_SECONDS, items)
     return [dict(item) for item in items]
 

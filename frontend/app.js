@@ -35,6 +35,7 @@ function pl(n, f) { const a = Math.abs(n) % 100, b = a % 10; if (a > 10 && a < 2
 const DICT = {
   ru: {
     tagline: "Кино, которое ты любишь",
+    greeting: (n) => `Привет, ${n}`,
     search_ph: "Поиск фильмов, сериалов, актёров…",
     chip_popular: "Популярное", chip_top: "Топ сообщества", chip_genres: "Жанры", chip_collections: "Подборки",
     see_all: "Смотреть все",
@@ -106,6 +107,7 @@ const DICT = {
   },
   en: {
     tagline: "Movies you'll love",
+    greeting: (n) => `Hi, ${n}`,
     search_ph: "Search movies, TV shows, actors…",
     chip_popular: "Popular", chip_top: "Community Top", chip_genres: "Genres", chip_collections: "Collections",
     see_all: "See all",
@@ -204,6 +206,13 @@ async function api(path, opts = {}) {
 // ── Утилиты ───────────────────────────────────────────────────────────────────
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
 function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; }
+function cap(s) { s = String(s || ""); return s ? s[0].toUpperCase() + s.slice(1) : s; }
+// В Telegram-шапке уже есть «Addict Film» — на самом экране не дублируем название,
+// а здороваемся по имени (реальные данные), иначе мягкий фолбэк на бренд.
+function homeGreeting() {
+  const name = (me && me.label) || (tg?.initDataUnsafe?.user?.first_name) || "";
+  return name ? t("greeting", name) : "Addict Film";
+}
 // Постеры грузим через наш прокси /img — работает даже если CDN блокируется у клиента.
 // small=true — кинопоисковские постеры в 300x450 вместо 600x900 (вчетверо меньше
 // байт). Используется ВЕЗДЕ, где постер мелкий: тайлы, и карточка фильма тоже
@@ -407,8 +416,10 @@ function posterTile(m, { onClick, badge } = {}) {
   const card = document.createElement("div");
   card.className = "poster";
   // Рейтинг живёт в мета-строке под постером (год слева, оценка справа), а не поверх арта.
-  const b = badge !== undefined ? badge : (ratingOf(m) ? `★ ${ratingOf(m)}` : "");
+  let rv = badge !== undefined ? badge : (ratingOf(m) || "");
+  rv = String(rv).replace(/^★\s*/, "").trim();
   const year = m.year ? `<span class="y">${esc(m.year)}</span>` : "";
+  const rating = rv ? `<span class="rate-pill"><span class="s">★</span>${esc(rv)}</span>` : "";
   card.innerHTML = `
     <div class="art">
       <div class="noposter">${esc(m.title)}</div>
@@ -416,7 +427,7 @@ function posterTile(m, { onClick, badge } = {}) {
     </div>
     <div class="meta">
       <div class="t">${esc(m.title)}</div>
-      ${year || b ? `<div class="meta-row">${year}${b ? `<span class="rate-pill">${esc(b)}</span>` : ""}</div>` : ""}
+      ${year || rating ? `<div class="meta-row">${year}${rating}</div>` : ""}
     </div>`;
   if (onClick) card.onclick = () => {
     // Захватываем стартовую точку для hero-transition ДО того, как экран будет уничтожен.
@@ -436,7 +447,7 @@ async function showHome() {
   const seeAll = (id) => `<button class="see-all" id="${id}">${esc(t("see_all"))}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>`;
   screen.innerHTML = `
     <header class="app-head rise d1">
-      <div class="brand"><h1>Addict&nbsp;Film</h1><p>${esc(t("tagline"))}</p></div>
+      <div class="brand"><h1>${esc(homeGreeting())}</h1><p>${esc(t("tagline"))}</p></div>
       <div class="head-actions">
         <button class="lang" id="lang-btn" aria-label="Language">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.4 4 5.6 4 9s-1.4 6.6-4 9c-2.6-2.4-4-5.6-4-9s1.4-6.6 4-9Z"/></svg>
@@ -466,7 +477,7 @@ async function showHome() {
     <section class="rise d4" id="sec-top"><div class="head"><h2>${esc(t("chip_top"))}</h2>${seeAll("see-top")}</div><div class="rail" id="rail-top">${skeletonRail(5)}</div></section>
     <section class="rise d5" id="sec-gen"><div class="head"><h2>${esc(t("chip_genres"))}</h2>${seeAll("see-gen")}</div><div class="gchips" id="gen-chips"></div></section>
     ${recoCardHTML()}
-    <section class="rise d5" id="sec-coll"><div class="head"><h2>${esc(t("chip_collections"))}</h2>${canEditCollections() ? `<button class="back" id="coll-add-home" aria-label="+">+</button>` : ""}</div><div class="rail" id="rail-coll">${skeletonRail(5)}</div></section>`;
+    <section class="rise d5" id="sec-coll"><div class="head"><h2>${esc(t("chip_collections"))}</h2>${canEditCollections() ? `<button class="icon-add" id="coll-add-home" aria-label="+"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>` : ""}</div><div class="rail" id="rail-coll">${skeletonRail(5)}</div></section>`;
 
   document.getElementById("lang-btn").onclick = () => setLang(lang === "ru" ? "en" : "ru");
   document.getElementById("bell-btn").onclick = () => showNotifications();
@@ -555,7 +566,7 @@ async function loadGenrePills() {
 function genrePill(g) {
   const pill = document.createElement("button");
   pill.className = "gchip";
-  pill.innerHTML = `<span class="e">${genreEmoji(g.name)}</span>${esc(g.name)}`;
+  pill.innerHTML = `<span class="e">${genreEmoji(g.name)}</span>${esc(cap(g.name))}`;
   pill.onclick = () => showGenre(g.name);
   return pill;
 }
@@ -563,14 +574,14 @@ function genreCard(g) {
   const card = document.createElement("div");
   card.className = "genre";
   const grad = GENRE_GRAD[hash(g.name) % GENRE_GRAD.length];
-  card.innerHTML = `<div class="gart" style="background:${grad}"><span class="lbl"><b>${esc(g.name)}</b><span>${g.count} ${esc(t("count_films", g.count))}</span></span></div>`;
+  card.innerHTML = `<div class="gart" style="background:${grad}"><span class="lbl"><b>${esc(cap(g.name))}</b><span>${g.count} ${esc(t("count_films", g.count))}</span></span></div>`;
   card.onclick = () => showGenre(g.name);
   return card;
 }
 async function showGenre(name) {
   unwireDetailScroll();
   window.scrollTo(0, 0);
-  screen.innerHTML = `<div class="sub-head">${backBtn()}<h1>${esc(name)}</h1></div><div id="gg">${skeletonGrid(6)}</div>`;
+  screen.innerHTML = `<div class="sub-head">${backBtn()}<h1>${esc(cap(name))}</h1></div><div id="gg">${skeletonGrid(6)}</div>`;
   wireBack(() => { setActiveTab("home"); showHome(); });
   try {
     const { items } = await api(`/api/browse?sort=genre&genre=${encodeURIComponent(name)}`);
@@ -641,17 +652,19 @@ function showNotifications() {
 function canEditCollections() { return !!(me && (me.role === "admin" || me.role === "editor")); }
 
 function collectionCard(c) {
-  // Переиспользует ту же карточку/CSS, что и обычный постер — обложка вместо рейтинга
-  // показывает количество фильмов.
+  // Тот же формат карточки, что у фильмов: обложка + мета-строка (кол-во фильмов
+  // справа, как рейтинг у постеров) — единый визуальный ритм секций.
   const card = document.createElement("div");
   card.className = "poster";
   card.innerHTML = `
     <div class="art">
       <div class="noposter">${esc(c.title)}</div>
       ${c.cover ? `<img loading="lazy" src="${posterSrc(c.cover, true)}" alt="" data-img-retry>` : ""}
-      <span class="rate">${c.film_count} ${esc(t("count_films", c.film_count))}</span>
     </div>
-    <div class="meta"><div class="t">${esc(c.title)}</div></div>`;
+    <div class="meta">
+      <div class="t">${esc(c.title)}</div>
+      <div class="meta-row"><span class="y">${c.film_count} ${esc(t("count_films", c.film_count))}</span></div>
+    </div>`;
   card.onclick = () => showCollectionDetail(c.id);
   return card;
 }

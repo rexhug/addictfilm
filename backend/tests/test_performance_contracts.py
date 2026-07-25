@@ -37,12 +37,15 @@ class PerformanceContractsTests(unittest.IsolatedAsyncioTestCase):
         animation = await db.get_or_create_film("tt0000002", "Animation film", genres="Animation")
         self.assertNotEqual(action, animation)
 
+        # Жанры каталога приводятся к единому русскому канону (kinopoisk-стиль),
+        # чтобы англо- и русскоязычные источники не двоились в списке.
         genres = await db.list_genres()
-        self.assertEqual({item["name"] for item in genres}, {"Action", "Drama", "Animation"})
-        items = await db.browse_by_genre(42, "Action")
-        self.assertEqual([item["id"] for item in items], [action])
+        self.assertEqual({item["name"] for item in genres}, {"боевик", "драма", "мультфильм"})
+        # Фильтр матчит и канон, и исходный алиас источника.
+        self.assertEqual([item["id"] for item in await db.browse_by_genre(42, "боевик")], [action])
+        self.assertEqual([item["id"] for item in await db.browse_by_genre(42, "Action")], [action])
 
         await db.get_or_create_film("tt0000003", "Mystery film", genres="Mystery")
         refreshed = await db.list_genres()
-        self.assertIn("Mystery", {item["name"] for item in refreshed})
+        self.assertIn("детектив", {item["name"] for item in refreshed})
 
