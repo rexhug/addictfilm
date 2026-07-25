@@ -1102,9 +1102,9 @@ async def get_person_watched_films(user_id: int, role: str, name: str, limit: in
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            f"SELECT f.*, uf.rating AS my_rating, uf.watched_at AS watched_at FROM user_films uf "
-            f"JOIN films f ON f.id = uf.film_id WHERE uf.user_id = ? AND uf.status = 'watched' "
-            f"ORDER BY uf.watched_at DESC LIMIT ?",
+            "SELECT f.*, uf.rating AS my_rating, uf.watched_at AS watched_at FROM user_films uf "
+            "JOIN films f ON f.id = uf.film_id WHERE uf.user_id = ? AND uf.status = 'watched' "
+            "ORDER BY uf.watched_at DESC LIMIT ?",
             (user_id, max(1, min(limit, 200))),
         )
         return _films_for_person(await cur.fetchall(), column, name)
@@ -1117,11 +1117,11 @@ async def get_pair_person_watched_films(user_id: int, partner_id: int, since: st
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            f"SELECT f.*, a.rating AS my_rating, b.rating AS partner_rating, "
-            f"a.watched_at AS watched_at FROM user_films a JOIN user_films b ON a.film_id = b.film_id "
-            f"JOIN films f ON f.id = a.film_id "
-            f"WHERE a.user_id = ? AND b.user_id = ? AND a.status = 'watched' AND b.status = 'watched' "
-            f"AND a.added_at >= ? AND b.added_at >= ? ORDER BY a.watched_at DESC LIMIT ?",
+            "SELECT f.*, a.rating AS my_rating, b.rating AS partner_rating, "
+            "a.watched_at AS watched_at FROM user_films a JOIN user_films b ON a.film_id = b.film_id "
+            "JOIN films f ON f.id = a.film_id "
+            "WHERE a.user_id = ? AND b.user_id = ? AND a.status = 'watched' AND b.status = 'watched' "
+            "AND a.added_at >= ? AND b.added_at >= ? ORDER BY a.watched_at DESC LIMIT ?",
             (user_id, partner_id, since, since, max(1, min(limit, 200))),
         )
         return _films_for_person(await cur.fetchall(), column, name)
