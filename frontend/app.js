@@ -38,7 +38,7 @@ const DICT = {
     search_ph: "Поиск фильмов, сериалов, актёров…",
     chip_popular: "Популярное", chip_top: "Топ сообщества", chip_genres: "Жанры", chip_collections: "Подборки",
     see_all: "Смотреть все",
-    reco_title: "Оценивай и получай рекомендации", reco_sub: "Чем больше ты оцениваешь, тем точнее твои рекомендации", reco_cta: "Начать",
+    reco_title: "Оценивай и получай рекомендации", reco_sub: "Оценивай фильмы и получай персональные рекомендации на основе твоего вкуса", reco_cta: "Начать",
     notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся напоминания оценить просмотренное",
     collections_empty_s: "Загляни позже", collections_empty_admin_s: "Создай первую подборку",
     collections_title_ph: "Название подборки", collections_create_btn: "Создать",
@@ -109,7 +109,7 @@ const DICT = {
     search_ph: "Search movies, TV shows, actors…",
     chip_popular: "Popular", chip_top: "Community Top", chip_genres: "Genres", chip_collections: "Collections",
     see_all: "See all",
-    reco_title: "Rate films, get recommendations", reco_sub: "The more you rate, the sharper your recommendations", reco_cta: "Start",
+    reco_title: "Rate films, get recommendations", reco_sub: "Rate films and get personal recommendations based on your taste", reco_cta: "Start",
     notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "Reminders to rate what you've watched will show up here",
     collections_empty_s: "Check back later", collections_empty_admin_s: "Create your first collection",
     collections_title_ph: "Collection name", collections_create_btn: "Create",
@@ -403,47 +403,28 @@ function skeletonRail(n = 5) { return Array.from({ length: n }, () => `<div clas
 function skeletonGrid(n = 6) { return `<div class="grid">${Array.from({ length: n }, () => `<div class="poster"><div class="art sk"></div><div class="sk sk-line"></div></div>`).join("")}</div>`; }
 function emptyState(icon, text, sub = "") { return `<div class="empty"><div class="empty-icon">${icon}</div><div class="empty-text">${esc(text)}</div>${sub ? `<div class="empty-sub">${esc(sub)}</div>` : ""}</div>`; }
 
-const SVG_BM = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1Z"/></svg>';
-function posterTile(m, { onClick, badge, bookmark } = {}) {
+function posterTile(m, { onClick, badge } = {}) {
   const card = document.createElement("div");
   card.className = "poster";
+  // Рейтинг живёт в мета-строке под постером (год слева, оценка справа), а не поверх арта.
   const b = badge !== undefined ? badge : (ratingOf(m) ? `★ ${ratingOf(m)}` : "");
-  const bm = bookmark && m.id ? `<button class="bm${m.in_list ? " on" : ""}" aria-label="${lang === "en" ? "Watchlist" : "В список"}">${SVG_BM}</button>` : "";
+  const year = m.year ? `<span class="y">${esc(m.year)}</span>` : "";
   card.innerHTML = `
     <div class="art">
       <div class="noposter">${esc(m.title)}</div>
       ${m.poster_url ? `<img loading="lazy" decoding="async" src="${posterSrc(m.poster_url, true)}" alt="" data-img-retry>` : ""}
-      ${b ? `<span class="rate">${b}</span>` : ""}
-      ${bm}
     </div>
-    <div class="meta"><div class="t">${esc(m.title)}</div><div class="y">${esc(m.year || "")}</div></div>`;
+    <div class="meta">
+      <div class="t">${esc(m.title)}</div>
+      ${year || b ? `<div class="meta-row">${year}${b ? `<span class="rate-pill">${esc(b)}</span>` : ""}</div>` : ""}
+    </div>`;
   if (onClick) card.onclick = () => {
     // Захватываем стартовую точку для hero-transition ДО того, как экран будет уничтожен.
     const img = card.querySelector(".art img");
     _heroSource = img && img.currentSrc ? { rect: card.querySelector(".art").getBoundingClientRect(), src: img.currentSrc } : null;
     onClick();
   };
-  const bmBtn = card.querySelector(".bm");
-  if (bmBtn) bmBtn.onclick = (e) => { e.stopPropagation(); toggleBookmark(m, bmBtn); };
   return card;
-}
-
-// Закладка = быстрое «Хочу» из каталога. Не деструктивно: убрать из списка
-// можно только неоценённый фильм (иначе потеряли бы оценку — тогда открываем карточку).
-async function toggleBookmark(m, btn) {
-  try {
-    if (!m.in_list) {
-      await api(`/api/movie/${m.id}/status`, { method: "POST", body: JSON.stringify({ status: "want_to_watch" }) });
-      m.in_list = true; btn.classList.add("on");
-      tg?.HapticFeedback?.impactOccurred("light");
-    } else if (!m.my_rating) {
-      await api(`/api/movie/${m.id}`, { method: "DELETE" });
-      m.in_list = false; btn.classList.remove("on");
-      tg?.HapticFeedback?.impactOccurred("light");
-    } else {
-      openDetail(m.id, () => { setActiveTab("home"); showHome(); }, m);
-    }
-  } catch (e) { tg?.HapticFeedback?.notificationOccurred("error"); }
 }
 function gridOf(items, toCard) { const g = document.createElement("div"); g.className = "grid"; for (const it of items) g.appendChild(toCard(it)); return g; }
 function openDetail(id, back, preview = null) { if (back) _returnTo = back; showDetail(id, preview); }
@@ -501,8 +482,8 @@ async function showHome() {
   });
   if (canEditCollections()) document.getElementById("coll-add-home").onclick = () => createCollectionFlow();
 
-  loadRail("rail-pop", "/api/browse?sort=popular&limit=20", { bookmark: true, onItems: fillRecoArts });
-  loadRail("rail-top", "/api/browse?sort=top&limit=20", { bookmark: true });
+  loadRail("rail-pop", "/api/browse?sort=popular&limit=20", { onItems: fillRecoArts });
+  loadRail("rail-top", "/api/browse?sort=top&limit=20");
   loadGenrePills();
   loadCollectionsRail();
 }
@@ -535,7 +516,7 @@ async function loadCollectionsRail() {
   } catch (e) { if (el) el.innerHTML = `<div class="rail-empty">${esc(t("rail_err"))}</div>`; }
 }
 
-async function loadRail(id, path, { bookmark = false, onItems = null } = {}) {
+async function loadRail(id, path, { onItems = null } = {}) {
   const el = document.getElementById(id);
   try {
     const { items } = await api(path);
@@ -543,7 +524,7 @@ async function loadRail(id, path, { bookmark = false, onItems = null } = {}) {
     if (!el) return;
     if (!items.length) { el.innerHTML = `<div class="rail-empty">${esc(t("rail_empty"))}</div>`; return; }
     const back = () => { setActiveTab("home"); showHome(); };
-    el.replaceChildren(...items.map(m => posterTile(m, { onClick: () => openDetail(m.id, back, m), bookmark })));
+    el.replaceChildren(...items.map(m => posterTile(m, { onClick: () => openDetail(m.id, back, m) })));
   } catch (e) { if (el) el.innerHTML = `<div class="rail-empty">${esc(t("rail_err"))}</div>`; }
 }
 
@@ -596,7 +577,7 @@ async function showGenre(name) {
     const el = document.getElementById("gg");
     if (!items.length) { el.innerHTML = emptyState("🎭", t("genre_empty_t"), t("genre_empty_s")); return; }
     const back = () => showGenre(name);
-    el.replaceChildren(gridOf(items, m => posterTile(m, { onClick: () => openDetail(m.id, back, m), bookmark: true })));
+    el.replaceChildren(gridOf(items, m => posterTile(m, { onClick: () => openDetail(m.id, back, m) })));
   } catch (e) { document.getElementById("gg").innerHTML = emptyState("⚠️", t("load_err"), ""); }
 }
 
@@ -618,7 +599,7 @@ async function showBrowseAll(sort, title) {
       const { items } = await api(`/api/browse?sort=${encodeURIComponent(sort)}&limit=${LIMIT}&offset=${offset}`);
       if (offset === 0 && !items.length) { el.innerHTML = emptyState("🎬", t("rail_empty"), ""); done = true; return; }
       if (!grid) { grid = gridOf([], () => {}); el.innerHTML = ""; el.appendChild(grid); }
-      for (const m of items) grid.appendChild(posterTile(m, { onClick: () => openDetail(m.id, back, m), bookmark: true }));
+      for (const m of items) grid.appendChild(posterTile(m, { onClick: () => openDetail(m.id, back, m) }));
       offset += items.length;
       if (items.length < LIMIT) { done = true; moreBtn.remove(); }
     } catch (e) { if (offset === 0) el.innerHTML = emptyState("⚠️", t("load_err"), ""); }
