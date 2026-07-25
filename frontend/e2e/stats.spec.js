@@ -18,11 +18,14 @@ const pairStats = {
 };
 
 async function openStats(page, paired = false) {
+  await page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
   await page.addInitScript(() => {
+    window.__verticalSwipeDisableCalls = 0;
     window.Telegram = { WebApp: {
       initData: "test-init-data",
       initDataUnsafe: { user: { id: 1, first_name: "Denys", username: "denys" } },
       ready() {}, expand() {}, setHeaderColor() {}, setBackgroundColor() {},
+      disableVerticalSwipes() { window.__verticalSwipeDisableCalls += 1; },
       HapticFeedback: { impactOccurred() {}, notificationOccurred() {} },
       showConfirm(_text, callback) { callback(true); }, showAlert() {}, openTelegramLink() {},
     } };
@@ -37,6 +40,7 @@ async function openStats(page, paired = false) {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify(json) });
   });
   await page.goto("/");
+  expect(await page.evaluate(() => window.__verticalSwipeDisableCalls)).toBe(1);
   await page.getByRole("button", { name: "Статистика" }).click();
   await expect(page.getByRole("heading", { name: "Мой кинопрофиль" })).toBeVisible();
 }

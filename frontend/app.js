@@ -6,6 +6,10 @@ if (tg) {
   tg.ready();
   tg.expand();
   try { tg.setHeaderColor("#050505"); tg.setBackgroundColor("#050505"); } catch (e) {}
+  // Telegram otherwise treats a fast vertical feed swipe as a gesture to collapse
+  // the Mini App. CSS can prevent browser overscroll, but only this native API
+  // prevents the Telegram container itself from handling the gesture.
+  try { tg.disableVerticalSwipes?.(); } catch (e) {}
 }
 
 const screen = document.getElementById("screen");
