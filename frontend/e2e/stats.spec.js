@@ -71,6 +71,13 @@ test("personal profile fits a 390px phone without a hidden final card", async ({
   await expect(page.getByText("Чаще всего встречаются в просмотренных фильмах")).toBeVisible();
   await expect(page.getByText("Чаще всего среди просмотренных фильмов")).toBeVisible();
   expect(await page.locator(".people-stats-actors .people-stats-rail").evaluate((rail) => rail.scrollWidth > rail.clientWidth)).toBeTruthy();
+  const favoriteActorLayout = await page.locator(".people-stats-actors .person-stat-card.is-favorite").evaluate((card) => {
+    const cardBox = card.getBoundingClientRect();
+    const photoBox = card.querySelector(".person-stat-avatar").getBoundingClientRect();
+    return { cardWidth: cardBox.width, photoWidth: photoBox.width, photoHeight: photoBox.height };
+  });
+  expect(favoriteActorLayout.photoWidth).toBeGreaterThanOrEqual(favoriteActorLayout.cardWidth - 2);
+  expect(favoriteActorLayout.photoHeight).toBeGreaterThan(favoriteActorLayout.cardWidth * .7);
   await page.locator(".people-stats-actors .person-stat-card").first().click();
   await expect(page.getByRole("heading", { name: "Фильмы с Jake Gyllenhaal" })).toBeVisible();
   await expect(page.locator(".poster .meta .t", { hasText: "Donnie Darko" })).toBeVisible();
