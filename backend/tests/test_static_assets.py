@@ -20,8 +20,11 @@ class StaticAssetCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(".d-backdrop.no-bd{aspect-ratio:16/7", css)
         self.assertIn("#tabbar .tab::before", css)
         self.assertIn('btn.addEventListener("pointerup"', app)
-        self.assertIn("style.css?v=41", index)
-        self.assertIn("app.js?v=48", index)
+        # Asset versions deliberately change on every frontend release so a
+        # Telegram WebView cannot keep stale CSS or JS.  Require a versioned
+        # URL rather than coupling this regression test to one old release.
+        self.assertRegex(index, r'style\.css\?v=\d+')
+        self.assertRegex(index, r'app\.js\?v=\d+')
         self.assertIn("tg.disableVerticalSwipes?.()", app)
         self.assertIn("renderDetailPreview", app)
         self.assertIn("AbortController", app)
