@@ -83,6 +83,7 @@ const DICT = {
     pair_title: "Мы вместе", pair_subtitle: "Общие фильмы и ваш вкус", pair_compat_title: "Совместимость вкусов",
     pair_common_favorites: "Общие любимчики", pair_common_favorites_hint: "Фильмы, которые понравились вам обоим",
     pair_disagreements: "Наши расхождения", pair_disagreements_hint: "Где ваши оценки расходятся сильнее всего",
+    pair_loved_by_both: "Понравилось вам обоим", pair_rating_you: "Вы", pair_rating_partner: "Партнёр", pair_difference: "Разница",
     pair_more: "Показать все",
     partner_explainer: (n) => `Считаем по разнице ваших оценок у ${n} ${pl(n, ["общего фильма", "общих фильмов", "общих фильмов"])}. Чем ближе к 100%, тем чаще вы согласны.`,
     partner_settings: "Настройки пары", partner_exact_hint: "Одинаковые оценки", partner_shared_best: "Ваш фаворит", partner_shared_dispute: "Самое большое расхождение",
@@ -150,6 +151,7 @@ const DICT = {
     pair_title: "Together", pair_subtitle: "Shared films and your taste", pair_compat_title: "Taste compatibility",
     pair_common_favorites: "Shared favorites", pair_common_favorites_hint: "Films you both enjoyed",
     pair_disagreements: "Where you differ", pair_disagreements_hint: "Films with the biggest rating gaps",
+    pair_loved_by_both: "Loved by both", pair_rating_you: "You", pair_rating_partner: "Partner", pair_difference: "Difference",
     pair_more: "Show all",
     partner_explainer: (n) => `Based on the gap between your ratings across ${n} shared ${n === 1 ? "film" : "films"}. Closer to 100% means you agree more often.`,
     partner_settings: "Pair settings", partner_exact_hint: "Same ratings", partner_shared_best: "Your shared favorite", partner_shared_dispute: "Biggest difference",
@@ -1141,12 +1143,28 @@ function pairHeroHTML(ps) {
 function pairHighlightsHTML(ps) {
   const favorites = ps.common_favorites || (ps.best ? [ps.best] : []);
   const disagreements = ps.disagreements || (ps.controversial ? [ps.controversial] : []);
-  const poster = item => item.poster_url ? `<img loading="lazy" src="${esc(posterSrc(item.poster_url, true))}" alt="" data-img-remove-on-error>` : `<span class="pair-poster-fallback">✦</span>`;
-  const favoriteRows = favorites.map(item => `<div class="pair-film ${item.film_id ? "is-clickable" : ""}" ${item.film_id ? `data-film-id="${item.film_id}" role="button" tabindex="0"` : ""}><div class="pair-film-poster">${poster(item)}</div><div><b>${esc(item.title)}</b><small>${esc(t("partner_shared_best"))}</small></div><strong>★ ${item.avg ?? "—"}</strong></div>`).join("");
-  const differenceRows = disagreements.map(item => `<div class="pair-difference ${item.film_id ? "is-clickable" : ""}" ${item.film_id ? `data-film-id="${item.film_id}" role="button" tabindex="0"` : ""}><div class="pair-film-poster">${poster(item)}</div><b>${esc(item.title)}</b><span><em>${item.a}</em> <i>vs</i> <em>${item.b}</em><small>Δ ${item.diff ?? Math.abs(item.a - item.b)}</small></span></div>`).join("");
-  return `<div class="pair-highlight-grid">
-    ${favoriteRows ? `<section class="chart-card pair-highlight"><h2>${esc(t("pair_common_favorites"))}</h2><p class="stats-hint">${esc(t("pair_common_favorites_hint"))}</p>${favoriteRows}</section>` : ""}
-    ${differenceRows ? `<section class="chart-card pair-highlight"><h2>${esc(t("pair_disagreements"))}</h2><p class="stats-hint">${esc(t("pair_disagreements_hint"))}</p>${differenceRows}</section>` : ""}
+  const poster = (item, alt) => item.poster_url
+    ? `<img loading="lazy" decoding="async" src="${esc(posterSrc(item.poster_url, true))}" alt="${esc(alt)}" data-img-remove-on-error>`
+    : `<span class="pair-poster-fallback" aria-hidden="true">✦</span>`;
+  const favoriteCards = favorites.map((item, index) => `<button class="pair-favorite-card" type="button" data-film-id="${item.film_id}" aria-label="${esc(item.title)}">
+    <span class="pair-favorite-rank">${index + 1}</span><span class="pair-favorite-poster">${poster(item, item.title)}</span>
+    <span class="pair-favorite-copy"><b>${esc(item.title)}</b><small>♥ ${esc(t("pair_loved_by_both"))}</small><strong>★ ${item.avg ?? "—"}/10</strong></span>
+  </button>`).join("");
+  const differenceCards = disagreements.map(item => {
+    const a = Number(item.a) || 0;
+    const b = Number(item.b) || 0;
+    const diff = item.diff ?? Math.abs(a - b);
+    return `<button class="pair-difference-card" type="button" data-film-id="${item.film_id}" aria-label="${esc(item.title)}">
+      <span class="pair-difference-heading"><span class="pair-difference-poster">${poster(item, item.title)}</span><span class="pair-difference-copy"><b>${esc(item.title)}</b><small>${esc(t("pair_difference"))} <strong>+${diff}</strong></small></span></span>
+      <span class="pair-rating-compare">
+        <span class="pair-rating-row pair-rating-me"><span>${esc(t("pair_rating_you"))} <b>★ ${a}</b></span><i><em style="width:${Math.min(100, Math.max(0, a * 10))}%"></em></i></span>
+        <span class="pair-rating-row pair-rating-partner"><span>${esc(t("pair_rating_partner"))} <b>★ ${b}</b></span><i><em style="width:${Math.min(100, Math.max(0, b * 10))}%"></em></i></span>
+      </span>
+    </button>`;
+  }).join("");
+  return `<div class="pair-discovery">
+    ${favoriteCards ? `<section class="pair-showcase pair-favorites-showcase"><header class="pair-showcase-head"><span class="pair-showcase-icon pair-showcase-icon-favorite" aria-hidden="true">♡</span><div><h2>${esc(t("pair_common_favorites"))}</h2><p>${esc(t("pair_common_favorites_hint"))}</p></div></header><div class="pair-favorites-rail" aria-label="${esc(t("pair_common_favorites"))}">${favoriteCards}</div></section>` : ""}
+    ${differenceCards ? `<section class="pair-showcase pair-differences-showcase"><header class="pair-showcase-head"><span class="pair-showcase-icon pair-showcase-icon-difference" aria-hidden="true">↔</span><div><h2>${esc(t("pair_disagreements"))}</h2><p>${esc(t("pair_disagreements_hint"))}</p></div></header><div class="pair-differences-rail" aria-label="${esc(t("pair_disagreements"))}">${differenceCards}</div></section>` : ""}
   </div>`;
 }
 
@@ -1295,7 +1313,7 @@ function personalStatsHTML(s, scope = "me", expanded = { genres: false }) {
   const directorHint = scope === "pair" ? "stats_directors_hint_pair" : "stats_directors_hint";
   const actors = peopleStatsSection({ type: "actors", title: t("chart_actors"), subtitle: t(actorHint), items: s.top_actors });
   const directors = peopleStatsSection({ type: "directors", title: t("chart_directors"), subtitle: t(directorHint), items: s.top_directors });
-  const yearCard = y.count ? `<section class="year-card">
+  const yearCard = scope !== "pair" && y.count ? `<section class="year-card">
     <div class="year-card-title">🏆 ${esc(t("year_title", y.year))}</div>
     <div class="year-line"><b>${y.count}</b> ${esc(t("count_films", y.count))}${y.avg_rating ? ` · ${esc(t("year_avg"))} <b>${y.avg_rating}</b>` : ""}</div>
     ${y.top_genre ? `<div class="year-line">${esc(t("year_fav_genre"))}${esc(y.top_genre)}</div>` : ""}

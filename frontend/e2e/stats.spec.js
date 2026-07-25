@@ -13,8 +13,16 @@ const pairStats = {
   ...personalStats,
   partner: { name: "Kristina", username: "kristina", avatar_url: null },
   agreement: 91, rated_together: 24, matches: 16,
-  common_favorites: [{ film_id: 1, title: "The Last of Us", avg: 10, poster_url: null }],
-  disagreements: [{ film_id: 2, title: "Parasites", a: 5, b: 8, diff: 3, poster_url: null }],
+  common_favorites: [
+    { film_id: 1, title: "The Last of Us", avg: 10, poster_url: null },
+    { film_id: 3, title: "Inception", avg: 9, poster_url: null },
+    { film_id: 4, title: "The Hunger Games", avg: 8.5, poster_url: null },
+  ],
+  disagreements: [
+    { film_id: 2, title: "Parasites", a: 5, b: 8, diff: 3, poster_url: null },
+    { film_id: 5, title: "Apex", a: 4, b: 7, diff: 3, poster_url: null },
+    { film_id: 6, title: "Ritual", a: 6, b: 8, diff: 2, poster_url: null },
+  ],
 };
 
 async function openStats(page, paired = false) {
@@ -34,6 +42,8 @@ async function openStats(page, paired = false) {
     const path = new URL(route.request().url()).pathname;
     const json = path === "/api/me"
       ? { id: 1, label: "Denys", username: "denys", role: null }
+      : path === "/api/movie/1"
+        ? { id: 1, title: "The Last of Us", title_original: "The Last of Us", year: "2023", poster_url: null, genres: "Drama" }
       : path === "/api/partner"
         ? (paired ? { status: "paired", partner: { name: "Kristina", username: "kristina" } } : { status: "none" })
         : path === "/api/partner/stats" ? pairStats
@@ -78,6 +88,13 @@ test("pair profile is reachable and key movie cards remain interactive", async (
   await page.getByRole("tab", { name: "Мы вместе" }).click();
   await expect(page.getByRole("heading", { name: "Мы вместе" })).toBeVisible();
   await expect(page.getByText("Совместимость вкусов")).toBeVisible();
+  await expect(page.getByText("Итоги 2026")).toHaveCount(0);
+  await expect(page.getByText("Показать все")).toHaveCount(0);
+  await expect(page.locator(".pair-favorite-card")).toHaveCount(3);
+  await expect(page.locator(".pair-difference-card")).toHaveCount(3);
   await expect(page.locator('[data-film-id="1"]')).toContainText("The Last of Us");
+  expect(await page.locator(".pair-favorites-rail").evaluate(el => el.scrollWidth > el.clientWidth)).toBeTruthy();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+  await page.locator('[data-film-id="1"]').click();
+  await expect(page.getByRole("heading", { name: "The Last of Us" })).toBeVisible();
 });
