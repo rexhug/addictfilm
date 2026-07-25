@@ -37,6 +37,9 @@ const DICT = {
     tagline: "Кино, которое ты любишь",
     search_ph: "Поиск фильмов, сериалов, актёров…",
     chip_popular: "Популярное", chip_top: "Топ сообщества", chip_genres: "Жанры", chip_collections: "Подборки",
+    see_all: "Смотреть все",
+    reco_title: "Оценивай и получай рекомендации", reco_sub: "Чем больше ты оцениваешь, тем точнее твои рекомендации", reco_cta: "Начать",
+    notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся напоминания оценить просмотренное",
     collections_empty_s: "Загляни позже", collections_empty_admin_s: "Создай первую подборку",
     collections_title_ph: "Название подборки", collections_create_btn: "Создать",
     coll_confirm_add: (t) => `Добавить «${t}» в подборку?`, coll_already_in: "Уже в этой подборке",
@@ -105,6 +108,9 @@ const DICT = {
     tagline: "Movies you'll love",
     search_ph: "Search movies, TV shows, actors…",
     chip_popular: "Popular", chip_top: "Community Top", chip_genres: "Genres", chip_collections: "Collections",
+    see_all: "See all",
+    reco_title: "Rate films, get recommendations", reco_sub: "The more you rate, the sharper your recommendations", reco_cta: "Start",
+    notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "Reminders to rate what you've watched will show up here",
     collections_empty_s: "Check back later", collections_empty_admin_s: "Create your first collection",
     collections_title_ph: "Collection name", collections_create_btn: "Create",
     coll_confirm_add: (t) => `Add "${t}" to the collection?`, coll_already_in: "Already in this collection",
@@ -397,15 +403,18 @@ function skeletonRail(n = 5) { return Array.from({ length: n }, () => `<div clas
 function skeletonGrid(n = 6) { return `<div class="grid">${Array.from({ length: n }, () => `<div class="poster"><div class="art sk"></div><div class="sk sk-line"></div></div>`).join("")}</div>`; }
 function emptyState(icon, text, sub = "") { return `<div class="empty"><div class="empty-icon">${icon}</div><div class="empty-text">${esc(text)}</div>${sub ? `<div class="empty-sub">${esc(sub)}</div>` : ""}</div>`; }
 
-function posterTile(m, { onClick, badge } = {}) {
+const SVG_BM = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1Z"/></svg>';
+function posterTile(m, { onClick, badge, bookmark } = {}) {
   const card = document.createElement("div");
   card.className = "poster";
   const b = badge !== undefined ? badge : (ratingOf(m) ? `★ ${ratingOf(m)}` : "");
+  const bm = bookmark && m.id ? `<button class="bm${m.in_list ? " on" : ""}" aria-label="${lang === "en" ? "Watchlist" : "В список"}">${SVG_BM}</button>` : "";
   card.innerHTML = `
     <div class="art">
       <div class="noposter">${esc(m.title)}</div>
       ${m.poster_url ? `<img loading="lazy" decoding="async" src="${posterSrc(m.poster_url, true)}" alt="" data-img-retry>` : ""}
       ${b ? `<span class="rate">${b}</span>` : ""}
+      ${bm}
     </div>
     <div class="meta"><div class="t">${esc(m.title)}</div><div class="y">${esc(m.year || "")}</div></div>`;
   if (onClick) card.onclick = () => {
@@ -414,7 +423,27 @@ function posterTile(m, { onClick, badge } = {}) {
     _heroSource = img && img.currentSrc ? { rect: card.querySelector(".art").getBoundingClientRect(), src: img.currentSrc } : null;
     onClick();
   };
+  const bmBtn = card.querySelector(".bm");
+  if (bmBtn) bmBtn.onclick = (e) => { e.stopPropagation(); toggleBookmark(m, bmBtn); };
   return card;
+}
+
+// Закладка = быстрое «Хочу» из каталога. Не деструктивно: убрать из списка
+// можно только неоценённый фильм (иначе потеряли бы оценку — тогда открываем карточку).
+async function toggleBookmark(m, btn) {
+  try {
+    if (!m.in_list) {
+      await api(`/api/movie/${m.id}/status`, { method: "POST", body: JSON.stringify({ status: "want_to_watch" }) });
+      m.in_list = true; btn.classList.add("on");
+      tg?.HapticFeedback?.impactOccurred("light");
+    } else if (!m.my_rating) {
+      await api(`/api/movie/${m.id}`, { method: "DELETE" });
+      m.in_list = false; btn.classList.remove("on");
+      tg?.HapticFeedback?.impactOccurred("light");
+    } else {
+      openDetail(m.id, () => { setActiveTab("home"); showHome(); }, m);
+    }
+  } catch (e) { tg?.HapticFeedback?.notificationOccurred("error"); }
 }
 function gridOf(items, toCard) { const g = document.createElement("div"); g.className = "grid"; for (const it of items) g.appendChild(toCard(it)); return g; }
 function openDetail(id, back, preview = null) { if (back) _returnTo = back; showDetail(id, preview); }
@@ -423,17 +452,28 @@ function openDetail(id, back, preview = null) { if (back) _returnTo = back; show
 async function showHome() {
   unwireDetailScroll();
   window.scrollTo(0, 0);
+  const seeAll = (id) => `<button class="see-all" id="${id}">${esc(t("see_all"))}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>`;
   screen.innerHTML = `
     <header class="app-head rise d1">
       <div class="brand"><h1>Addict&nbsp;Film</h1><p>${esc(t("tagline"))}</p></div>
-      <button class="lang" id="lang-btn" aria-label="Language">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.4 4 5.6 4 9s-1.4 6.6-4 9c-2.6-2.4-4-5.6-4-9s1.4-6.6 4-9Z"/></svg>
-        <b>${lang.toUpperCase()}</b>
-      </button>
+      <div class="head-actions">
+        <button class="lang" id="lang-btn" aria-label="Language">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.4 4 5.6 4 9s-1.4 6.6-4 9c-2.6-2.4-4-5.6-4-9s1.4-6.6 4-9Z"/></svg>
+          <b>${lang.toUpperCase()}</b>
+        </button>
+        <button class="bell" id="bell-btn" aria-label="${esc(t("notif_title"))}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+        </button>
+      </div>
     </header>
-    <div class="search rise d1" id="home-search">
-      <span class="icn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></span>
-      <span class="q">${esc(t("search_ph"))}</span>
+    <div class="search rise d1">
+      <div class="search-tap" id="home-search">
+        <span class="icn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></span>
+        <span class="q">${esc(t("search_ph"))}</span>
+      </div>
+      <button class="filter" id="home-filter" aria-label="${esc(t("chip_genres"))}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+      </button>
     </div>
     <div class="chips rise d2">
       <span class="chip active" data-to="sec-pop"><span class="e">🔥</span>${esc(t("chip_popular"))}</span>
@@ -441,23 +481,45 @@ async function showHome() {
       <span class="chip" data-to="sec-gen"><span class="e">🎭</span>${esc(t("chip_genres"))}</span>
       <span class="chip" data-to="sec-coll"><span class="e">🎬</span>${esc(t("chip_collections"))}</span>
     </div>
-    <section class="rise d3" id="sec-pop"><div class="head"><h2>${esc(t("chip_popular"))}</h2></div><div class="rail" id="rail-pop">${skeletonRail(5)}</div></section>
-    <section class="rise d4" id="sec-top"><div class="head"><h2>${esc(t("chip_top"))}</h2></div><div class="rail" id="rail-top">${skeletonRail(5)}</div></section>
-    <section class="rise d5" id="sec-gen"><div class="head"><h2>${esc(t("chip_genres"))}</h2></div><div class="rail grail" id="rail-gen">${skeletonRail(4)}</div></section>
+    <section class="rise d3" id="sec-pop"><div class="head"><h2>${esc(t("chip_popular"))}</h2>${seeAll("see-pop")}</div><div class="rail" id="rail-pop">${skeletonRail(5)}</div></section>
+    <section class="rise d4" id="sec-top"><div class="head"><h2>${esc(t("chip_top"))}</h2>${seeAll("see-top")}</div><div class="rail" id="rail-top">${skeletonRail(5)}</div></section>
+    <section class="rise d5" id="sec-gen"><div class="head"><h2>${esc(t("chip_genres"))}</h2>${seeAll("see-gen")}</div><div class="gchips" id="gen-chips"></div></section>
+    ${recoCardHTML()}
     <section class="rise d5" id="sec-coll"><div class="head"><h2>${esc(t("chip_collections"))}</h2>${canEditCollections() ? `<button class="back" id="coll-add-home" aria-label="+">+</button>` : ""}</div><div class="rail" id="rail-coll">${skeletonRail(5)}</div></section>`;
 
   document.getElementById("lang-btn").onclick = () => setLang(lang === "ru" ? "en" : "ru");
+  document.getElementById("bell-btn").onclick = () => showNotifications();
   document.getElementById("home-search").onclick = () => showSearch();
+  document.getElementById("home-filter").onclick = () => showSearch();
+  document.getElementById("see-pop").onclick = () => showBrowseAll("popular", t("chip_popular"));
+  document.getElementById("see-top").onclick = () => showBrowseAll("top", t("chip_top"));
+  document.getElementById("see-gen").onclick = () => showAllGenres();
+  document.getElementById("reco-start").onclick = () => showSearch();
   screen.querySelectorAll(".chips .chip[data-to]").forEach(c => c.onclick = () => {
     screen.querySelectorAll(".chips .chip[data-to]").forEach(x => x.classList.toggle("active", x === c));
     document.getElementById(c.dataset.to)?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
   if (canEditCollections()) document.getElementById("coll-add-home").onclick = () => createCollectionFlow();
 
-  loadRail("rail-pop", "/api/browse?sort=popular&limit=20");
-  loadRail("rail-top", "/api/browse?sort=top&limit=20");
-  loadGenres();
+  loadRail("rail-pop", "/api/browse?sort=popular&limit=20", { bookmark: true, onItems: fillRecoArts });
+  loadRail("rail-top", "/api/browse?sort=top&limit=20", { bookmark: true });
+  loadGenrePills();
   loadCollectionsRail();
+}
+
+function recoCardHTML() {
+  return `<div class="reco rise d5">
+    <div class="reco-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 3 2.6 5.6 6.1.7-4.5 4.1 1.2 6-5.4-3-5.4 3 1.2-6L3 9.3l6.1-.7Z"/></svg></div>
+    <div class="reco-copy"><h3>${esc(t("reco_title"))}</h3><p>${esc(t("reco_sub"))}</p><button class="reco-btn" id="reco-start">${esc(t("reco_cta"))}</button></div>
+    <div class="reco-arts" id="reco-arts"></div>
+  </div>`;
+}
+function fillRecoArts(items) {
+  const box = document.getElementById("reco-arts");
+  if (!box) return;
+  const arts = (items || []).filter(m => m.poster_url).slice(0, 3);
+  if (!arts.length) { box.remove(); return; }
+  box.innerHTML = arts.map(m => `<div class="reco-art"><img loading="lazy" src="${posterSrc(m.poster_url, true)}" alt="" data-img-retry></div>`).join("");
 }
 
 async function loadCollectionsRail() {
@@ -473,24 +535,48 @@ async function loadCollectionsRail() {
   } catch (e) { if (el) el.innerHTML = `<div class="rail-empty">${esc(t("rail_err"))}</div>`; }
 }
 
-async function loadRail(id, path) {
+async function loadRail(id, path, { bookmark = false, onItems = null } = {}) {
   const el = document.getElementById(id);
   try {
     const { items } = await api(path);
+    if (onItems) onItems(items);
     if (!el) return;
     if (!items.length) { el.innerHTML = `<div class="rail-empty">${esc(t("rail_empty"))}</div>`; return; }
     const back = () => { setActiveTab("home"); showHome(); };
-    el.replaceChildren(...items.map(m => posterTile(m, { onClick: () => openDetail(m.id, back, m) })));
+    el.replaceChildren(...items.map(m => posterTile(m, { onClick: () => openDetail(m.id, back, m), bookmark })));
   } catch (e) { if (el) el.innerHTML = `<div class="rail-empty">${esc(t("rail_err"))}</div>`; }
 }
-async function loadGenres() {
-  const el = document.getElementById("rail-gen");
+
+// Жанры на Главной — компактные пилюли (полный список — по «Смотреть все»).
+const GENRE_EMOJI = {
+  "боевик": "🎬", "комедия": "😂", "триллер": "🕵️", "фантастика": "👽", "драма": "🎭",
+  "ужасы": "👻", "мелодрама": "💗", "приключения": "🧭", "детектив": "🔎", "фэнтези": "🐉",
+  "криминал": "🔫", "мультфильм": "🧸", "аниме": "🌸", "документальный": "🎥", "военный": "🪖",
+  "история": "📜", "музыка": "🎵", "спорт": "🏆", "вестерн": "🤠", "биография": "👤",
+  "семейный": "👨‍👩‍👧", "мюзикл": "🎶", "фильм-нуар": "🌃",
+  // англоязычные названия (на случай каталога с EN-жанрами)
+  "action": "🎬", "comedy": "😂", "thriller": "🕵️", "sci-fi": "👽", "science fiction": "👽",
+  "drama": "🎭", "horror": "👻", "romance": "💗", "adventure": "🧭", "mystery": "🔎",
+  "fantasy": "🐉", "crime": "🔫", "animation": "🧸", "anime": "🌸", "documentary": "🎥",
+  "war": "🪖", "history": "📜", "music": "🎵", "sport": "🏆", "western": "🤠",
+  "biography": "👤", "family": "👨‍👩‍👧", "musical": "🎶", "film-noir": "🌃",
+};
+function genreEmoji(name) { return GENRE_EMOJI[(name || "").toLowerCase()] || "🎞️"; }
+async function loadGenrePills() {
+  const el = document.getElementById("gen-chips");
   try {
     const { items } = await api("/api/genres");
     if (!el) return;
     if (!items.length) { el.innerHTML = `<div class="rail-empty">${esc(t("genres_empty"))}</div>`; return; }
-    el.replaceChildren(...items.map(genreCard));
+    el.replaceChildren(...items.map(genrePill));
   } catch (e) { if (el) el.innerHTML = `<div class="rail-empty">—</div>`; }
+}
+function genrePill(g) {
+  const pill = document.createElement("button");
+  pill.className = "gchip";
+  pill.innerHTML = `<span class="e">${genreEmoji(g.name)}</span>${esc(g.name)}`;
+  pill.onclick = () => showGenre(g.name);
+  return pill;
 }
 function genreCard(g) {
   const card = document.createElement("div");
@@ -510,8 +596,64 @@ async function showGenre(name) {
     const el = document.getElementById("gg");
     if (!items.length) { el.innerHTML = emptyState("🎭", t("genre_empty_t"), t("genre_empty_s")); return; }
     const back = () => showGenre(name);
-    el.replaceChildren(gridOf(items, m => posterTile(m, { onClick: () => openDetail(m.id, back, m) })));
+    el.replaceChildren(gridOf(items, m => posterTile(m, { onClick: () => openDetail(m.id, back, m), bookmark: true })));
   } catch (e) { document.getElementById("gg").innerHTML = emptyState("⚠️", t("load_err"), ""); }
+}
+
+// «Смотреть все» для секции каталога — сетка с догрузкой (тот же /api/browse).
+async function showBrowseAll(sort, title) {
+  unwireDetailScroll();
+  window.scrollTo(0, 0);
+  screen.innerHTML = `<div class="sub-head">${backBtn()}<h1>${esc(title)}</h1></div><div id="ba">${skeletonGrid(9)}</div>`;
+  wireBack(() => { setActiveTab("home"); showHome(); });
+  const LIMIT = 30;
+  let offset = 0, done = false, loading = false;
+  const el = document.getElementById("ba");
+  const back = () => showBrowseAll(sort, title);
+  let grid = null;
+  const loadPage = async () => {
+    if (done || loading) return;
+    loading = true;
+    try {
+      const { items } = await api(`/api/browse?sort=${encodeURIComponent(sort)}&limit=${LIMIT}&offset=${offset}`);
+      if (offset === 0 && !items.length) { el.innerHTML = emptyState("🎬", t("rail_empty"), ""); done = true; return; }
+      if (!grid) { grid = gridOf([], () => {}); el.innerHTML = ""; el.appendChild(grid); }
+      for (const m of items) grid.appendChild(posterTile(m, { onClick: () => openDetail(m.id, back, m), bookmark: true }));
+      offset += items.length;
+      if (items.length < LIMIT) { done = true; moreBtn.remove(); }
+    } catch (e) { if (offset === 0) el.innerHTML = emptyState("⚠️", t("load_err"), ""); }
+    finally { loading = false; }
+  };
+  const moreBtn = document.createElement("button");
+  moreBtn.className = "load-more";
+  moreBtn.textContent = t("load_more") || "Показать ещё";
+  moreBtn.onclick = () => loadPage().then(() => { if (!done) screen.appendChild(moreBtn); });
+  await loadPage();
+  if (!done) screen.appendChild(moreBtn);
+}
+
+// «Смотреть все» для жанров — крупные карточки-жанры (та же genreCard).
+async function showAllGenres() {
+  unwireDetailScroll();
+  window.scrollTo(0, 0);
+  screen.innerHTML = `<div class="sub-head">${backBtn()}<h1>${esc(t("chip_genres"))}</h1></div><div id="ag" class="genre-grid">${skeletonGrid(6)}</div>`;
+  wireBack(() => { setActiveTab("home"); showHome(); });
+  try {
+    const { items } = await api("/api/genres");
+    const el = document.getElementById("ag");
+    if (!items.length) { el.innerHTML = emptyState("🎭", t("genres_empty"), ""); return; }
+    el.innerHTML = "";
+    el.replaceChildren(...items.map(genreCard));
+  } catch (e) { document.getElementById("ag").innerHTML = emptyState("⚠️", t("load_err"), ""); }
+}
+
+// Уведомления — экран честно пуст: напоминания оценить появятся позже (бот-слой).
+function showNotifications() {
+  unwireDetailScroll();
+  window.scrollTo(0, 0);
+  screen.innerHTML = `<div class="sub-head">${backBtn()}<h1>${esc(t("notif_title"))}</h1></div>
+    ${emptyState("🔔", t("notif_empty_t"), t("notif_empty_s"))}`;
+  wireBack(() => { setActiveTab("home"); showHome(); });
 }
 
 // ── Подборки (публичный просмотр + in-app админка для editor/admin) ───────────
