@@ -82,6 +82,9 @@ _visual_enrichment_tasks: set[asyncio.Task] = set()
 _visual_enrichment_film_ids: set[int] = set()
 _people_enrichment_tasks: set[asyncio.Task] = set()
 _people_enrichment_film_ids: set[int] = set()
+_profile_portrait_lookup_gate = asyncio.BoundedSemaphore(2)
+_PROFILE_PORTRAIT_FILM_LIMIT = 40
+_PROFILE_PORTRAIT_BATCH_SIZE = 20
 _director_profile_enrichment_tasks: set[asyncio.Task] = set()
 _director_profile_enrichment_users: set[int] = set()
 
@@ -509,33 +512,43 @@ async def _enrich_profile_people_photos(user_id: int) -> None:
     """
     try:
         actor_films, director_films = await asyncio.gather(
-            db.watched_films_needing_actor_photo_enrichment(user_id),
-            db.watched_films_needing_director_photo_enrichment(user_id),
+            db.watched_films_needing_actor_photo_enrichment(user_id, _PROFILE_PORTRAIT_FILM_LIMIT),
+            db.watched_films_needing_director_photo_enrichment(user_id, _PROFILE_PORTRAIT_FILM_LIMIT),
         )
         if not actor_films and not director_films:
             return
-        actor_map, director_map = await asyncio.gather(
-            wikidata.get_cast_by_imdb([film["imdb_id"] for film in actor_films]),
-            wikidata.get_directors_by_imdb([film["imdb_id"] for film in director_films]),
-        )
-        for film in actor_films:
-            cast = actor_map.get(film["imdb_id"], [])
-            if cast:
-                await db.set_film_cast_from_wikidata(
-                    film["id"], ", ".join(person["name"] for person in cast),
-                    json.dumps(cast, ensure_ascii=False),
+
+        # SPARQL accepts a batch of IMDb IDs, but sending a user's entire
+        # history in one request makes a single slow Wikimedia response erase
+        # the practical benefit.  Small serial batches plus a global gate keep
+        # this off the UI path and prevent many simultaneous profile opens from
+        # putting pressure on either our machines or Wikimedia.
+        async with _profile_portrait_lookup_gate:
+            for start in range(0, max(len(actor_films), len(director_films)), _PROFILE_PORTRAIT_BATCH_SIZE):
+                actor_chunk = actor_films[start:start + _PROFILE_PORTRAIT_BATCH_SIZE]
+                director_chunk = director_films[start:start + _PROFILE_PORTRAIT_BATCH_SIZE]
+                actor_map, director_map = await asyncio.gather(
+                    wikidata.get_cast_by_imdb([film["imdb_id"] for film in actor_chunk]),
+                    wikidata.get_directors_by_imdb([film["imdb_id"] for film in director_chunk]),
                 )
-            else:
-                await db.mark_film_actor_photos_checked(film["id"])
-        for film in director_films:
-            directors = director_map.get(film["imdb_id"], [])
-            if directors:
-                await db.set_film_directors_from_wikidata(
-                    film["id"], ", ".join(person["name"] for person in directors),
-                    json.dumps(directors, ensure_ascii=False),
-                )
-            else:
-                await db.mark_film_director_photos_checked(film["id"])
+                for film in actor_chunk:
+                    cast = actor_map.get(film["imdb_id"], [])
+                    if cast:
+                        await db.set_film_cast_from_wikidata(
+                            film["id"], ", ".join(person["name"] for person in cast),
+                            json.dumps(cast, ensure_ascii=False),
+                        )
+                    else:
+                        await db.mark_film_actor_photos_checked(film["id"])
+                for film in director_chunk:
+                    directors = director_map.get(film["imdb_id"], [])
+                    if directors:
+                        await db.set_film_directors_from_wikidata(
+                            film["id"], ", ".join(person["name"] for person in directors),
+                            json.dumps(directors, ensure_ascii=False),
+                        )
+                    else:
+                        await db.mark_film_director_photos_checked(film["id"])
         stats_cache.clear()
     except Exception:  # noqa: BLE001
         logger.warning("Profile people enrichment failed for user %s", user_id, exc_info=True)

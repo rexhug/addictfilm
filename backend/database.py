@@ -34,6 +34,7 @@ _genres_cache: tuple[float, list[dict]] | None = None
 _SCHEMA_MIGRATION_LEGACY_COLUMNS = "2026-07-25-legacy-columns"
 _SCHEMA_MIGRATION_DIRECTOR_PHOTOS = "2026-07-25-director-photos"
 _SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY = "2026-07-25-person-portrait-retry"
+_SCHEMA_MIGRATION_PERSON_PORTRAIT_COMPLETENESS = "2026-07-25-person-portrait-completeness"
 
 
 def _now() -> str:
@@ -51,6 +52,33 @@ def _split_genres(value: str | None) -> list[str]:
 def _split_people(value: str | None) -> list[str]:
     """Return the canonical comma-separated person names stored on a film."""
     return list(dict.fromkeys(name.strip() for name in (value or "").split(",") if name.strip()))
+
+
+def _person_key(name: str | None) -> str:
+    """Stable, forgiving key for joining names from two catalog providers."""
+    return re.sub(r"\s+", " ", str(name or "").strip()).casefold()
+
+
+def _portrait_urls(entry: object) -> list[str]:
+    """Read a primary portrait and its source fallbacks from one JSON entry."""
+    if not isinstance(entry, dict):
+        return []
+    values = [entry.get("photo_url"), *(entry.get("fallback_photo_urls") or [])]
+    result: list[str] = []
+    for value in values:
+        url = str(value or "").strip()
+        if url.startswith(("https://", "http://")) and url not in result:
+            result.append(url)
+    return result
+
+
+def _portrait_entries(value: str | None) -> list[dict]:
+    """Tolerantly decode the stored people portrait payload."""
+    try:
+        decoded = json.loads(value or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return [entry for entry in decoded if isinstance(entry, dict)] if isinstance(decoded, list) else []
 
 
 async def _add_column_if_missing(table: str, col_def: str) -> None:
@@ -144,12 +172,34 @@ async def _apply_person_portrait_retry_migration() -> None:
         await db.commit()
 
 
+async def _apply_person_portrait_completeness_migration() -> None:
+    """Retry partially populated portrait payloads once after the source merge.
+
+    A row may contain one valid portrait and several people without one.  The
+    first repair migration intentionally skipped it because it only detected
+    completely blank JSON.  Resetting just these incomplete payloads lets the
+    new merger attach a second source, while the normal 14-day guard keeps the
+    public profile path calm afterwards.
+    """
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        for photos, checked in (
+            ("actors_photos", "actor_photos_checked_at"),
+            ("directors_photos", "director_photos_checked_at"),
+        ):
+            await db.execute(
+                f"UPDATE films SET {checked} = NULL WHERE {photos} LIKE '%\"photo_url\": null%' "
+                f"OR {photos} LIKE '%\"photo_url\":null%'"
+            )
+        await db.commit()
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
         (_SCHEMA_MIGRATION_LEGACY_COLUMNS, _apply_legacy_column_migration),
         (_SCHEMA_MIGRATION_DIRECTOR_PHOTOS, _apply_director_photo_migration),
         (_SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY, _apply_person_portrait_retry_migration),
+        (_SCHEMA_MIGRATION_PERSON_PORTRAIT_COMPLETENESS, _apply_person_portrait_completeness_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -620,7 +670,7 @@ async def get_or_create_film(
     plot: str | None = None, poster_url: str | None = None, title_original: str | None = None,
     kp_rating: str | None = None, directors: str | None = None, actors: str | None = None,
     backdrop_url: str | None = None, age_rating: str | None = None, actors_photos: str | None = None,
-    kp_id: str | None = None,
+    directors_photos: str | None = None, kp_id: str | None = None,
 ) -> int:
     """Возвращает id фильма в общем каталоге, создавая запись при первом появлении
     (dedup по imdb_id/kp_id). Идемпотентно — один фильм на всех пользователей."""
@@ -638,9 +688,11 @@ async def get_or_create_film(
                 "search_text = CASE WHEN search_text IS NULL OR search_text = '' THEN ? ELSE search_text END, "
                 "poster_url = COALESCE(NULLIF(poster_url, ''), ?), "
                 "backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
-                "age_rating = COALESCE(age_rating, ?) "
+                "age_rating = COALESCE(age_rating, ?), "
+                "actors_photos = COALESCE(NULLIF(actors_photos, ''), ?), "
+                "directors_photos = COALESCE(NULLIF(directors_photos, ''), ?) "
                 "WHERE id = ?",
-                (kp_id, search_text, poster_url, backdrop_url, age_rating, row["id"]))
+                (kp_id, search_text, poster_url, backdrop_url, age_rating, actors_photos, directors_photos, row["id"]))
             await db.commit()
             return row["id"]
         # RETURNING id вместо lastrowid — портируемо (SQLite 3.35+ и Postgres одинаково).
@@ -649,14 +701,14 @@ async def get_or_create_film(
             INSERT INTO films
                 (imdb_id, kp_id, title, title_original, year, genres, directors, actors, runtime,
                  imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
-                 actors_photos, search_text, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 actors_photos, directors_photos, search_text, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT DO NOTHING
             RETURNING id
             """,
             (imdb_id, kp_id, title, title_original, year, genres, directors, actors, runtime,
              imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
-             actors_photos, search_text, _now()),
+             actors_photos, directors_photos, search_text, _now()),
         )
         inserted = await cur.fetchone()
         if inserted:
@@ -860,18 +912,33 @@ async def watched_films_needing_people_photo_enrichment(user_id: int, people_col
     }:
         raise ValueError("Unsupported person portrait columns")
     cutoff = (datetime.now(timezone.utc) - timedelta(days=retry_days)).isoformat()
+
+    def incomplete(row: dict) -> bool:
+        people = {_person_key(name) for name in _split_people(row.get(people_column))}
+        if not people:
+            return False
+        covered = {
+            _person_key(entry.get("name"))
+            for entry in _portrait_entries(row.get(photo_column))
+            if _portrait_urls(entry)
+        }
+        return not people.issubset(covered)
+
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "SELECT f.id, f.imdb_id FROM user_films uf JOIN films f ON f.id = uf.film_id "
+            f"SELECT f.id, f.imdb_id, f.{people_column}, f.{photo_column} "
+            "FROM user_films uf JOIN films f ON f.id = uf.film_id "
             "WHERE uf.user_id = ? AND uf.status = 'watched' AND f.imdb_id LIKE 'tt%' "
             f"AND f.{people_column} IS NOT NULL AND f.{people_column} <> '' "
-            f"AND (f.{photo_column} IS NULL OR f.{photo_column} = '' OR f.{photo_column} NOT LIKE '%https://%') "
             f"AND (f.{checked_column} IS NULL OR f.{checked_column} < ?) "
             f"ORDER BY f.id DESC LIMIT ?",
-            (user_id, cutoff, max(1, min(limit, 100))),
+            # Inspect a bounded superset in Python. JSON support differs
+            # between SQLite and Postgres, whereas this exact-name check is
+            # portable and catches a *partially* blank list correctly.
+            (user_id, cutoff, max(1, min(limit * 4, 400))),
         )
-        return [dict(row) for row in await cur.fetchall()]
+        return [row for row in (dict(item) for item in await cur.fetchall()) if incomplete(row)][:limit]
 
 
 async def watched_films_needing_director_photo_enrichment(user_id: int, limit: int = 100) -> list[dict]:
@@ -888,15 +955,84 @@ async def watched_films_needing_actor_photo_enrichment(user_id: int, limit: int 
     )
 
 
-async def set_film_cast_from_wikidata(film_id: int, actors: str, photos_json: str) -> bool:
-    """Persist a researched top cast + portraits and mark the one-time lookup done."""
+def _merge_people_portraits(existing_people: str | None, existing_payload: str | None,
+                            incoming_people: str | None, incoming_payload: str | None) -> tuple[str, str]:
+    """Merge Wikidata with the first catalogue source instead of erasing it.
+
+    Wikidata is the preferred, freely licensed portrait source, but it does not
+    have P18 photos for every person.  The original implementation replaced a
+    useful Kinopoisk portrait with a Wikidata entry containing ``null``.  Keep
+    both URL candidates per exact name, and retain old people only when they
+    contribute a real portrait.  This makes a failed primary request recover
+    in the browser without inventing or scraping a random face.
+    """
+    existing_entries = _portrait_entries(existing_payload)
+    incoming_entries = _portrait_entries(incoming_payload)
+    existing_by_key = {_person_key(item.get("name")): item for item in existing_entries if _person_key(item.get("name"))}
+    incoming_by_key = {_person_key(item.get("name")): item for item in incoming_entries if _person_key(item.get("name"))}
+
+    names: list[str] = []
+    ordered_keys: list[str] = []
+    for name in [*_split_people(incoming_people), *_split_people(existing_people)]:
+        key = _person_key(name)
+        # Old, unmatched names without a usable portrait usually come from a
+        # weaker provider and only create duplicate rows in statistics.
+        if key in ordered_keys or (key not in incoming_by_key and not _portrait_urls(existing_by_key.get(key))):
+            continue
+        ordered_keys.append(key)
+        names.append(name)
+
+    merged: list[dict] = []
+    for key, name in zip(ordered_keys, names):
+        fresh = incoming_by_key.get(key, {})
+        old = existing_by_key.get(key, {})
+        urls: list[str] = []
+        for entry in (fresh, old):
+            for url in _portrait_urls(entry):
+                if url not in urls:
+                    urls.append(url)
+        entry: dict[str, object] = {
+            "name": str(fresh.get("name") or old.get("name") or name).strip(),
+            "photo_url": urls[0] if urls else None,
+            "source": str(fresh.get("source") or old.get("source") or "catalog"),
+        }
+        if len(urls) > 1:
+            entry["fallback_photo_urls"] = urls[1:]
+        merged.append(entry)
+    return ", ".join(names), json.dumps(merged, ensure_ascii=False)
+
+
+async def _set_film_people_from_wikidata(film_id: int, people_column: str, photo_column: str,
+                                          checked_column: str, people: str, photos_json: str) -> bool:
+    """Persist a source-merged people payload. Columns are fixed internal names."""
+    if (people_column, photo_column, checked_column) not in {
+        ("actors", "actors_photos", "actor_photos_checked_at"),
+        ("directors", "directors_photos", "director_photos_checked_at"),
+    }:
+        raise ValueError("Unsupported person portrait columns")
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        current = await (await db.execute(
+            f"SELECT {people_column}, {photo_column} FROM films WHERE id = ?", (film_id,)
+        )).fetchone()
+        if current is None:
+            return False
+        merged_people, merged_photos = _merge_people_portraits(
+            current[people_column], current[photo_column], people, photos_json,
+        )
         cur = await db.execute(
-            "UPDATE films SET actors = ?, actors_photos = ?, actor_photos_checked_at = ? WHERE id = ?",
-            (actors, photos_json, _now(), film_id),
+            f"UPDATE films SET {people_column} = ?, {photo_column} = ?, {checked_column} = ? WHERE id = ?",
+            (merged_people, merged_photos, _now(), film_id),
         )
         await db.commit()
         return cur.rowcount > 0
+
+
+async def set_film_cast_from_wikidata(film_id: int, actors: str, photos_json: str) -> bool:
+    """Persist researched cast while retaining working portraits from earlier sources."""
+    return await _set_film_people_from_wikidata(
+        film_id, "actors", "actors_photos", "actor_photos_checked_at", actors, photos_json,
+    )
 
 
 async def mark_film_actor_photos_checked(film_id: int) -> bool:
@@ -911,14 +1047,10 @@ async def mark_film_actor_photos_checked(film_id: int) -> bool:
 
 
 async def set_film_directors_from_wikidata(film_id: int, directors: str, photos_json: str) -> bool:
-    """Persist Wikidata director names/portraits and mark the lookup complete."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        cur = await db.execute(
-            "UPDATE films SET directors = ?, directors_photos = ?, director_photos_checked_at = ? WHERE id = ?",
-            (directors, photos_json, _now(), film_id),
-        )
-        await db.commit()
-        return cur.rowcount > 0
+    """Persist researched directors while retaining working portraits from earlier sources."""
+    return await _set_film_people_from_wikidata(
+        film_id, "directors", "directors_photos", "director_photos_checked_at", directors, photos_json,
+    )
 
 
 async def mark_film_director_photos_checked(film_id: int) -> bool:
@@ -1175,24 +1307,29 @@ async def get_unrated_watched(user_id: int, since_days: int = 30, limit: int = 1
 
 
 # ── Персональная статистика (без пар) ────────────────────────────────────────
-def _person_photo_map(rows, column: str) -> dict[str, str]:
-    """Pick one cached portrait per exact person name from watched-film rows."""
-    photos: dict[str, str] = {}
+def _person_photo_sources(rows, column: str) -> dict[str, list[str]]:
+    """Collect ordered portrait candidates per exact person name.
+
+    The first URL is shown first; the rest are delivered to the client as
+    fallbacks.  This makes one flaky Commons edge node a visual inconvenience,
+    not a permanently empty person card.
+    """
+    photos: dict[str, list[str]] = {}
     for row in rows:
-        try:
-            entries = json.loads(row[column] or "[]")
-        except (TypeError, json.JSONDecodeError):
-            continue
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
+        for entry in _portrait_entries(row[column]):
             name = str(entry.get("name") or "").strip()
-            photo_url = str(entry.get("photo_url") or "").strip()
-            if name and photo_url and name not in photos:
-                photos[name] = photo_url
+            if not name:
+                continue
+            bucket = photos.setdefault(name, [])
+            for photo_url in _portrait_urls(entry):
+                if photo_url not in bucket:
+                    bucket.append(photo_url)
     return photos
+
+
+def _person_photo_map(rows, column: str) -> dict[str, str]:
+    """Pick the preferred portrait per exact person name (legacy helper)."""
+    return {name: urls[0] for name, urls in _person_photo_sources(rows, column).items() if urls}
 
 
 def _actor_photo_map(rows) -> dict[str, str]:
@@ -1235,8 +1372,8 @@ async def get_user_stats(user_id: int) -> dict:
         genre_counts, actor_counts, director_counts = {}, {}, {}
         total_runtime_min = 0
         watched_rows = await cur.fetchall()
-        actor_photos = _actor_photo_map(watched_rows)
-        director_photos = _person_photo_map(watched_rows, "directors_photos")
+        actor_photo_sources = _person_photo_sources(watched_rows, "actors_photos")
+        director_photo_sources = _person_photo_sources(watched_rows, "directors_photos")
         for r in watched_rows:
             for g in (r["genres"] or "").split(","):
                 g = g.strip()
@@ -1264,9 +1401,9 @@ async def get_user_stats(user_id: int) -> dict:
         ] if total_refs else []
         # Lists are fully aggregated in one query. The UI displays them in a
         # horizontal rail, and name is the stable tie-breaker for ranks.
-        top_actors = [(n, c, actor_photos.get(n))
+        top_actors = [(n, c, *(actor_photo_sources.get(n) or [None]))
                       for n, c in sorted(actor_counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
-        top_directors = [(n, c, director_photos.get(n))
+        top_directors = [(n, c, *(director_photo_sources.get(n) or [None]))
                          for n, c in sorted(director_counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
 
         row = await (await db.execute(
@@ -1685,8 +1822,8 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
     rating_dist = [dist[i] for i in range(1, 11)]
 
     genre_counts, actor_counts, director_counts = {}, {}, {}
-    actor_photos = _actor_photo_map(both_watched)
-    director_photos = _person_photo_map(both_watched, "directors_photos")
+    actor_photo_sources = _person_photo_sources(both_watched, "actors_photos")
+    director_photo_sources = _person_photo_sources(both_watched, "directors_photos")
     total_min = 0
     year_min, year_genre, year_actor = 0, {}, {}
     year_ratings, year_count = [], 0
@@ -1728,9 +1865,9 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         (g, round(c / total_refs * 100), c)
         for g, c in sorted(genre_counts.items(), key=lambda x: -x[1])[:5]
     ] if total_refs else []
-    top_actors = [(n, c, actor_photos.get(n))
+    top_actors = [(n, c, *(actor_photo_sources.get(n) or [None]))
                   for n, c in sorted(actor_counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
-    top_directors = [(n, c, director_photos.get(n))
+    top_directors = [(n, c, *(director_photo_sources.get(n) or [None]))
                      for n, c in sorted(director_counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
 
     # Совместимость по фильмам пар-периода, которые оценили ОБА.

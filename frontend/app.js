@@ -289,13 +289,75 @@ function revealPersonPhoto(img) {
   if (img.dataset.personPhotoChecked) return;
   img.dataset.personPhotoChecked = "1";
   if (isKinopoiskPortraitPlaceholder(img)) {
-    img.remove();
+    showNextPersonPhoto(img);
     return;
   }
   img.classList.add("ready");
 }
 
+function personPhotoCandidates(img) {
+  if (img._personPhotoCandidates) return img._personPhotoCandidates;
+  let fallbacks = [];
+  try { fallbacks = JSON.parse(img.dataset.personPhotoFallbacks || "[]"); } catch (_) {}
+  const urls = [img.dataset.personPhotoSrc, ...fallbacks]
+    .filter(value => typeof value === "string" && value)
+    .map(value => posterSrc(value));
+  img._personPhotoCandidates = [...new Set(urls)];
+  return img._personPhotoCandidates;
+}
+
+function showNextPersonPhoto(img) {
+  const candidates = personPhotoCandidates(img);
+  const next = +(img.dataset.personPhotoIndex || 0) + 1;
+  if (next >= candidates.length) {
+    img.remove(); // The styled initials/icon below remain visible; never a blank hole.
+    return;
+  }
+  img.dataset.personPhotoIndex = String(next);
+  img.dataset.personPhotoChecked = "";
+  // Do not swap the currently visible portrait before its replacement is
+  // complete. This avoids a flash on a weak Telegram connection.
+  const probe = new Image();
+  probe.onload = () => { if (img.isConnected) img.src = candidates[next]; };
+  probe.onerror = () => { if (img.isConnected) showNextPersonPhoto(img); };
+  probe.src = candidates[next];
+}
+
+function loadPersonPhoto(img) {
+  if (img.dataset.personPhotoLoaded) return;
+  const candidates = personPhotoCandidates(img);
+  if (!candidates.length) {
+    img.remove();
+    return;
+  }
+  img.dataset.personPhotoLoaded = "1";
+  img.dataset.personPhotoIndex = "0";
+  img.src = candidates[0];
+}
+
+let _personPhotoObserver = null;
+function lazyLoadPersonPhotos(root = document) {
+  const images = [...(root.querySelectorAll?.("img[data-person-photo-src]") || [])]
+    .filter(img => !img.dataset.personPhotoLoaded);
+  if (!images.length) return;
+  if (!("IntersectionObserver" in window)) {
+    images.forEach(loadPersonPhoto);
+    return;
+  }
+  if (!_personPhotoObserver) {
+    _personPhotoObserver = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        _personPhotoObserver.unobserve(entry.target);
+        loadPersonPhoto(entry.target);
+      });
+    }, { rootMargin: "180px 120px" });
+  }
+  images.forEach(img => _personPhotoObserver.observe(img));
+}
+
 function revealLoadedPersonPhotos(root = document) {
+  lazyLoadPersonPhotos(root);
   root.querySelectorAll?.("img[data-person-photo]").forEach(img => {
     if (img.complete && img.naturalWidth) revealPersonPhoto(img);
   });
@@ -310,7 +372,8 @@ document.addEventListener("load", event => {
 document.addEventListener("error", event => {
   const img = event.target;
   if (!(img instanceof HTMLImageElement)) return;
-  if (img.hasAttribute("data-img-retry")) window.__imgRetry(img);
+  if (img.hasAttribute("data-person-photo-src")) showNextPersonPhoto(img);
+  else if (img.hasAttribute("data-img-retry")) window.__imgRetry(img);
   else if (img.hasAttribute("data-img-remove-on-error")) img.remove();
 }, true);
 
@@ -1192,13 +1255,13 @@ function peopleSectionIcon(type) {
 }
 
 function personStatCard(item, index, type) {
-  const [name, count, photoUrl] = item;
+  const [name, count, photoUrl, ...photoFallbacks] = item;
   const favorite = index === 0;
-  const photo = photoUrl ? `<img loading="lazy" decoding="async" src="${esc(posterSrc(photoUrl))}" alt="${esc(name)}" data-img-retry data-person-photo>` : "";
+  const photo = photoUrl ? `<img loading="lazy" decoding="async" alt="${esc(name)}" data-person-photo data-person-photo-src="${esc(photoUrl)}" data-person-photo-fallbacks="${esc(JSON.stringify(photoFallbacks.filter(Boolean)))}">` : "";
   const favoriteLabel = type === "actors" ? t("stats_favorite_actor") : t("stats_favorite_director");
   return `<button class="person-stat-card" type="button" data-stats-person-name="${esc(name)}" data-stats-person-role="${type === "actors" ? "actor" : "director"}" aria-label="${esc(t("stats_person_open", name))}">
     <span class="person-stat-rank" aria-label="${index + 1}">${index + 1}</span>
-    <span class="person-stat-avatar"><span class="fb">${esc(initials(name))}</span>${photo}</span>
+    <span class="person-stat-avatar person-stat-avatar-${type}"><span class="fb">${esc(initials(name))}</span>${photo}</span>
     <div class="person-stat-copy"><b title="${esc(name)}">${esc(name)}</b><small>${esc(t("stats_films", count))}</small>${favorite ? `<span class="person-stat-favorite"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m12 3.8 2.5 5 5.5.8-4 3.9.9 5.5-4.9-2.6-4.9 2.6.9-5.5-4-3.9 5.5-.8z"/></svg>${esc(favoriteLabel)}</span>` : ""}</div>
   </button>`;
 }

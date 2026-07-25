@@ -76,8 +76,26 @@ def extract_actor_photos(persons: list[dict], max_actors: int = 5) -> list[dict]
         name = p.get("name")
         if not name or p.get("enProfession") != "actor":
             continue
-        out.append({"name": name, "photo_url": p.get("photo")})
+        out.append({"name": name, "photo_url": p.get("photo"), "source": "kinopoisk"})
         if len(out) >= max_actors:
+            break
+    return out
+
+
+def extract_director_photos(persons: list[dict], max_directors: int = 2) -> list[dict]:
+    """Director portraits from the same Kinopoisk payload as film credits.
+
+    They are a strictly bounded fallback for Wikidata/Commons: many excellent
+    directors simply do not have a free Commons P18 image, while Kinopoisk
+    often has a legitimate press portrait in this already-fetched response.
+    """
+    out = []
+    for p in persons or []:
+        name = p.get("name")
+        if not name or p.get("enProfession") != "director":
+            continue
+        out.append({"name": name, "photo_url": p.get("photo"), "source": "kinopoisk"})
+        if len(out) >= max_directors:
             break
     return out
 

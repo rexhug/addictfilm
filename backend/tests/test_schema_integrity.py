@@ -37,6 +37,7 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row[0] for row in migrations], [
             db._SCHEMA_MIGRATION_DIRECTOR_PHOTOS,
             db._SCHEMA_MIGRATION_LEGACY_COLUMNS,
+            db._SCHEMA_MIGRATION_PERSON_PORTRAIT_COMPLETENESS,
             db._SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY,
         ])
 

@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 import database as db
+import db_runtime
 
 
 class ActorStatPhotoTests(unittest.IsolatedAsyncioTestCase):
@@ -72,10 +73,54 @@ class ActorStatPhotoTests(unittest.IsolatedAsyncioTestCase):
         ))
         stored = await db.get_film(film_id)
 
-        self.assertEqual(stored["actors"], "Тоби Магуайр, Джейк Джилленхол")
-        self.assertEqual(json.loads(stored["actors_photos"]), cast)
+        self.assertEqual(stored["actors"], "Тоби Магуайр, Джейк Джилленхол, Случайный актёр")
+        merged = json.loads(stored["actors_photos"])
+        self.assertEqual(merged[0]["name"], "Тоби Магуайр")
+        self.assertEqual(merged[1]["name"], "Джейк Джилленхол")
+        self.assertEqual(merged[2]["photo_url"], "https://st.kp.yandex.net/k.jpg")
         self.assertIsNotNone(stored["actor_photos_checked_at"])
         self.assertEqual(await db.films_needing_actor_photo_enrichment(), [])
+
+    async def test_stats_deliver_a_second_portrait_url_as_a_client_fallback(self):
+        initial = json.dumps([{"name": "Alex Actor", "photo_url": "https://st.kp.yandex.net/alex.jpg"}])
+        film_id = await db.get_or_create_film(
+            "tt0000012", "Fallback", actors="Alex Actor", actors_photos=initial,
+        )
+        await db.set_film_cast_from_wikidata(
+            film_id, "Alex Actor",
+            json.dumps([{"name": "Alex Actor", "photo_url": "https://commons.wikimedia.org/wiki/Special:FilePath/Alex.jpg", "source": "wikidata"}]),
+        )
+        await db.set_status(1, film_id, "watched")
+
+        stats = await db.get_user_stats(1)
+
+        self.assertEqual(stats["top_actors"], [(
+            "Alex Actor", 1,
+            "https://commons.wikimedia.org/wiki/Special:FilePath/Alex.jpg",
+            "https://st.kp.yandex.net/alex.jpg",
+        )])
+
+    async def test_profile_rechecks_a_partly_empty_portrait_list(self):
+        film_id = await db.get_or_create_film(
+            "tt0000013", "Incomplete", actors="One Actor, Two Actor",
+            actors_photos=json.dumps([
+                {"name": "One Actor", "photo_url": "https://commons.wikimedia.org/wiki/Special:FilePath/One.jpg"},
+                {"name": "Two Actor", "photo_url": None},
+            ]),
+        )
+        await db.mark_film_actor_photos_checked(film_id)
+        await db.set_status(1, film_id, "watched")
+
+        queued = await db.watched_films_needing_actor_photo_enrichment(1)
+
+        self.assertEqual([item["id"] for item in queued], [])
+        # The retry guard is intentionally time-based. Resetting a bad old
+        # check simulates the one-time completeness migration on deployment.
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute("UPDATE films SET actor_photos_checked_at = NULL WHERE id = ?", (film_id,))
+            await conn.commit()
+        queued = await db.watched_films_needing_actor_photo_enrichment(1)
+        self.assertEqual([item["id"] for item in queued], [film_id])
 
     async def test_favorite_director_keeps_a_portrait_from_watched_films(self):
         photo_url = "https://commons.wikimedia.org/wiki/Special:FilePath/Director.jpg?width=360"
