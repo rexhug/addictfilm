@@ -52,3 +52,18 @@ class ActorStatPhotoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(stored["actors_photos"]), cast)
         self.assertIsNotNone(stored["actor_photos_checked_at"])
         self.assertEqual(await db.films_needing_actor_photo_enrichment(), [])
+
+    async def test_favorite_director_keeps_a_portrait_from_watched_films(self):
+        photo_url = "https://commons.wikimedia.org/wiki/Special:FilePath/Director.jpg?width=360"
+        directors = [{"name": "Alex Director", "photo_url": photo_url, "source": "wikidata"}]
+        for index in (3, 4):
+            film_id = await db.get_or_create_film(
+                f"tt000000{index}", f"Film {index}", directors="Alex Director", runtime="100 min")
+            await db.set_film_directors_from_wikidata(
+                film_id, "Alex Director", json.dumps(directors, ensure_ascii=False),
+            )
+            await db.set_status(1, film_id, "watched")
+
+        stats = await db.get_user_stats(1)
+
+        self.assertEqual(stats["top_directors"], [("Alex Director", 2, photo_url)])

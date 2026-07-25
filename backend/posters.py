@@ -226,3 +226,31 @@ async def backfill_actor_photos(limit: int = 200) -> dict:
                 len(films), enriched, checked_empty, remaining)
     return {"scanned": len(films), "wikidata": enriched,
             "checked_empty": checked_empty, "remaining": remaining}
+
+
+async def backfill_director_photos(limit: int = 200) -> dict:
+    """Research director portraits from Wikidata/Commons for catalogue films."""
+    films = await db.films_needing_director_photo_enrichment(limit)
+    if not films:
+        return {"scanned": 0, "wikidata": 0, "checked_empty": 0, "remaining": 0}
+
+    enriched = checked_empty = 0
+    for start in range(0, len(films), 20):
+        chunk = films[start:start + 20]
+        director_map = await wikidata.get_directors_by_imdb([film["imdb_id"] for film in chunk])
+        for film in chunk:
+            directors = director_map.get(film["imdb_id"], [])
+            if directors:
+                names = ", ".join(person["name"] for person in directors)
+                if await db.set_film_directors_from_wikidata(
+                    film["id"], names, json.dumps(directors, ensure_ascii=False),
+                ):
+                    enriched += 1
+            elif await db.mark_film_director_photos_checked(film["id"]):
+                checked_empty += 1
+
+    remaining = len(films) - enriched - checked_empty
+    logger.info("Бекфіл режисерів Wiki/Commons: скан=%d обогащено=%d пусто=%d осталось=%d",
+                len(films), enriched, checked_empty, remaining)
+    return {"scanned": len(films), "wikidata": enriched,
+            "checked_empty": checked_empty, "remaining": remaining}

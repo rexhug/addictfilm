@@ -30,10 +30,14 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
             )).fetchall()
 
         self.assertIn("role", {row[1] for row in users})
-        self.assertTrue({"kp_id", "search_text", "poster_checked_at", "artwork_checked_at", "actor_photos_checked_at"}.issubset(
+        self.assertTrue({"kp_id", "search_text", "poster_checked_at", "artwork_checked_at", "actor_photos_checked_at",
+                         "directors_photos", "director_photos_checked_at"}.issubset(
             {row[1] for row in films}))
         self.assertEqual({row[2] for row in user_films_fks}, {"users", "films"})
-        self.assertEqual([row[0] for row in migrations], [db._SCHEMA_MIGRATION_LEGACY_COLUMNS])
+        self.assertEqual([row[0] for row in migrations], [
+            db._SCHEMA_MIGRATION_DIRECTOR_PHOTOS,
+            db._SCHEMA_MIGRATION_LEGACY_COLUMNS,
+        ])
 
     async def test_foreign_keys_reject_orphaned_user_film_rows(self):
         async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:

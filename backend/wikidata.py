@@ -162,6 +162,57 @@ async def get_cast_by_imdb(imdb_ids: list[str], max_actors: int = 10) -> dict[st
     return _cast_from_bindings(data.get("results", {}).get("bindings", []), max_actors)
 
 
+def _directors_from_bindings(rows: list[dict]) -> dict[str, list[dict]]:
+    """Normalize director query rows into the same name/photo contract as cast."""
+    grouped: dict[str, list[dict]] = {}
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        imdb_id = row.get("imdb", {}).get("value")
+        director_id = row.get("director", {}).get("value")
+        name = row.get("directorLabel", {}).get("value")
+        if not imdb_id or not director_id or not name or (imdb_id, director_id) in seen:
+            continue
+        seen.add((imdb_id, director_id))
+        grouped.setdefault(imdb_id, []).append({
+            "name": name,
+            "photo_url": commons_thumbnail_url(row.get("image", {}).get("value")),
+            "source": "wikidata",
+        })
+    return grouped
+
+
+async def get_directors_by_imdb(imdb_ids: list[str]) -> dict[str, list[dict]]:
+    """Get film directors and freely licensed Commons portraits in one batch."""
+    ids = list(dict.fromkeys(item for item in imdb_ids if re.fullmatch(r"tt\d{5,12}", item or "")))
+    if not ids:
+        return {}
+
+    values = " ".join(f'"{item}"' for item in ids)
+    query = (
+        "SELECT ?imdb ?director ?directorLabel ?image WHERE {"
+        f"  VALUES ?imdb {{ {values} }}"
+        "  ?film wdt:P345 ?imdb ."
+        "  ?film wdt:P57 ?director ."
+        "  OPTIONAL { ?director wdt:P18 ?image . }"
+        "  SERVICE wikibase:label { bd:serviceParam wikibase:language \"ru,en\". }"
+        "} ORDER BY ?imdb ?directorLabel"
+    )
+    try:
+        session = await _get_session()
+        async with session.get(
+            WIKIDATA_SPARQL,
+            params={"query": query, "format": "json"},
+        ) as resp:
+            if resp.status != 200:
+                return {}
+            data = await resp.json(content_type=None)
+    except Exception:
+        logger.debug("Wikidata get_directors_by_imdb failed", exc_info=True)
+        return {}
+
+    return _directors_from_bindings(data.get("results", {}).get("bindings", []))
+
+
 async def search_movies(query: str) -> list[dict]:
     """Шукає фільми на Wikidata за назвою в укр/рос.
     Повертає list[{"Title", "Year", "imdbID"}] — сумісно з форматом OMDb.

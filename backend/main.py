@@ -82,6 +82,8 @@ _visual_enrichment_tasks: set[asyncio.Task] = set()
 _visual_enrichment_film_ids: set[int] = set()
 _people_enrichment_tasks: set[asyncio.Task] = set()
 _people_enrichment_film_ids: set[int] = set()
+_director_profile_enrichment_tasks: set[asyncio.Task] = set()
+_director_profile_enrichment_users: set[int] = set()
 
 
 async def _periodic_backup() -> None:
@@ -232,9 +234,10 @@ async def movie(film_id: int, user: dict = Depends(current_user)):
     needs_backdrop = not f.get("backdrop_url") and not f.get("artwork_checked_at")
     if (needs_poster or needs_backdrop) and imdb_id and imdb_id.startswith("tt"):
         _schedule_visual_enrichment(film_id, imdb_id)
-    needs_people = bool(f.get("actors")) and not f.get("actor_photos_checked_at")
-    if needs_people and imdb_id and imdb_id.startswith("tt"):
-        _schedule_people_enrichment(film_id, imdb_id)
+    needs_actor_photos = bool(f.get("actors")) and not f.get("actor_photos_checked_at")
+    needs_director_photos = bool(f.get("directors")) and not f.get("director_photos_checked_at")
+    if (needs_actor_photos or needs_director_photos) and imdb_id and imdb_id.startswith("tt"):
+        _schedule_people_enrichment(film_id, imdb_id, needs_actor_photos, needs_director_photos)
     mine, f["community"] = await asyncio.gather(
         db.get_user_film(user["id"], film_id), db.community_rating(film_id))
     f["status"] = mine["status"] if mine else None
@@ -270,19 +273,36 @@ def _schedule_visual_enrichment(film_id: int, imdb_id: str) -> None:
     task.add_done_callback(_visual_enrichment_tasks.discard)
 
 
-async def _enrich_film_people(film_id: int, imdb_id: str) -> bool:
-    """Research a correct top cast and portraits without spending Kinopoisk quota."""
+async def _enrich_film_people(film_id: int, imdb_id: str, enrich_actors: bool = True,
+                              enrich_directors: bool = True) -> bool:
+    """Research cast/director portraits without spending Kinopoisk quota."""
     try:
-        cast = (await wikidata.get_cast_by_imdb([imdb_id])).get(imdb_id, [])
-        if cast:
-            actors = ", ".join(person["name"] for person in cast)
-            await db.set_film_cast_from_wikidata(
-                film_id, actors, json.dumps(cast, ensure_ascii=False),
-            )
-            return True
-        else:
-            await db.mark_film_actor_photos_checked(film_id)
-            return False
+        cast_map, director_map = await asyncio.gather(
+            wikidata.get_cast_by_imdb([imdb_id]) if enrich_actors else _empty_people_map(),
+            wikidata.get_directors_by_imdb([imdb_id]) if enrich_directors else _empty_people_map(),
+        )
+        enriched = False
+        if enrich_actors:
+            cast = cast_map.get(imdb_id, [])
+            if cast:
+                actors = ", ".join(person["name"] for person in cast)
+                await db.set_film_cast_from_wikidata(
+                    film_id, actors, json.dumps(cast, ensure_ascii=False),
+                )
+                enriched = True
+            else:
+                await db.mark_film_actor_photos_checked(film_id)
+        if enrich_directors:
+            directors = director_map.get(imdb_id, [])
+            if directors:
+                names = ", ".join(person["name"] for person in directors)
+                await db.set_film_directors_from_wikidata(
+                    film_id, names, json.dumps(directors, ensure_ascii=False),
+                )
+                enriched = True
+            else:
+                await db.mark_film_director_photos_checked(film_id)
+        return enriched
     except Exception:  # noqa: BLE001
         logger.warning("People enrichment failed for film %s", film_id, exc_info=True)
         return False
@@ -290,12 +310,17 @@ async def _enrich_film_people(film_id: int, imdb_id: str) -> bool:
         _people_enrichment_film_ids.discard(film_id)
 
 
-def _schedule_people_enrichment(film_id: int, imdb_id: str) -> None:
-    """Schedule one free cast/portrait lookup per film, never on the UI path."""
+async def _empty_people_map() -> dict:
+    return {}
+
+
+def _schedule_people_enrichment(film_id: int, imdb_id: str, enrich_actors: bool = True,
+                                enrich_directors: bool = True) -> None:
+    """Schedule free people lookup per film, never on the UI path."""
     if film_id in _people_enrichment_film_ids:
         return
     _people_enrichment_film_ids.add(film_id)
-    task = asyncio.create_task(_enrich_film_people(film_id, imdb_id),
+    task = asyncio.create_task(_enrich_film_people(film_id, imdb_id, enrich_actors, enrich_directors),
                                name=f"film-people-{film_id}")
     _people_enrichment_tasks.add(task)
     task.add_done_callback(_people_enrichment_tasks.discard)
@@ -441,6 +466,7 @@ async def add(body: AddBody, user: dict = Depends(current_user)):
 async def stats(user: dict = Depends(current_user)):
     year = datetime.now(timezone.utc).year
     key = ("personal", user["id"], year)
+    _schedule_profile_director_enrichment(user["id"])
     cached = stats_cache.get(key)
     if cached is not None:
         return cached
@@ -449,6 +475,38 @@ async def stats(user: dict = Depends(current_user)):
     )
     s["year"] = year_stats
     return stats_cache.put(key, s)
+
+
+async def _enrich_profile_director_photos(user_id: int) -> None:
+    """Fill director portraits for the opened profile in a single bounded batch."""
+    try:
+        films = await db.watched_films_needing_director_photo_enrichment(user_id)
+        if not films:
+            return
+        director_map = await wikidata.get_directors_by_imdb([film["imdb_id"] for film in films])
+        for film in films:
+            directors = director_map.get(film["imdb_id"], [])
+            if directors:
+                await db.set_film_directors_from_wikidata(
+                    film["id"], ", ".join(person["name"] for person in directors),
+                    json.dumps(directors, ensure_ascii=False),
+                )
+            else:
+                await db.mark_film_director_photos_checked(film["id"])
+        stats_cache.clear()
+    except Exception:  # noqa: BLE001
+        logger.warning("Profile director enrichment failed for user %s", user_id, exc_info=True)
+    finally:
+        _director_profile_enrichment_users.discard(user_id)
+
+
+def _schedule_profile_director_enrichment(user_id: int) -> None:
+    if user_id in _director_profile_enrichment_users:
+        return
+    _director_profile_enrichment_users.add(user_id)
+    task = asyncio.create_task(_enrich_profile_director_photos(user_id), name=f"profile-directors-{user_id}")
+    _director_profile_enrichment_tasks.add(task)
+    task.add_done_callback(_director_profile_enrichment_tasks.discard)
 
 
 @app.get("/api/random")
@@ -670,6 +728,12 @@ async def upgrade_omdb_posters(limit: int = 200, name_cap: int = 60):
 async def backfill_actor_photos(limit: int = 200):
     """Refresh top cast/portraits from Wikidata+Commons without Kinopoisk quota."""
     return await posters.backfill_actor_photos(limit=max(1, min(limit, 500)))
+
+
+@app.post("/api/admin/backfill-director-photos", dependencies=[Depends(require_admin)])
+async def backfill_director_photos(limit: int = 200):
+    """Refresh director portraits from Wikidata+Commons without Kinopoisk quota."""
+    return await posters.backfill_director_photos(limit=max(1, min(limit, 500)))
 
 
 @app.post("/api/admin/enrich-film-people/{imdb_id}", dependencies=[Depends(require_admin)])

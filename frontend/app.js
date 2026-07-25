@@ -970,7 +970,9 @@ async function showStats() {
 
   // 2. Личная статистика за всё время.
   const s = await api("/api/stats");
-  const expanded = { genres: false, actors: false, directors: false };
+  // Only genres use a compact/expanded state. People cards always stay in one
+  // horizontal rail, so the whole list is reachable with a normal swipe.
+  const expanded = { genres: false };
   const personal = statsProfileHTML(s) + ((!s.watched && !s.want) ? emptyState("📊", t("stats_empty_t"), t("stats_empty_s")) : personalStatsHTML(s, "me", expanded));
   const paired = partner.status === "paired" && pstats;
   let mode = "me";
@@ -1135,10 +1137,8 @@ function genreRow([genre, pct, count]) {
 }
 
 function genreStatsCard(items, expanded) {
-  const isExpanded = expanded.genres;
-  const topAction = items.length > 3 ? `<button class="genre-more-top" type="button" data-stats-expand="genres">${esc(t(isExpanded ? "stats_less" : "stats_more"))}<span>›</span></button>` : "";
   return `<section class="genre-stats-card">
-    <div class="genre-stats-head">${genreIcon("drama", "genre-title-icon")}<div><h2>${esc(t("chart_genres"))}</h2><p>${esc(t("stats_genres_hint"))}</p></div>${topAction}</div>
+    <div class="genre-stats-head">${genreIcon("drama", "genre-title-icon")}<div><h2>${esc(t("chart_genres"))}</h2><p>${esc(t("stats_genres_hint"))}</p></div></div>
     <div class="genre-stat-list">${statsList("genres", items, genreRow, expanded)}</div>
   </section>`;
 }
@@ -1162,20 +1162,16 @@ function personStatCard(item, index, type) {
   </article>`;
 }
 
-function peopleStatsSection({ type, title, subtitle, items, expanded }) {
+function peopleStatsSection({ type, title, subtitle, items }) {
   const list = Array.isArray(items) ? items : [];
-  const isExpanded = !!expanded[type];
-  const visible = isExpanded ? list : list.slice(0, 3);
-  const hasMore = list.length > 3;
   const emptyKey = type === "actors" ? "stats_actors_empty" : "stats_directors_empty";
-  const action = hasMore ? `<button class="people-view-all" type="button" data-stats-expand="${type}" aria-label="${esc(t(isExpanded ? "stats_less" : "stats_view_all"))}">${esc(t(isExpanded ? "stats_less" : "stats_view_all"))}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>` : "";
   const body = list.length
-    ? `<div class="people-stats-rail ${isExpanded ? "is-expanded" : ""}">${visible.map((item, index) => personStatCard(item, index, type)).join("")}</div>`
+    ? `<div class="people-stats-rail" aria-label="${esc(title)}">${list.map((item, index) => personStatCard(item, index, type)).join("")}</div>`
     : `<div class="people-stats-empty"><b>${esc(t(emptyKey))}</b><span>${esc(t("stats_people_empty_hint"))}</span></div>`;
-  return `<section class="people-stats-section people-stats-${type}"><header class="people-stats-head">${peopleSectionIcon(type)}<div><h2>${esc(title)}</h2><p>${esc(subtitle)}</p></div>${action}</header>${body}</section>`;
+  return `<section class="people-stats-section people-stats-${type}"><header class="people-stats-head">${peopleSectionIcon(type)}<div><h2>${esc(title)}</h2><p>${esc(subtitle)}</p></div></header>${body}</section>`;
 }
 
-function personalStatsHTML(s, scope = "me", expanded = { genres: false, actors: false, directors: false }) {
+function personalStatsHTML(s, scope = "me", expanded = { genres: false }) {
   const y = s.year;
   const hours = Math.floor(s.total_runtime_min / 60);
   const topGenre = s.top_genres_pct?.[0]?.[0];
@@ -1193,8 +1189,8 @@ function personalStatsHTML(s, scope = "me", expanded = { genres: false, actors: 
   const genres = s.top_genres_pct.length ? genreStatsCard(s.top_genres_pct, expanded) : "";
   const actorHint = scope === "pair" ? "stats_people_hint_pair" : "stats_people_hint";
   const directorHint = scope === "pair" ? "stats_directors_hint_pair" : "stats_directors_hint";
-  const actors = peopleStatsSection({ type: "actors", title: t("chart_actors"), subtitle: t(actorHint), items: s.top_actors, expanded });
-  const directors = peopleStatsSection({ type: "directors", title: t("chart_directors"), subtitle: t(directorHint), items: s.top_directors, expanded });
+  const actors = peopleStatsSection({ type: "actors", title: t("chart_actors"), subtitle: t(actorHint), items: s.top_actors });
+  const directors = peopleStatsSection({ type: "directors", title: t("chart_directors"), subtitle: t(directorHint), items: s.top_directors });
   const yearCard = y.count ? `<section class="year-card">
     <div class="year-card-title">🏆 ${esc(t("year_title", y.year))}</div>
     <div class="year-line"><b>${y.count}</b> ${esc(t("count_films", y.count))}${y.avg_rating ? ` · ${esc(t("year_avg"))} <b>${y.avg_rating}</b>` : ""}</div>

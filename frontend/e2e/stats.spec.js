@@ -4,8 +4,8 @@ const personalStats = {
   watched: 46, want: 31, avg_rating: 7.2, total_runtime_min: 4800,
   rating_dist: [0, 1, 2, 6, 3, 8, 11, 9, 4, 8],
   top_genres_pct: [["Drama", 20, 9], ["Thriller", 14, 6], ["Mystery", 10, 5], ["Action", 8, 4]],
-  top_actors: [["Jake Gyllenhaal", 4, null], ["Will Poulter", 3, null], ["Ed Helms", 2, null]],
-  top_directors: [["David Fincher", 4, null], ["Todd Phillips", 3, null], ["Christopher Nolan", 2, null]],
+  top_actors: [["Jake Gyllenhaal", 4, null], ["Will Poulter", 3, null], ["Ed Helms", 2, null], ["Woody Harrelson", 2, null]],
+  top_directors: [["David Fincher", 4, null], ["Todd Phillips", 3, null], ["Christopher Nolan", 2, null], ["Denis Villeneuve", 2, null]],
   year: { year: 2026, count: 46, avg_rating: 7.2, top_genre: "Drama", top_actor: null, best_films: [] },
 };
 
@@ -49,6 +49,9 @@ test("personal profile fits a 390px phone without a hidden final card", async ({
   await openStats(page);
   await expect(page.getByText("Как ты оцениваешь фильмы")).toBeVisible();
   await expect(page.getByText("Мы вместе")).toHaveCount(0);
+  await expect(page.getByText("Посмотреть всех")).toHaveCount(0);
+  await expect(page.locator(".people-stats-actors .person-stat-card")).toHaveCount(4);
+  await expect(page.locator(".people-stats-directors .person-stat-card")).toHaveCount(4);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
