@@ -10,7 +10,6 @@ import math
 import re
 import secrets
 from collections import defaultdict
-from typing import Iterable
 
 import database as db
 import search
