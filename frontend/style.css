@@ -546,3 +546,17 @@ section{margin-top:30px;}
   color:var(--ink);display:grid;place-items:center;cursor:pointer;transition:transform .15s;}
 .icon-add:active{transform:scale(.9);}
 .icon-add svg{width:18px;height:18px;}
+
+/* Portraits keep their source ratio: the image is never stretched or cropped.
+   The larger media area makes the rail feel full while the text stays compact. */
+.people-stats-section .person-stat-card{--person-photo-height:170px;min-height:258px;}
+.people-stats-section .person-stat-card.is-favorite{--person-photo-height:190px;min-height:278px;}
+.people-stats-section .person-stat-avatar,.people-stats-section .person-stat-card.is-favorite .person-stat-avatar{width:100%;height:var(--person-photo-height);margin:0;border:0;border-radius:17px 17px 0 0;}
+.people-stats-section .person-stat-avatar img{object-fit:contain;object-position:center center;background:var(--s3);}
+.people-stats-section .person-stat-copy,.people-stats-section .person-stat-card.is-favorite .person-stat-copy{position:static;margin-top:calc(var(--person-photo-height) + 10px);}
+.people-stats-section .person-stat-copy>b{font-size:12.5px;line-height:1.2;}
+.people-stats-section .person-stat-card.is-favorite .person-stat-copy>b{font-size:14px;}
+.people-stats-section .person-stat-copy>small{margin-top:4px;font-size:10.5px;}
+.people-stats-section .person-stat-favorite{position:absolute;z-index:3;top:calc(var(--person-photo-height) - 31px);left:9px;align-self:auto;margin:0;padding:5px 7px;border-color:rgba(255,255,255,.18);border-radius:8px;background:rgba(13,15,20,.86);color:#d2ceff;}
+.people-stats-section .person-stat-rank{z-index:4;}
+@media(max-width:560px){.people-stats-section .person-stat-card{--person-photo-height:166px;min-height:252px;}.people-stats-section .person-stat-card.is-favorite{--person-photo-height:186px;min-height:272px;}.people-stats-section .person-stat-copy,.people-stats-section .person-stat-card.is-favorite .person-stat-copy{margin-top:calc(var(--person-photo-height) + 9px);}}
