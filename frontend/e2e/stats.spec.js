@@ -296,11 +296,14 @@ test("personal profile fits a 390px phone without a hidden final card", async ({
 
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   const bounds = await page.evaluate(() => {
-    const last = document.querySelector(".year-card")?.getBoundingClientRect();
+    const last = document.querySelector("#stats").lastElementChild?.getBoundingClientRect();
     const bar = document.querySelector("#tabbar")?.getBoundingClientRect();
     return { lastBottom: last?.bottom, barTop: bar?.top };
   });
+  // Последний блок не заезжает под таб-бар и не оставляет большого пустого хвоста
+  // прокрутки (иначе вернулся бы двойной нижний отступ).
   expect(bounds.lastBottom).toBeLessThanOrEqual(bounds.barTop);
+  expect(bounds.barTop - bounds.lastBottom).toBeLessThanOrEqual(120);
 });
 
 test("a temporary pair-stats failure keeps the pair tab and never exposes unlinking on the profile", async ({ page }) => {

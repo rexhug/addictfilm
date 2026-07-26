@@ -109,7 +109,6 @@ const DICT = {
     stats_taste_hint: (genre, rating) => genre ? `Тебе особенно нравятся ${genre}; чаще всего ты ставишь ${rating}.` : `Чаще всего ты ставишь ${rating}.`,
     tile_watched: "просмотрено", tile_want: "в «Хочу»", tile_shared_watched: "вместе посмотрено", tile_shared_want: "вместе в «Хочу»", tile_avg: "средняя", tile_hours: "часов",
     chart_ratings: "Как ты оцениваешь фильмы", chart_ratings_pair: "Общие оценки", chart_genres: "Жанры", chart_actors: "Актёры", chart_directors: "Режиссёры",
-    year_title: (y) => `Итоги ${y}`, year_avg: "средняя", year_fav_genre: "Любимый жанр — ", year_actor: "Актёр года — ", year_best: "Лучшее",
     auth_err_s: "Открой через кнопку меню бота в Telegram",
     partner_title: "Пара", partner_none_sub: "Добавь партнёра — считайте совместимость вкусов вместе",
     partner_invite_btn: "Добавить партнёра", partner_invited_sub: "Приглашение готово. Отправь ссылку партнёру в Telegram.",
@@ -186,7 +185,6 @@ const DICT = {
     stats_taste_hint: (genre, rating) => genre ? `You lean toward ${genre} and most often give ${rating}.` : `You most often give ${rating}.`,
     tile_watched: "watched", tile_want: "wishlist", tile_shared_watched: "watched together", tile_shared_want: "shared wishlist", tile_avg: "average", tile_hours: "hours",
     chart_ratings: "How you rate movies", chart_ratings_pair: "Shared ratings", chart_genres: "Genres", chart_actors: "Actors", chart_directors: "Directors",
-    year_title: (y) => `${y} in review`, year_avg: "average", year_fav_genre: "Favorite genre — ", year_actor: "Actor of the year — ", year_best: "Best",
     auth_err_s: "Open via the bot's menu button in Telegram",
     partner_title: "Partner", partner_none_sub: "Add a partner — see how your movie tastes match",
     partner_invite_btn: "Add partner", partner_invited_sub: "Invite ready. Send the link to your partner in Telegram.",
@@ -1987,7 +1985,6 @@ function peopleStatsSection({ type, title, subtitle, items }) {
 }
 
 function personalStatsHTML(s, scope = "me", expanded = { genres: false }) {
-  const y = s.year;
   const hours = Math.floor(s.total_runtime_min / 60);
   const topGenre = cap(s.top_genres_pct?.[0]?.[0] || "");
   const topRating = (s.rating_dist || []).reduce((best, count, index, values) => count > values[best] ? index : best, 0) + 1;
@@ -2006,13 +2003,7 @@ function personalStatsHTML(s, scope = "me", expanded = { genres: false }) {
   const directorHint = scope === "pair" ? "stats_directors_hint_pair" : "stats_directors_hint";
   const actors = peopleStatsSection({ type: "actors", title: t("chart_actors"), subtitle: t(actorHint), items: s.top_actors });
   const directors = peopleStatsSection({ type: "directors", title: t("chart_directors"), subtitle: t(directorHint), items: s.top_directors });
-  const yearCard = scope !== "pair" && y.count ? `<section class="year-card">
-    <div class="year-card-title">🏆 ${esc(t("year_title", y.year))}</div>
-    <div class="year-line"><b>${y.count}</b> ${esc(t("count_films", y.count))}${y.avg_rating ? ` · ${esc(t("year_avg"))} <b>${y.avg_rating}</b>` : ""}</div>
-    ${y.top_genre ? `<div class="year-line">${esc(t("year_fav_genre"))}${esc(y.top_genre)}</div>` : ""}
-    ${y.top_actor ? `<div class="year-line">${esc(t("year_actor"))}${esc(y.top_actor[0])} <small>(${y.top_actor[1]})</small></div>` : ""}
-    ${y.best_films && y.best_films.length ? `<div class="year-line">${esc(t("year_best"))} <small>(${y.best_avg})</small>: ${y.best_films.map(item => `<button class="stats-film-link" data-film-id="${item.film_id}" type="button">${esc(item.title)}</button>`).join(", ")}</div>` : y.best_titles && y.best_titles.length ? `<div class="year-line">${esc(t("year_best"))} <small>(${y.best_avg})</small>: ${y.best_titles.map(esc).join(", ")}</div>` : ""}</section>` : "";
-  return intro + tiles + hist + genres + actors + directors + yearCard;
+  return intro + tiles + hist + genres + actors + directors;
 }
 
 // ── Пара ──────────────────────────────────────────────────────────────────────
