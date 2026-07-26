@@ -60,6 +60,14 @@ class PartnerTransactionTests(unittest.IsolatedAsyncioTestCase):
                 "SELECT COUNT(*) FROM partner_invites WHERE from_user = ? AND status = 'pending'", (1,))
             self.assertEqual((await cur.fetchone())[0], 1)
 
+    async def test_pending_invite_sender_is_available_until_the_invite_is_used(self):
+        await self._add_users(1, 2)
+        token = await db.create_invite(1)
+
+        self.assertEqual((await db.get_invite_sender(token))["id"], 1)
+        self.assertTrue((await db.accept_invite(token, 2))["ok"])
+        self.assertIsNone(await db.get_invite_sender(token))
+
     async def test_accepting_a_pair_revokes_both_users_pending_invites(self):
         await self._add_users(1, 2)
         inviter_token = await db.create_invite(1)

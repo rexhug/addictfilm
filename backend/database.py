@@ -1709,6 +1709,23 @@ async def get_pending_invite(from_user: int) -> str | None:
         return row[0] if row else None
 
 
+async def get_invite_sender(token: str) -> dict | None:
+    """Return only the sender of a still-actionable invite.
+
+    The invite token is already the capability needed to accept the invitation;
+    this small preview lets that same recipient see who invited them before
+    deciding.  It intentionally does not expose any relationship data.
+    """
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT u.id, u.first_name, u.username, u.photo_url "
+            "FROM partner_invites i JOIN users u ON u.id = i.from_user "
+            "WHERE i.token = ? AND i.status = 'pending'", (token,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
 async def _lock_pair_users(db, *user_ids: int) -> None:
     """Серіалізувати зміни pair/invite для одних і тих самих користувачів.
 

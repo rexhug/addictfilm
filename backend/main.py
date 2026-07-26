@@ -714,6 +714,18 @@ async def partner_invite(user: dict = Depends(current_user)):
     return {"link": _invite_link(token), "code": token}
 
 
+@app.get("/api/partner/invite/{token}")
+async def partner_invite_preview(token: str, user: dict = Depends(current_user)):
+    """Preview the sender tied to a valid invite, without changing its state."""
+    token = token.strip()
+    if token.startswith("inv_"):
+        token = token[4:]
+    sender = await db.get_invite_sender(token)
+    if not sender:
+        raise HTTPException(status_code=404, detail="Приглашение недействительно или уже использовано")
+    return {"inviter": _partner_brief(sender, user["id"])}
+
+
 class AcceptBody(BaseModel):
     token: str = Field(max_length=128)
 

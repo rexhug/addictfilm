@@ -119,7 +119,7 @@ const DICT = {
     partner_code_btn: "У меня есть код", partner_code_ph: "Код партнёра", partner_connect: "Подключить",
     partner_code_hint: "Или отправь партнёру этот код:",
     pair_empty: "Добавляйте фильмы вместе — здесь появится ваша совместная статистика",
-    accept_title: "Приглашение в пару", accept_sub: "Вас зовут отмечать и оценивать фильмы вместе, с общей статистикой совместимости.",
+    accept_title: "Приглашение в пару", accept_title_from: (name) => `Вас зовёт ${name} в пару`, accept_sub: "Отмечайте и оценивайте фильмы вместе. У вас будет общая статистика и совместимость.",
     accept_yes: "Принять", accept_no: "Не сейчас",
     accept_ok: (name) => `Готово! Теперь вы в паре${name ? ` с ${name}` : ""}.`,
     accept_fail_invalid: "Приглашение недействительно или уже использовано.",
@@ -195,7 +195,7 @@ const DICT = {
     partner_code_btn: "I have a code", partner_code_ph: "Partner code", partner_connect: "Connect",
     partner_code_hint: "Or send your partner this code:",
     pair_empty: "Add films together — your shared stats will show here",
-    accept_title: "Pairing invite", accept_sub: "You're invited to track and rate movies together, with shared compatibility stats.",
+    accept_title: "Pairing invite", accept_title_from: (name) => `${name} invited you to pair up`, accept_sub: "Track and rate films together, with shared stats and compatibility.",
     accept_yes: "Accept", accept_no: "Not now",
     accept_ok: (name) => `Done! You're now paired${name ? ` with ${name}` : ""}.`,
     accept_fail_invalid: "Invite is invalid or already used.",
@@ -1722,14 +1722,25 @@ function sharePartnerLink(link) {
 async function showAcceptInvite(param) {
   unwireDetailScroll();
   window.scrollTo(0, 0);
-  screen.innerHTML = `<div class="accept">
-    <div class="accept-icon">💞</div>
-    <div class="accept-title">${esc(t("accept_title"))}</div>
-    <div class="accept-sub">${esc(t("accept_sub"))}</div>
+  screen.innerHTML = `<main class="accept-screen"><section class="accept" aria-labelledby="accept-title">
+    <div class="accept-icon" aria-hidden="true">💞</div>
+    <h1 class="accept-title" id="accept-title">${esc(t("accept_title"))}</h1>
+    <p class="accept-sub">${esc(t("accept_sub"))}</p>
     <div class="accept-actions">
-      <button class="pbtn primary" id="acc-yes">${esc(t("accept_yes"))}</button>
-      <button class="pbtn" id="acc-no">${esc(t("accept_no"))}</button>
-    </div></div>`;
+      <button class="accept-btn accept-btn-primary" id="acc-yes" type="button">${esc(t("accept_yes"))}</button>
+      <button class="accept-btn" id="acc-no" type="button">${esc(t("accept_no"))}</button>
+    </div></section></main>`;
+  try {
+    const preview = await api(`/api/partner/invite/${encodeURIComponent(param)}`);
+    const inviter = preview?.inviter || {};
+    const name = inviter.name || inviter.username;
+    const title = document.getElementById("accept-title");
+    if (title && name) {
+      const marker = "\uFFF0";
+      const [before, after = ""] = String(t("accept_title_from", marker)).split(marker);
+      title.innerHTML = `${esc(before)}<span class="accept-inviter-name">${esc(name)}</span>${esc(after)}`;
+    }
+  } catch (_) { /* A stale link still keeps its normal accept/reject flow. */ }
   document.getElementById("acc-no").onclick = () => { setActiveTab("home"); showHome(); };
   document.getElementById("acc-yes").onclick = async () => {
     const r = await api("/api/partner/accept", { method: "POST", body: JSON.stringify({ token: param }) });

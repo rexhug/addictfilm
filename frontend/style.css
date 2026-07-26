@@ -341,11 +341,19 @@ section{margin-top:30px;}
   outline:none;margin:4px 0;letter-spacing:.03em;}
 .code-input:focus{border-color:rgba(123,97,255,.5);}
 .sec-label{font-size:13px;font-weight:600;color:var(--ink-2);letter-spacing:-0.01em;padding:6px 4px 12px;margin-top:6px;}
-.accept{text-align:center;padding:60px 26px;}
-.accept-icon{font-size:52px;line-height:1;}
-.accept-title{font-size:22px;font-weight:650;letter-spacing:-0.02em;margin-top:16px;}
-.accept-sub{font-size:14px;color:var(--ink-2);line-height:1.55;margin-top:10px;}
-.accept-actions{display:flex;flex-direction:column;margin-top:24px;}
+/* The invite is its own small flow, so it balances inside the usable Telegram
+   viewport rather than inheriting a desktop-sized top margin. */
+.accept-screen{display:grid;min-width:0;min-height:calc(100dvh - var(--safe-top));padding:calc(var(--safe-top) + 18px) 20px calc(100px + var(--tg-inset-bottom));place-items:center;}
+.accept{display:flex;flex-direction:column;align-items:center;width:100%;max-width:420px;min-width:0;min-height:min(610px,calc(100dvh - var(--safe-top) - 132px));padding:clamp(30px,7vh,56px) clamp(22px,6vw,42px) clamp(24px,5vh,40px);border:1px solid var(--hair-2);border-radius:26px;background:var(--s1);box-shadow:var(--shadow);text-align:center;}
+.accept-icon{display:grid;flex:none;width:72px;height:72px;place-items:center;border:1px solid rgba(123,97,255,.22);border-radius:23px;background:rgba(123,97,255,.10);font-size:40px;line-height:1;}
+.accept-title{width:100%;min-width:0;max-width:100%;margin-top:clamp(24px,5vh,42px);font-size:clamp(25px,7vw,34px);font-weight:680;letter-spacing:-.04em;line-height:1.12;overflow-wrap:anywhere;}
+.accept-inviter-name{display:block;max-width:100%;margin:2px auto 0;overflow:hidden;color:var(--accent-2);text-overflow:ellipsis;white-space:nowrap;}
+.accept-sub{max-width:330px;margin-top:18px;color:var(--ink-2);font-size:clamp(14px,4vw,16px);line-height:1.52;}
+.accept-actions{display:flex;flex-direction:column;gap:11px;width:100%;margin-top:auto;padding-top:clamp(34px,8vh,76px);}
+.accept-btn{min-height:52px;border:1px solid var(--hair-2);border-radius:15px;background:var(--s2);color:var(--ink);font:600 16px var(--font);cursor:pointer;transition:transform .15s,border-color .15s;}
+.accept-btn:active{transform:scale(.985);}
+.accept-btn-primary{border-color:transparent;background:var(--accent);}
+@media(max-width:360px),(max-height:680px){.accept-screen{padding-left:16px;padding-right:16px;padding-bottom:88px;}.accept{min-height:0;padding:26px 20px 22px;border-radius:22px;}.accept-icon{width:62px;height:62px;border-radius:20px;font-size:34px;}.accept-title{margin-top:20px;font-size:24px;}.accept-sub{margin-top:13px;font-size:14px;}.accept-actions{padding-top:28px;}.accept-btn{min-height:48px;}}
 
 /* ── floating tab bar ───────────────────────── */
 #tabbar{position:fixed;left:0;right:0;bottom:calc(16px + env(safe-area-inset-bottom));z-index:30;

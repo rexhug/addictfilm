@@ -29,7 +29,7 @@ const pairStats = {
 
 async function openStats(page, paired = false, options = {}) {
   await page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
-  await page.addInitScript((notification) => {
+  await page.addInitScript(({ notification, startParam }) => {
     window.__verticalSwipeDisableCalls = 0;
     if (notification) {
       let permission = notification.permission;
@@ -41,13 +41,13 @@ async function openStats(page, paired = false, options = {}) {
     }
     window.Telegram = { WebApp: {
       initData: "test-init-data",
-      initDataUnsafe: { user: { id: 1, first_name: "Denys", username: "denys" } },
+      initDataUnsafe: { user: { id: 1, first_name: "Denys", username: "denys" }, ...(startParam ? { start_param: startParam } : {}) },
       ready() {}, expand() {}, setHeaderColor() {}, setBackgroundColor() {},
       disableVerticalSwipes() { window.__verticalSwipeDisableCalls += 1; },
       HapticFeedback: { impactOccurred() {}, notificationOccurred() {} },
       showConfirm(_text, callback) { callback(true); }, showAlert() {}, openTelegramLink() {},
     } };
-  }, options.notification || null);
+  }, { notification: options.notification || null, startParam: options.startParam || null });
   await page.route("**/img?**", async route => {
     const source = new URL(route.request().url()).searchParams.get("u") || "";
     const [width, height] = source.includes("wide") ? [960, 540]
@@ -68,6 +68,8 @@ async function openStats(page, paired = false, options = {}) {
         ? { id: 1, title: "The Last of Us", title_original: "The Last of Us", year: "2023", poster_url: null, genres: "Drama" }
       : path === "/api/partner"
         ? (partnerApi?.current ? partnerApi.current() : (paired ? { status: "paired", partner: { name: "Kristina", username: "kristina" } } : { status: "none" }))
+        : path.startsWith("/api/partner/invite/")
+          ? { inviter: { name: "A very very very long inviter name that needs truncation", username: "inviter" } }
         : path === "/api/partner/invite"
           ? (partnerApi?.invite ? partnerApi.invite() : { link: "https://t.me/addictfilmbot?startapp=inv_test", code: "inv_test" })
         : path === "/api/partner/stats" ? pairStats
@@ -77,6 +79,7 @@ async function openStats(page, paired = false, options = {}) {
   });
   await page.goto("/");
   expect(await page.evaluate(() => window.__verticalSwipeDisableCalls)).toBe(1);
+  if (options.startParam) return;
   await page.getByRole("button", { name: "Статистика" }).click();
   await expect(page.getByRole("heading", { name: "Мой кинопрофиль" })).toBeVisible();
 }
@@ -234,4 +237,38 @@ test("settings uses the existing invite and paired management states", async ({ 
   await expect(page.getByText("Ваша пара")).toBeVisible();
   await page.getByRole("button", { name: "Управление парой" }).click();
   await expect(page.getByRole("button", { name: "Разорвать пару" })).toBeVisible();
+});
+
+test("pair invite stays balanced and safe across compact mobile viewports", async ({ page }) => {
+  await openStats(page, false, { startParam: "inv_test" });
+  await expect(page.getByRole("heading", { name: /Вас зовёт/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Принять" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Не сейчас" })).toBeVisible();
+  const assertSafeInvite = async () => {
+    const layout = await page.evaluate(() => {
+      const card = document.querySelector(".accept").getBoundingClientRect();
+      const bar = document.querySelector("#tabbar").getBoundingClientRect();
+      const name = document.querySelector(".accept-inviter-name");
+      return {
+        overflows: document.documentElement.scrollWidth > window.innerWidth,
+        cardBottom: card.bottom,
+        tabTop: bar.top,
+        nameOverflow: name.scrollWidth > name.clientWidth,
+      };
+    });
+    expect(layout.overflows).toBeFalsy();
+    expect(layout.cardBottom).toBeLessThanOrEqual(layout.tabTop - 6);
+    expect(layout.nameOverflow).toBeTruthy();
+  };
+  await assertSafeInvite();
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.reload();
+  await expect(page.getByRole("heading", { name: /Вас зовёт/ })).toBeVisible();
+  await assertSafeInvite();
+  await page.setViewportSize({ width: 430, height: 932 });
+  await page.reload();
+  await expect(page.getByRole("heading", { name: /Вас зовёт/ })).toBeVisible();
+  await assertSafeInvite();
+  await page.getByRole("button", { name: "Не сейчас" }).click();
+  await expect(page.getByRole("button", { name: "Статистика" })).toBeVisible();
 });
