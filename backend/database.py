@@ -39,6 +39,7 @@ _SCHEMA_MIGRATION_SEARCH_TEXT_DIRECTORS = "2026-07-26-search-text-directors"
 _SCHEMA_MIGRATION_PAIR_NOTIFICATIONS = "2026-07-26-pair-notifications"
 _SCHEMA_MIGRATION_PAIR_NOTIFICATION_EVENTS = "2026-07-26-pair-notification-event-model"
 _SCHEMA_MIGRATION_PAIR_NOTIFICATION_OUTBOX = "2026-07-26-pair-notification-outbox"
+_SCHEMA_MIGRATION_PAIR_HISTORY = "2026-07-26-pair-history"
 _PAIR_INVITE_TTL = timedelta(days=7)
 
 
@@ -361,6 +362,67 @@ async def _apply_pair_notification_outbox_migration() -> None:
     await _add_column_if_missing("pair_event_recipients", "dispatched_at TEXT")
 
 
+async def _apply_pair_history_migration() -> None:
+    """Persist pair-specific sessions without changing personal film data.
+
+    ``partners`` intentionally remains the small current-state lookup table.
+    This archive records only the intervals for one exact pair of Telegram IDs,
+    so reuniting with the same person restores their history while a new partner
+    always starts with a separate history.
+    """
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS pair_sessions (
+                id TEXT PRIMARY KEY,
+                pair_key TEXT NOT NULL,
+                first_user_id BIGINT NOT NULL,
+                second_user_id BIGINT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (first_user_id) REFERENCES users(id),
+                FOREIGN KEY (second_user_id) REFERENCES users(id),
+                CHECK (first_user_id < second_user_id)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_pair_sessions_pair ON pair_sessions(pair_key, started_at)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_pair_sessions_active ON pair_sessions(pair_key, ended_at)")
+
+        # The prior schema kept only active links.  Preserve every relationship
+        # that is active at migration time from its original ``since`` value.
+        rows = await (await db.execute(
+            "SELECT user_id, partner_id, since FROM partners WHERE user_id < partner_id"
+        )).fetchall()
+        for first_user_id, second_user_id, started_at in rows:
+            first_user_id, second_user_id = int(first_user_id), int(second_user_id)
+            pair_key = _pair_key(first_user_id, second_user_id)
+            await db.execute(
+                "INSERT INTO pair_sessions (id, pair_key, first_user_id, second_user_id, started_at, ended_at, created_at) "
+                "VALUES (?,?,?,?,?,NULL,?) ON CONFLICT(id) DO NOTHING",
+                (_legacy_pair_session_id(pair_key, started_at), pair_key, first_user_id, second_user_id,
+                 started_at, started_at))
+
+        # Events introduced with the notification outbox contain the exact
+        # beginning of a pair in pair_id.  If such a pair already ended before
+        # this archive ships, retain that recent history too.
+        ended_events = await (await db.execute(
+            "SELECT id, pair_id, created_at FROM pair_events "
+            "WHERE event_type = 'pair.ended' AND pair_id LIKE 'pair:%'"
+        )).fetchall()
+        for event_id, pair_id, ended_at in ended_events:
+            parsed = _parse_legacy_pair_id(pair_id)
+            if not parsed:
+                continue
+            first_user_id, second_user_id, started_at = parsed
+            pair_key = _pair_key(first_user_id, second_user_id)
+            await db.execute(
+                "INSERT INTO pair_sessions (id, pair_key, first_user_id, second_user_id, started_at, ended_at, created_at) "
+                "VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
+                (f"legacy-ended:{event_id}", pair_key, first_user_id, second_user_id,
+                 started_at, ended_at, started_at))
+        await db.commit()
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -372,6 +434,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_PAIR_NOTIFICATIONS, _apply_pair_notifications_migration),
         (_SCHEMA_MIGRATION_PAIR_NOTIFICATION_EVENTS, _apply_pair_notification_event_model_migration),
         (_SCHEMA_MIGRATION_PAIR_NOTIFICATION_OUTBOX, _apply_pair_notification_outbox_migration),
+        (_SCHEMA_MIGRATION_PAIR_HISTORY, _apply_pair_history_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -1998,6 +2061,51 @@ def _pair_id(first_user_id: int, second_user_id: int, since: str) -> str:
     return f"pair:{low}:{high}:{since}"
 
 
+def _pair_key(first_user_id: int, second_user_id: int) -> str:
+    """Stable identity of one exact two-person pair, independent of sessions."""
+    low, high = sorted((int(first_user_id), int(second_user_id)))
+    return f"pair:{low}:{high}"
+
+
+def _legacy_pair_session_id(pair_key: str, started_at: str) -> str:
+    return f"session:{pair_key}:{started_at}"
+
+
+def _parse_legacy_pair_id(pair_id: str | None) -> tuple[int, int, str] | None:
+    """Read the old ``pair:<low>:<high>:<since>`` event identity safely."""
+    if not pair_id or not pair_id.startswith("pair:"):
+        return None
+    parts = pair_id.split(":", 3)
+    if len(parts) != 4:
+        return None
+    try:
+        first_user_id, second_user_id = int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+    if first_user_id >= second_user_id or not parts[3]:
+        return None
+    return first_user_id, second_user_id, parts[3]
+
+
+def _new_pair_session(first_user_id: int, second_user_id: int, started_at: str) -> dict:
+    first_user_id, second_user_id = sorted((int(first_user_id), int(second_user_id)))
+    return {
+        "id": f"session_{secrets.token_urlsafe(18)}",
+        "pair_key": _pair_key(first_user_id, second_user_id),
+        "first_user_id": first_user_id,
+        "second_user_id": second_user_id,
+        "started_at": started_at,
+    }
+
+
+async def _create_pair_session(db, session: dict) -> None:
+    await db.execute(
+        "INSERT INTO pair_sessions (id, pair_key, first_user_id, second_user_id, started_at, ended_at, created_at) "
+        "VALUES (?,?,?,?,?,NULL,?)",
+        (session["id"], session["pair_key"], session["first_user_id"], session["second_user_id"],
+         session["started_at"], session["started_at"]))
+
+
 def _new_pair_event(*, event_type: str, invitation_id: str | None = None,
                     pair_id: str | None = None, inviter_user_id: int | None = None,
                     invitee_user_id: int | None = None, actor_user_id: int | None = None) -> dict:
@@ -2144,6 +2252,8 @@ async def accept_invite(token: str, accepting_user: int) -> dict:
                 raise _InviteRejected("invalid")
 
             now = _now()
+            session = _new_pair_session(from_user, accepting_user, now)
+            await _create_pair_session(db, session)
             cur1 = await db.execute(
                 "INSERT INTO partners (user_id, partner_id, since) VALUES (?,?,?) "
                 "ON CONFLICT(user_id) DO NOTHING RETURNING user_id",
@@ -2164,7 +2274,7 @@ async def accept_invite(token: str, accepting_user: int) -> dict:
                 (from_user, accepting_user))
             event = _new_pair_event(
                 event_type="pair.invite.accepted", invitation_id=token,
-                pair_id=_pair_id(from_user, accepting_user, now), inviter_user_id=int(from_user),
+                pair_id=session["id"], inviter_user_id=int(from_user),
                 invitee_user_id=int(accepting_user), actor_user_id=int(accepting_user))
             await _insert_pair_event(db, event, recipients=[(int(from_user), int(accepting_user)),
                                                              (int(accepting_user), int(from_user))])
@@ -2272,6 +2382,15 @@ async def unpair(user_id: int) -> dict:
         row = await cur.fetchone()
         if row:
             partner_id, since = int(row[0]), row[1]
+            pair_key = _pair_key(user_id, partner_id)
+            ended_at = _now()
+            session = await (await db.execute(
+                "SELECT id FROM pair_sessions WHERE pair_key = ? AND ended_at IS NULL "
+                "ORDER BY started_at DESC LIMIT 1", (pair_key,))).fetchone()
+            if session:
+                await db.execute(
+                    "UPDATE pair_sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL",
+                    (ended_at, session[0]))
             origin = await (await db.execute(
                 "SELECT from_user, accepted_by_user_id FROM partner_invites WHERE status = 'accepted' "
                 "AND ((from_user = ? AND accepted_by_user_id = ?) OR (from_user = ? AND accepted_by_user_id = ?)) "
@@ -2281,7 +2400,7 @@ async def unpair(user_id: int) -> dict:
                 "WHERE (user_id = ? AND partner_id = ?) OR (user_id = ? AND partner_id = ?)",
                 (user_id, partner_id, partner_id, user_id))
             event = _new_pair_event(
-                event_type="pair.ended", pair_id=_pair_id(user_id, partner_id, since),
+                event_type="pair.ended", pair_id=session[0] if session else _pair_id(user_id, partner_id, since),
                 inviter_user_id=int(origin[0]) if origin else None,
                 invitee_user_id=int(origin[1]) if origin and origin[1] is not None else None,
                 actor_user_id=int(user_id))
@@ -2335,22 +2454,40 @@ async def sync_film_to_partner(user_id: int, film_id: int) -> None:
 
 
 async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
-    """Статистика ПАРЫ по фильмам пар-периода (оба добавили после since).
-    Формат как личная статистика + поля совместимости. Просмотрено = оба
-    посмотрели; оценки/гистограмма = оценки обоих; жанры/актёры — из оба-просмотренных."""
+    """Statistics for all historical sessions of one exact pair.
+
+    ``since`` remains as a legacy fallback for direct callers during upgrades,
+    but active production pairs read every saved session for these two IDs.  A
+    user's personal list is never modified or reset by this calculation.
+    """
     year_now = datetime.now(timezone.utc).year
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
+        session_rows = await (await db.execute(
+            "SELECT started_at, ended_at FROM pair_sessions WHERE pair_key = ? ORDER BY started_at ASC",
+            (_pair_key(user_id, partner_id),))).fetchall()
+        sessions = [(row["started_at"], row["ended_at"]) for row in session_rows]
+        # Keeps direct DB callers and a partially upgraded local database safe.
+        if not sessions:
+            sessions = [(since, None)]
+
+        period_conditions: list[str] = []
+        params: list = [user_id, partner_id]
+        for started_at, ended_at in sessions:
+            period_conditions.append(
+                "(a.added_at >= ? AND b.added_at >= ? AND "
+                "(? IS NULL OR (a.added_at <= ? AND b.added_at <= ?)))")
+            params.extend((started_at, started_at, ended_at, ended_at, ended_at))
         rows = await (await db.execute(
-            """
+            f"""
             SELECT f.id AS film_id, f.genres, f.actors, f.actors_photos, f.directors, f.directors_photos, f.runtime, f.title, f.poster_url,
                    a.status AS sa, a.rating AS ra, a.watched_at AS wa,
                    b.status AS sb, b.rating AS rb, b.watched_at AS wb
             FROM user_films a
             JOIN user_films b ON a.film_id = b.film_id
             JOIN films f ON f.id = a.film_id
-            WHERE a.user_id = ? AND b.user_id = ? AND a.added_at >= ? AND b.added_at >= ?
-            """, (user_id, partner_id, since, since))).fetchall()
+            WHERE a.user_id = ? AND b.user_id = ? AND ({' OR '.join(period_conditions)})
+            """, params)).fetchall()
 
     both_watched = [r for r in rows if r["sa"] == "watched" and r["sb"] == "watched"]
     watched = len(both_watched)

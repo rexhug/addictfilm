@@ -109,3 +109,61 @@ class PartnerTransactionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(await db.get_partner(1))
         self.assertEqual(await db.get_partner(2), 3)
+
+    async def test_same_pair_reunion_restores_only_its_own_historical_stats(self):
+        """Personal data accumulates; pair data uses only this pair's sessions."""
+        await self._add_users(1, 2)
+        first_token = await db.create_invite(1)
+        self.assertTrue((await db.accept_invite(first_token, 2))["ok"])
+
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            # Stable synthetic dates make the membership boundaries explicit.
+            await conn.execute("UPDATE pair_sessions SET started_at = ? WHERE ended_at IS NULL", ("2020-01-01T00:00:00+00:00",))
+            await conn.commit()
+        first_film = await db.get_or_create_film("tt9000001", "First together")
+        await db.set_status(1, first_film, "watched")
+        await db.set_status(2, first_film, "watched")
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute("UPDATE user_films SET added_at = ? WHERE film_id = ?", ("2021-01-01T00:00:00+00:00", first_film))
+            await conn.commit()
+
+        self.assertEqual((await db.unpair(1))["kind"], "ended")
+        downtime_film = await db.get_or_create_film("tt9000002", "While apart")
+        await db.set_status(1, downtime_film, "watched")
+        await db.set_status(2, downtime_film, "watched")
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute("UPDATE user_films SET added_at = ? WHERE film_id = ?", ("2027-01-01T00:00:00+00:00", downtime_film))
+            await conn.commit()
+
+        second_token = await db.create_invite(1)
+        self.assertTrue((await db.accept_invite(second_token, 2))["ok"])
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute("UPDATE pair_sessions SET started_at = ? WHERE ended_at IS NULL", ("2030-01-01T00:00:00+00:00",))
+            await conn.commit()
+        second_film = await db.get_or_create_film("tt9000003", "Together again")
+        await db.set_status(1, second_film, "watched")
+        await db.set_status(2, second_film, "watched")
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute("UPDATE user_films SET added_at = ? WHERE film_id = ?", ("2031-01-01T00:00:00+00:00", second_film))
+            await conn.commit()
+
+        pair = await db.get_pair(1)
+        stats = await db.pair_period_stats(1, 2, pair["since"])
+        self.assertEqual(stats["watched"], 2)
+        self.assertEqual((await db.get_user_stats(1))["watched"], 3)
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            row = await (await conn.execute("SELECT COUNT(*) FROM pair_sessions WHERE pair_key = ?", ("pair:1:2",))).fetchone()
+        self.assertEqual(row[0], 2)
+
+        # A different partner gets a different pair key and therefore a clean
+        # shared profile even when the same catalogue film exists in both lists.
+        self.assertEqual((await db.unpair(1))["kind"], "ended")
+        await self._add_users(3)
+        await db.set_status(3, first_film, "watched")
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute("UPDATE user_films SET added_at = ? WHERE user_id = ? AND film_id = ?", ("2021-01-01T00:00:00+00:00", 3, first_film))
+            await conn.commit()
+        third_partner_token = await db.create_invite(1)
+        self.assertTrue((await db.accept_invite(third_partner_token, 3))["ok"])
+        new_pair = await db.get_pair(1)
+        self.assertEqual((await db.pair_period_stats(1, 3, new_pair["since"]))["watched"], 0)
