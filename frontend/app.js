@@ -327,6 +327,11 @@ function revealPersonPhoto(img) {
     showNextPersonPhoto(img);
     return;
   }
+  // Most provider images are real 2:3-ish headshots and look best filling the
+  // compact portrait card.  A few sources are extremely tall or landscape;
+  // keep those intact instead of cutting through a face.
+  const ratio = img.naturalWidth / img.naturalHeight;
+  img.classList.toggle("person-photo-safe-fit", ratio < .62 || ratio > 1.38);
   img.classList.add("ready");
 }
 
@@ -350,6 +355,7 @@ function showNextPersonPhoto(img) {
   }
   img.dataset.personPhotoIndex = String(next);
   img.dataset.personPhotoChecked = "";
+  img.classList.remove("person-photo-safe-fit");
   // Do not swap the currently visible portrait before its replacement is
   // complete. This avoids a flash on a weak Telegram connection.
   const probe = new Image();

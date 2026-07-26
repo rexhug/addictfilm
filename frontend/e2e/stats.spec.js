@@ -4,10 +4,10 @@ const personalStats = {
   watched: 46, want: 31, avg_rating: 7.2, total_runtime_min: 4800,
   rating_dist: [0, 1, 2, 6, 3, 8, 11, 9, 4, 8],
   top_genres_pct: [["Drama", 20, 9], ["Thriller", 14, 6], ["Mystery", 10, 5], ["Action", 8, 4]],
-  // Deliberately mixed source ratios: the people rail must preserve every
-  // original image without stretching or cropping it.
+  // Deliberately mixed source ratios: normal portraits fill the compact card,
+  // while extreme sources safely fall back to contain rather than cutting a face.
   top_actors: [["Jake Gyllenhaal", 4, "https://image.tmdb.org/tall-person.jpg"], ["Will Poulter", 3, "https://image.tmdb.org/wide-person.jpg"], ["Ed Helms", 2, "https://image.tmdb.org/square-person.jpg"], ["Woody Harrelson", 2, "https://image.tmdb.org/portrait-person.jpg"]],
-  top_directors: [["David Fincher", 4, "https://image.tmdb.org/tall-director.jpg"], ["Todd Phillips", 3, "https://image.tmdb.org/wide-director.jpg"], ["Christopher Nolan", 2, "https://image.tmdb.org/square-director.jpg"], ["Denis Villeneuve", 2, "https://image.tmdb.org/portrait-director.jpg"]],
+  top_directors: [["David Fincher", 4, "https://image.tmdb.org/tall-director.jpg"], ["Todd Phillips", 3, "https://image.tmdb.org/wide-director.jpg"], ["Christopher Alexander Longlastname", 2, "https://image.tmdb.org/square-director.jpg"], ["Denis Villeneuve", 2, "https://image.tmdb.org/portrait-director.jpg"]],
   year: { year: 2026, count: 46, avg_rating: 7.2, top_genre: "Drama", top_actor: null, best_films: [] },
 };
 
@@ -99,15 +99,37 @@ test("personal profile fits a 390px phone without a hidden final card", async ({
     };
   });
   expect(favoriteActorLayout.photoWidth).toBeGreaterThanOrEqual(favoriteActorLayout.cardWidth - 2);
-  expect(favoriteActorLayout.photoHeight).toBeGreaterThan(favoriteActorLayout.cardWidth * .7);
+  expect(favoriteActorLayout.photoHeight).toBeGreaterThan(favoriteActorLayout.cardWidth * 1.2);
   expect(favoriteActorLayout.objectFit).toBe("contain");
   expect(favoriteActorLayout.badgeInCopy).toBeFalsy();
   const actorCardLayout = await page.locator(".people-stats-actors .person-stat-card").evaluateAll((cards) => cards.map((card) => {
     const count = card.querySelector(".person-stat-copy > small");
-    return { height: card.getBoundingClientRect().height, countColor: getComputedStyle(count).color };
+    const box = card.getBoundingClientRect();
+    return { width: box.width, height: box.height, scrollHeight: card.scrollHeight, clientHeight: card.clientHeight, countColor: getComputedStyle(count).color };
   }));
+  expect(new Set(actorCardLayout.map(({ width }) => Math.round(width))).size).toBe(1);
   expect(new Set(actorCardLayout.map(({ height }) => Math.round(height))).size).toBe(1);
+  expect(actorCardLayout.every(({ scrollHeight, clientHeight }) => scrollHeight <= clientHeight)).toBeTruthy();
   expect(new Set(actorCardLayout.map(({ countColor }) => countColor)).size).toBe(1);
+  const visibleCards = await page.locator(".people-stats-actors .people-stats-rail").evaluate((rail) => {
+    const first = rail.querySelector(".person-stat-card");
+    return rail.clientWidth / first.getBoundingClientRect().width;
+  });
+  expect(visibleCards).toBeGreaterThan(2);
+  expect(visibleCards).toBeLessThan(2.6);
+  const directorCardMetrics = await page.locator(".people-stats-directors .person-stat-card").evaluateAll((cards) => cards.map((card) => ({ scrollHeight: card.scrollHeight, clientHeight: card.clientHeight })));
+  expect(directorCardMetrics.every(({ scrollHeight, clientHeight }) => scrollHeight <= clientHeight), JSON.stringify(directorCardMetrics)).toBeTruthy();
+  await page.setViewportSize({ width: 430, height: 844 });
+  const wideVisibleCards = await page.locator(".people-stats-actors .people-stats-rail").evaluate((rail) => {
+    const first = rail.querySelector(".person-stat-card");
+    return rail.clientWidth / first.getBoundingClientRect().width;
+  });
+  expect(wideVisibleCards).toBeGreaterThan(2);
+  expect(wideVisibleCards).toBeLessThan(2.6);
+  const squarePhoto = page.locator(".people-stats-actors img[data-person-photo]").nth(2);
+  await squarePhoto.scrollIntoViewIfNeeded();
+  await expect(squarePhoto).toHaveClass(/ready/);
+  expect(await squarePhoto.evaluate((photo) => ({ objectFit: getComputedStyle(photo).objectFit, safeFit: photo.classList.contains("person-photo-safe-fit") }))).toEqual({ objectFit: "cover", safeFit: false });
   await page.locator(".people-stats-actors .person-stat-card").first().click();
   await expect(page.getByRole("heading", { name: "Фильмы с Jake Gyllenhaal" })).toBeVisible();
   await expect(page.locator(".poster .meta .t", { hasText: "Donnie Darko" })).toBeVisible();
