@@ -574,7 +574,6 @@ const ICONS = {
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/>',
   bookmark: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2Z"/>',
   help: '<circle cx="12" cy="12" r="9"/><path d="M9.3 9a2.8 2.8 0 0 1 5.4 1c0 1.8-2.7 2.2-2.7 3.5M12 17h.01"/>',
-  userStar: '<path d="M15 19v-1.4c0-2-1.8-3.6-4-3.6s-4 1.6-4 3.6V19"/><circle cx="11" cy="8" r="3"/><path d="m18 12 .9 1.8 2 .3-1.4 1.4.3 2-1.8-1-1.8 1 .4-2-1.5-1.4 2-.3z"/>',
 };
 const appIcon = (name, { label = null } = {}) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" ${label ? `role="img" aria-label="${esc(label)}"` : 'aria-hidden="true"'}>${ICONS[name] || ""}</svg>`;
@@ -908,7 +907,6 @@ function genreCard(g) {
   const visual = genreVisual(g.name);
   card.innerHTML = `<div class="gart" style="--gtint:${visual.glow}">
     ${genreBackdropHTML(g.name)}
-    <span class="gart-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${visual.icon}</svg></span>
     <span class="lbl"><b>${esc(cap(g.name))}</b><span>${g.count} ${esc(t("count_films", g.count))}</span></span>
   </div>`;
   // Битый/отсутствующий файл — тихо убираем картинку, остаётся tint-фолбэк.
@@ -1985,19 +1983,13 @@ function genreKey(genre) {
 }
 
 function genreVisual(genre) { return GENRE_VISUALS[genreKey(genre)] || GENRE_VISUALS.default; }
-function genreIcon(genre, className = "") {
-  // Иконка — нейтральный outline без цветного бокса; цвет жанра остаётся
-  // только у процентов и прогресс-бара (переменные вешает genreRow на строку).
-  const visual = genreVisual(genre);
-  return `<span class="${className}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${visual.icon}</svg></span>`;
-}
 
 function genreRow([genre, pct, count]) {
   const percentage = Math.max(0, Math.min(100, Number(pct) || 0));
   const countValue = Number.isFinite(Number(count)) ? Number(count) : null;
   const visual = genreVisual(genre);
   return `<div class="genre-stat-row" style="--genre-color:${visual.color};--genre-glow:${visual.glow}">
-    ${genreIcon(genre, "genre-stat-icon")}<div class="genre-stat-name">${esc(cap(genre))}</div>
+    <div class="genre-stat-name">${esc(cap(genre))}</div>
     <div class="genre-stat-track"><i style="width:${Math.max(percentage ? 7 : 0, percentage)}%"></i></div>
     <div class="genre-stat-value"><b>${percentage}%</b>${countValue != null ? `<small>${esc(t("stats_films", countValue))}</small>` : ""}</div>
   </div>`;
@@ -2005,13 +1997,9 @@ function genreRow([genre, pct, count]) {
 
 function genreStatsCard(items, expanded) {
   return `<section class="genre-stats-card">
-    <div class="genre-stats-head">${genreIcon("drama", "genre-title-icon")}<div><h2>${esc(t("chart_genres"))}</h2><p>${esc(t("stats_genres_hint"))}</p></div></div>
+    <div class="genre-stats-head"><div><h2>${esc(t("chart_genres"))}</h2><p>${esc(t("stats_genres_hint"))}</p></div></div>
     <div class="genre-stat-list">${statsList("genres", items, genreRow, expanded)}</div>
   </section>`;
-}
-
-function peopleSectionIcon(type) {
-  return `<span class="people-section-icon" aria-hidden="true">${appIcon(type === "actors" ? "userStar" : "clapper")}</span>`;
 }
 
 function personStatCard(item, index, type) {
@@ -2033,7 +2021,7 @@ function peopleStatsSection({ type, title, subtitle, items }) {
   const body = list.length
     ? `<div class="people-stats-rail" aria-label="${esc(title)}">${list.map((item, index) => personStatCard(item, index, type)).join("")}</div>`
     : `<div class="people-stats-empty"><b>${esc(t(emptyKey))}</b><span>${esc(t("stats_people_empty_hint"))}</span></div>`;
-  return `<section class="people-stats-section people-stats-${type}"><header class="people-stats-head">${peopleSectionIcon(type)}<div><h2>${esc(title)}</h2><p>${esc(subtitle)}</p></div></header>${body}</section>`;
+  return `<section class="people-stats-section people-stats-${type}"><header class="people-stats-head"><div><h2>${esc(title)}</h2><p>${esc(subtitle)}</p></div></header>${body}</section>`;
 }
 
 function personalStatsHTML(s, scope = "me", expanded = { genres: false }) {
