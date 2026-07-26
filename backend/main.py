@@ -241,6 +241,23 @@ async def require_editor(user: dict = Depends(current_user)) -> dict:
     return user
 
 
+# Возможности текущего пользователя. Единственный источник правды для фронта о
+# том, показывать ли админский раздел. Обычному пользователю отдаём пустой
+# набор — по ответу нельзя узнать, кто вообще является администратором.
+_ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
+    "editor": ("collections.read", "collections.write", "content.publish"),
+    "admin": ("collections.read", "collections.write", "content.publish", "audit.read"),
+}
+
+
+@app.get("/api/me/capabilities")
+async def me_capabilities(user: dict = Depends(current_user)):
+    role = await _effective_role(user["id"])
+    capabilities = _ROLE_CAPABILITIES.get(role or "", ())
+    return {"is_admin": bool(capabilities), "admin_role": role if capabilities else None,
+            "capabilities": list(capabilities)}
+
+
 # ── API: список пользователя ──────────────────────────────────────────────────
 @app.get("/api/me")
 async def me(user: dict = Depends(current_user)):
@@ -845,13 +862,71 @@ async def genres(user: dict = Depends(current_user)):
 
 
 # ── API: подборки (кураторские коллекции — публичный просмотр + in-app админка) ─
+# Публичные ручки отдают ТОЛЬКО published и не раскрывают редакционные поля
+# (created_by/updated_at/version) — для этого отдельный сериализатор.
+_PUBLIC_COLLECTION_FIELDS = ("id", "title", "description", "cover", "film_count")
+
+
+def _public_collection(row: dict) -> dict:
+    return {k: row.get(k) for k in _PUBLIC_COLLECTION_FIELDS if k in row}
+
+
 @app.get("/api/collections")
 async def collections_list(user: dict = Depends(current_user)):
-    return {"items": await db.list_collections()}
+    return {"items": [_public_collection(c) for c in await db.list_collections(("published",))]}
 
 
 @app.get("/api/collections/{collection_id}")
 async def collection_detail(collection_id: int, user: dict = Depends(current_user)):
+    c = await db.get_collection(collection_id, statuses=("published",))
+    if not c:
+        raise HTTPException(status_code=404, detail="Подборка не найдена")
+    public = _public_collection(c)
+    public["items"] = await db.get_collection_films(collection_id, user["id"])
+    return public
+
+
+# ── API: администрирование подборок ───────────────────────────────────────────
+# Каждая ручка независимо проверяет роль на сервере (require_editor). Тумблер
+# «Режим администратора» во фронтенде — только UX и прав не даёт.
+async def _audit(user: dict, action: str, entity_id, details: dict | None = None) -> None:
+    role = await _effective_role(user["id"]) or "editor"
+    await db.write_audit(user["id"], role, action, "collection", entity_id, details)
+
+
+def _conflict() -> HTTPException:
+    return HTTPException(status_code=409, detail={"code": "COLLECTION_VERSION_CONFLICT",
+                                                  "message": "Подборку изменил другой администратор"})
+
+
+class CollectionBody(BaseModel):
+    title: str = Field(max_length=500)
+    description: str | None = Field(default=None, max_length=1000)
+
+
+class CollectionPatchBody(BaseModel):
+    version: int = Field(ge=1)
+    title: str | None = Field(default=None, max_length=500)
+    description: str | None = Field(default=None, max_length=1000)
+    cover_url: str | None = Field(default=None, max_length=2048)
+
+
+class CollectionStatusBody(BaseModel):
+    version: int = Field(ge=1)
+
+
+class CollectionOrderBody(BaseModel):
+    version: int = Field(ge=1)
+    ordered_film_ids: list[int] = Field(min_length=1, max_length=200)
+
+
+@app.get("/api/admin/collections", dependencies=[Depends(require_editor)])
+async def admin_collections_list():
+    return {"items": await db.list_collections(db.COLLECTION_STATUSES)}
+
+
+@app.get("/api/admin/collections/{collection_id}", dependencies=[Depends(require_editor)])
+async def admin_collection_detail(collection_id: int, user: dict = Depends(current_user)):
     c = await db.get_collection(collection_id)
     if not c:
         raise HTTPException(status_code=404, detail="Подборка не найдена")
@@ -859,22 +934,101 @@ async def collection_detail(collection_id: int, user: dict = Depends(current_use
     return c
 
 
-class CollectionBody(BaseModel):
-    title: str = Field(max_length=500)
-
-
 @app.post("/api/admin/collections", dependencies=[Depends(require_editor)])
 async def collection_create(body: CollectionBody, user: dict = Depends(current_user)):
-    title = body.title.strip()
+    title = " ".join(body.title.split())
     if not title:
         raise HTTPException(status_code=422, detail="Пустое название")
-    return {"id": await db.create_collection(title[:80], user["id"])}
+    collection_id = await db.create_collection(title[:80], user["id"], body.description)
+    await _audit(user, "collection.created", collection_id, {"title": title[:80]})
+    return {"id": collection_id}
+
+
+@app.patch("/api/admin/collections/{collection_id}", dependencies=[Depends(require_editor)])
+async def collection_update(collection_id: int, body: CollectionPatchBody,
+                            user: dict = Depends(current_user)):
+    fields = {k: v for k, v in body.model_dump(exclude_unset=True).items() if k != "version"}
+    if "title" in fields:
+        fields["title"] = " ".join(str(fields["title"]).split())[:80]
+        if not fields["title"]:
+            raise HTTPException(status_code=422, detail="Пустое название")
+    if fields.get("cover_url") and not str(fields["cover_url"]).startswith("https://"):
+        raise HTTPException(status_code=422, detail="Обложка: разрешён только https")
+    if not await db.get_collection(collection_id):
+        raise HTTPException(status_code=404, detail="Подборка не найдена")
+    updated = await db.update_collection(collection_id, body.version, user["id"], fields)
+    if updated is None:
+        raise _conflict()
+    await _audit(user, "collection.updated", collection_id, {"fields": sorted(fields)})
+    return updated
 
 
 @app.delete("/api/admin/collections/{collection_id}", dependencies=[Depends(require_editor)])
-async def collection_delete(collection_id: int):
+async def collection_delete(collection_id: int, user: dict = Depends(current_user)):
+    existing = await db.get_collection(collection_id)
+    if existing and existing["status"] == "published":
+        # Опубликованное сначала снимают с публикации/архивируют — так удаление
+        # не может тихо выдернуть контент из-под пользователей.
+        raise HTTPException(status_code=409, detail={
+            "code": "COLLECTION_PUBLISHED", "message": "Сначала снимите с публикации"})
     await db.delete_collection(collection_id)
+    await _audit(user, "collection.deleted", collection_id)
     return {"ok": True}
+
+
+async def _transition(collection_id: int, new_status: str, version: int, user: dict, action: str):
+    if not await db.get_collection(collection_id):
+        raise HTTPException(status_code=404, detail="Подборка не найдена")
+    if new_status == "published":
+        items = await db.get_collection_films(collection_id, user["id"])
+        if not items:
+            raise HTTPException(status_code=422, detail={
+                "code": "COLLECTION_EMPTY", "message": "Нельзя опубликовать пустую подборку"})
+    updated = await db.set_collection_status(collection_id, new_status, version, user["id"])
+    if updated is None:
+        raise _conflict()
+    await _audit(user, action, collection_id, {"status": new_status})
+    return updated
+
+
+@app.post("/api/admin/collections/{collection_id}/publish", dependencies=[Depends(require_editor)])
+async def collection_publish(collection_id: int, body: CollectionStatusBody,
+                             user: dict = Depends(current_user)):
+    return await _transition(collection_id, "published", body.version, user, "collection.published")
+
+
+@app.post("/api/admin/collections/{collection_id}/unpublish", dependencies=[Depends(require_editor)])
+async def collection_unpublish(collection_id: int, body: CollectionStatusBody,
+                               user: dict = Depends(current_user)):
+    return await _transition(collection_id, "draft", body.version, user, "collection.unpublished")
+
+
+@app.post("/api/admin/collections/{collection_id}/archive", dependencies=[Depends(require_editor)])
+async def collection_archive(collection_id: int, body: CollectionStatusBody,
+                             user: dict = Depends(current_user)):
+    return await _transition(collection_id, "archived", body.version, user, "collection.archived")
+
+
+@app.post("/api/admin/collections/{collection_id}/restore", dependencies=[Depends(require_editor)])
+async def collection_restore(collection_id: int, body: CollectionStatusBody,
+                             user: dict = Depends(current_user)):
+    return await _transition(collection_id, "draft", body.version, user, "collection.restored")
+
+
+@app.put("/api/admin/collections/{collection_id}/items/order",
+         dependencies=[Depends(require_editor)])
+async def collection_reorder(collection_id: int, body: CollectionOrderBody,
+                             user: dict = Depends(current_user)):
+    if len(set(body.ordered_film_ids)) != len(body.ordered_film_ids):
+        raise HTTPException(status_code=422, detail="Дубли в списке порядка")
+    if not await db.get_collection(collection_id):
+        raise HTTPException(status_code=404, detail="Подборка не найдена")
+    updated = await db.reorder_collection_items(
+        collection_id, body.ordered_film_ids, body.version, user["id"])
+    if updated is None:
+        raise _conflict()
+    await _audit(user, "collection.reordered", collection_id, {"count": len(body.ordered_film_ids)})
+    return updated
 
 
 class CollectionAddBody(BaseModel):
@@ -883,21 +1037,31 @@ class CollectionAddBody(BaseModel):
 
 
 @app.post("/api/admin/collections/{collection_id}/films", dependencies=[Depends(require_editor)])
-async def collection_add_film(collection_id: int, body: CollectionAddBody):
+async def collection_add_film(collection_id: int, body: CollectionAddBody,
+                              user: dict = Depends(current_user)):
     if body.src not in ("k", "i"):
         raise HTTPException(status_code=422, detail="Неизвестный источник")
     if not await db.get_collection(collection_id):
         raise HTTPException(status_code=404, detail="Подборка не найдена")
     film_id = await _resolve_film_id(body.src, body.ref)
-    added = await db.add_film_to_collection(collection_id, film_id)
+    added = await db.add_film_to_collection(collection_id, film_id, user["id"])
+    if added:
+        await _audit(user, "collection.items_added", collection_id, {"film_id": film_id})
     return {"ok": True, "added": added, "movie_id": film_id}
 
 
 @app.delete("/api/admin/collections/{collection_id}/films/{film_id}",
             dependencies=[Depends(require_editor)])
-async def collection_remove_film(collection_id: int, film_id: int):
+async def collection_remove_film(collection_id: int, film_id: int,
+                                 user: dict = Depends(current_user)):
     await db.remove_film_from_collection(collection_id, film_id)
+    await _audit(user, "collection.item_removed", collection_id, {"film_id": film_id})
     return {"ok": True}
+
+
+@app.get("/api/admin/audit-log", dependencies=[Depends(require_editor)])
+async def admin_audit_log(limit: int = 50):
+    return {"items": await db.list_audit_log(max(1, min(200, limit)))}
 
 
 # ── API: пара (партнёрство) ───────────────────────────────────────────────────

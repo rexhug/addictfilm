@@ -74,6 +74,24 @@ const DICT = {
     settings_pair: "Пара", settings_pair_none: "Создайте пару, чтобы смотреть и оценивать фильмы вместе", settings_pair_create: "Создать пару", settings_pair_current: "Ваша пара", settings_pair_manage: "Управление парой", settings_pair_invited: "Приглашение ожидает принятия", settings_pair_load_error: "Не удалось загрузить статус пары", settings_pair_try_again: "Повторить",
     collections_empty_s: "Загляни позже", collections_empty_admin_s: "Создай первую подборку",
     collections_title_ph: "Название подборки", collections_create_btn: "Создать",
+    admin_section: "Администрирование", admin_mode_row: "Режим администратора",
+    admin_mode_hint: "Редактируйте подборки и блоки приложения прямо в интерфейсе.",
+    admin_mode_active: "Режим администратора", admin_exit_mode: "Выйти",
+    admin_permission_revoked: "Права администратора отозваны. Режим выключен.",
+    admin_conflict: "Подборку изменил другой администратор. Откройте её заново.",
+    admin_status_draft: "Черновик", admin_status_published: "Опубликовано",
+    admin_status_archived: "В архиве",
+    admin_publish: "Опубликовать", admin_unpublish: "Снять с публикации",
+    admin_archive: "Архивировать", admin_restore: "Вернуть в черновики",
+    admin_delete_forever: "Удалить навсегда", admin_save: "Сохранить",
+    admin_title_label: "Название", admin_description_label: "Описание",
+    admin_description_ph: "Коротко о подборке (необязательно)",
+    admin_move_up: "Выше", admin_move_down: "Ниже", admin_remove: "Убрать",
+    admin_empty_publish: "Нельзя опубликовать пустую подборку",
+    admin_published_delete: "Сначала снимите подборку с публикации",
+    admin_saved: "Сохранено", admin_drafts_hidden: "Черновик виден только администраторам",
+    admin_archived_hidden: "Архив скрыт от пользователей",
+    admin_reorder_hint: "Стрелками меняйте порядок фильмов",
     coll_confirm_add: (t) => `Добавить «${t}» в подборку?`, coll_already_in: "Уже в этой подборке",
     coll_remove_confirm: (t) => `Убрать «${t}» из подборки?`, coll_add_film_btn: "+ Добавить фильм",
     coll_edit_hint: "Тап на фильм — убрать из подборки",
@@ -150,6 +168,24 @@ const DICT = {
     settings_pair: "Partner", settings_pair_none: "Create a pair to watch and rate films together", settings_pair_create: "Create a pair", settings_pair_current: "Your pair", settings_pair_manage: "Manage pair", settings_pair_invited: "Invite is waiting to be accepted", settings_pair_load_error: "Couldn't load pair status", settings_pair_try_again: "Try again",
     collections_empty_s: "Check back later", collections_empty_admin_s: "Create your first collection",
     collections_title_ph: "Collection name", collections_create_btn: "Create",
+    admin_section: "Administration", admin_mode_row: "Admin mode",
+    admin_mode_hint: "Edit collections and app blocks directly in the interface.",
+    admin_mode_active: "Admin mode", admin_exit_mode: "Exit",
+    admin_permission_revoked: "Admin rights were revoked. Mode disabled.",
+    admin_conflict: "Another administrator changed this collection. Reopen it.",
+    admin_status_draft: "Draft", admin_status_published: "Published",
+    admin_status_archived: "Archived",
+    admin_publish: "Publish", admin_unpublish: "Unpublish",
+    admin_archive: "Archive", admin_restore: "Restore to drafts",
+    admin_delete_forever: "Delete forever", admin_save: "Save",
+    admin_title_label: "Title", admin_description_label: "Description",
+    admin_description_ph: "A short note about the collection (optional)",
+    admin_move_up: "Up", admin_move_down: "Down", admin_remove: "Remove",
+    admin_empty_publish: "An empty collection cannot be published",
+    admin_published_delete: "Unpublish the collection first",
+    admin_saved: "Saved", admin_drafts_hidden: "Draft is visible to admins only",
+    admin_archived_hidden: "Archived items are hidden from users",
+    admin_reorder_hint: "Use arrows to reorder films",
     coll_confirm_add: (t) => `Add "${t}" to the collection?`, coll_already_in: "Already in this collection",
     coll_remove_confirm: (t) => `Remove "${t}" from the collection?`, coll_add_film_btn: "+ Add film",
     coll_edit_hint: "Tap a film to remove it from the collection",
@@ -239,7 +275,15 @@ async function api(path, opts = {}) {
     ...opts,
     headers: { "Content-Type": "application/json", "X-Init-Data": tg.initData, ...(opts.headers || {}) },
   });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
+  if (!res.ok) {
+    // detail бывает строкой (обычные ошибки) и объектом {code, message} —
+    // сохраняем и статус, и код, чтобы вызывающий различал 403/409 надёжно.
+    const detail = (await res.json().catch(() => ({}))).detail;
+    const error = new Error(typeof detail === "string" ? detail : (detail?.message || String(res.status)));
+    error.status = res.status;
+    error.code = detail && typeof detail === "object" ? detail.code : null;
+    throw error;
+  }
   const value = await res.json();
   if (canCache) _readCache.set(path, { value, expiresAt: Date.now() + _READ_CACHE_TTL });
   if (method !== "GET") _readCache.clear();
@@ -574,6 +618,9 @@ const ICONS = {
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/>',
   bookmark: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2Z"/>',
   help: '<circle cx="12" cy="12" r="9"/><path d="M9.3 9a2.8 2.8 0 0 1 5.4 1c0 1.8-2.7 2.2-2.7 3.5M12 17h.01"/>',
+  arrowUp: '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  arrowDown: '<path d="M12 5v14M6 13l6 6 6-6"/>',
+  trash: '<path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M10 11v6M14 11v6"/>',
 };
 const appIcon = (name, { label = null } = {}) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" ${label ? `role="img" aria-label="${esc(label)}"` : 'aria-hidden="true"'}>${ICONS[name] || ""}</svg>`;
@@ -834,7 +881,10 @@ async function showQuizResults(sessionId) {
 async function loadCollectionsRail() {
   const el = document.getElementById("rail-coll");
   try {
-    const { items } = await api("/api/collections");
+    // В режиме админа лента показывает и черновики/архив (со статусом на карточке),
+    // чтобы редактировать «на месте». Публичная ручка их по-прежнему не отдаёт.
+    const admin = canEditCollections();
+    const { items } = await api(admin ? "/api/admin/collections" : "/api/collections");
     if (!el) return;
     if (!items.length) {
       el.innerHTML = `<div class="rail-empty">${esc(canEditCollections() ? t("collections_empty_admin_s") : t("collections_empty_s"))}</div>`;
@@ -1048,8 +1098,63 @@ async function showNotifications() {
   await load();
 }
 
-// ── Подборки (публичный просмотр + in-app админка для editor/admin) ───────────
-function canEditCollections() { return !!(me && (me.role === "admin" || me.role === "editor")); }
+// ── Режим администратора ─────────────────────────────────────────────────────
+// Права выдаёт ТОЛЬКО сервер (/api/me/capabilities и проверка на каждой admin-
+// ручке). Здесь живёт исключительно UX: показывать ли элементы редактирования.
+// В localStorage хранится лишь визуальное предпочтение, никаких прав.
+const ADMIN_MODE_KEY = "addictfilm.adminMode.enabled";
+const AdminMode = {
+  capability: null,   // ответ /api/me/capabilities, null — ещё не загружали
+  enabled: false,     // тумблер в настройках (визуальное предпочтение)
+  async refresh() {
+    try {
+      this.capability = await api("/api/me/capabilities");
+    } catch (_) {
+      this.capability = { is_admin: false, admin_role: null, capabilities: [] };
+    }
+    if (!this.capability.is_admin) this.enabled = false;  // права отозвали — режим гаснет
+    else this.enabled = this.preference();
+    this.renderIndicator();
+    return this.capability;
+  },
+  preference() {
+    try { return localStorage.getItem(ADMIN_MODE_KEY) === "true"; } catch (_) { return false; }
+  },
+  isCapable() { return !!this.capability?.is_admin; },
+  has(permission) { return !!this.capability?.capabilities?.includes(permission); },
+  // Единственная проверка для UI: есть права И режим включён И такое разрешение.
+  active(permission = "collections.write") {
+    return this.isCapable() && this.enabled && this.has(permission);
+  },
+  setEnabled(enabled) {
+    this.enabled = Boolean(enabled) && this.isCapable();
+    try { localStorage.setItem(ADMIN_MODE_KEY, String(this.enabled)); } catch (_) { /* приватный режим */ }
+    tg?.HapticFeedback?.impactOccurred?.("light");
+    this.renderIndicator();
+  },
+  // Сервер ответил 403 — права отозвали прямо в сессии: гасим режим и говорим об этом.
+  revoked() {
+    this.capability = { is_admin: false, admin_role: null, capabilities: [] };
+    this.enabled = false;
+    this.renderIndicator();
+    tg?.showAlert?.(t("admin_permission_revoked"));
+  },
+  renderIndicator() {
+    document.getElementById("admin-indicator")?.remove();
+    if (!this.active("collections.read")) return;
+    const bar = document.createElement("button");
+    bar.id = "admin-indicator";
+    bar.type = "button";
+    bar.className = "admin-indicator";
+    bar.innerHTML = `<span>${esc(t("admin_mode_active"))}</span><i>${esc(t("admin_exit_mode"))}</i>`;
+    bar.onclick = () => { this.setEnabled(false); route(activeTabName()); };
+    document.body.appendChild(bar);
+  },
+};
+function activeTabName() { return document.querySelector("#tabbar .tab.active")?.dataset.tab || "home"; }
+
+// ── Подборки (публичный просмотр + in-app редактирование в режиме админа) ─────
+function canEditCollections() { return AdminMode.active("collections.write"); }
 
 function collectionCard(c) {
   // Тот же формат карточки, что у фильмов: обложка + мета-строка (кол-во фильмов
@@ -1063,7 +1168,10 @@ function collectionCard(c) {
     </div>
     <div class="meta">
       <div class="t">${esc(c.title)}</div>
-      <div class="meta-row"><span class="y">${c.film_count} ${esc(t("count_films", c.film_count))}</span></div>
+      <div class="meta-row"><span class="y">${c.film_count} ${esc(t("count_films", c.film_count))}</span>${
+        c.status && c.status !== "published"
+          ? `<span class="admin-badge admin-badge-${esc(c.status)}">${esc(t(COLLECTION_STATUS_LABEL[c.status] || "admin_status_draft"))}</span>`
+          : ""}</div>
     </div>`;
   card.onclick = () => showCollectionDetail(c.id);
   return card;
@@ -1090,44 +1198,180 @@ function createCollectionFlow() {
   };
 }
 
+const COLLECTION_STATUS_LABEL = {
+  draft: "admin_status_draft", published: "admin_status_published", archived: "admin_status_archived",
+};
+
+// Действия статуса зависят от текущего состояния — язык действий однозначный
+// («Снять с публикации» ≠ «Архивировать» ≠ «Удалить навсегда»).
+function collectionStatusActions(status) {
+  if (status === "draft") return [["publish", "admin_publish", "primary"], ["archive", "admin_archive", ""]];
+  if (status === "published") return [["unpublish", "admin_unpublish", ""], ["archive", "admin_archive", ""]];
+  return [["restore", "admin_restore", "primary"]];
+}
+
 async function showCollectionDetail(id) {
   unwireDetailScroll();
   window.scrollTo(0, 0);
   const canEdit = canEditCollections();
   screen.innerHTML = `<div class="sub-head">${backBtn()}<h1 id="cd-title">…</h1></div>
-    ${canEdit ? `<div class="partner-sub" style="padding:0 20px 10px;">${esc(t("coll_edit_hint"))}</div>` : ""}
+    <div id="cd-editor"></div>
     <div id="cdg">${skeletonGrid(6)}</div>
-    ${canEdit ? `<div style="padding:14px 20px 4px;">
-        <button class="pbtn primary" id="cd-add">${esc(t("coll_add_film_btn"))}</button>
-        <button class="pbtn danger" id="cd-delete">${esc(t("coll_delete_btn"))}</button>
-      </div>` : ""}`;
+    <div id="cd-actions"></div>`;
   wireBack(() => { setActiveTab("home"); showHome(); });
-  if (canEdit) {
-    document.getElementById("cd-add").onclick = () => showSearch({ type: "collection", id });
-    document.getElementById("cd-delete").onclick = () => {
-      const title = document.getElementById("cd-title").textContent;
-      tg.showConfirm(t("coll_delete_confirm", title), async ok => {
+
+  let collection = null;
+  try {
+    // Админ читает через admin-ручку: только она отдаёт черновики и версию для
+    // оптимистичной блокировки. Обычный пользователь — через публичную.
+    collection = await api(canEdit ? `/api/admin/collections/${id}` : `/api/collections/${id}`);
+  } catch (error) {
+    if (canEdit && error.status === 403) AdminMode.revoked();
+    document.getElementById("cdg").innerHTML = emptyState("⚠️", t("load_err"), "");
+    return;
+  }
+  document.getElementById("cd-title").textContent = collection.title;
+
+  const renderItems = () => {
+    const grid = document.getElementById("cdg");
+    if (!collection.items.length) {
+      grid.innerHTML = emptyState("🎬", t("genre_empty_t"), t("genre_empty_s"));
+      return;
+    }
+    const back = () => showCollectionDetail(id);
+    if (!canEdit) {
+      grid.replaceChildren(gridOf(collection.items,
+        m => posterTile(m, { onClick: () => openDetail(m.id, back, m) })));
+      return;
+    }
+    // В режиме админа тайл остаётся тайлом (тап открывает фильм), а
+    // редактирование живёт в отдельных кнопках с целью ≥44px — случайный тап
+    // по карточке не должен ничего переставлять или удалять.
+    const list = document.createElement("div");
+    list.className = "admin-item-list";
+    collection.items.forEach((movie, index) => {
+      const row = document.createElement("div");
+      row.className = "admin-item";
+      row.innerHTML = `
+        <button class="admin-item-open" type="button" aria-label="${esc(movie.title)}">
+          <span class="admin-item-art">${movie.poster_url ? `<img loading="lazy" src="${posterSrc(movie.poster_url, true)}" alt="" data-img-retry>` : ""}</span>
+          <span class="admin-item-copy"><b>${esc(movie.title)}</b><small>${esc(movie.year || "")}</small></span>
+        </button>
+        <div class="admin-item-controls">
+          <button class="admin-icon-btn" data-up ${index === 0 ? "disabled" : ""} aria-label="${esc(t("admin_move_up"))}">${appIcon("arrowUp")}</button>
+          <button class="admin-icon-btn" data-down ${index === collection.items.length - 1 ? "disabled" : ""} aria-label="${esc(t("admin_move_down"))}">${appIcon("arrowDown")}</button>
+          <button class="admin-icon-btn danger" data-remove aria-label="${esc(t("admin_remove"))}">${appIcon("trash")}</button>
+        </div>`;
+      row.querySelector(".admin-item-open").onclick = () => openDetail(movie.id, back, movie);
+      row.querySelector("[data-up]").onclick = () => moveItem(index, -1);
+      row.querySelector("[data-down]").onclick = () => moveItem(index, 1);
+      row.querySelector("[data-remove]").onclick = () => tg.showConfirm(t("coll_remove_confirm", movie.title), async ok => {
         if (!ok) return;
-        await api(`/api/admin/collections/${id}`, { method: "DELETE" });
-        setActiveTab("home"); showHome();
+        await adminCall(`/api/admin/collections/${id}/films/${movie.id}`, { method: "DELETE" });
+        showCollectionDetail(id);
+      });
+      list.appendChild(row);
+    });
+    grid.replaceChildren(list);
+  };
+
+  // Порядок сохраняется одним запросом после перестановки (не на каждое касание),
+  // с текущей версией — параллельная правка вернёт 409, а не тихо перезапишется.
+  const moveItem = async (index, delta) => {
+    const target = index + delta;
+    if (target < 0 || target >= collection.items.length) return;
+    const items = collection.items.slice();
+    [items[index], items[target]] = [items[target], items[index]];
+    collection.items = items;
+    renderItems();
+    const updated = await adminCall(`/api/admin/collections/${id}/items/order`, {
+      method: "PUT",
+      body: JSON.stringify({ version: collection.version, ordered_film_ids: items.map(m => m.id) }),
+    });
+    if (updated) collection.version = updated.version;
+    else showCollectionDetail(id);  // конфликт/ошибка — перечитываем правду с сервера
+  };
+
+  const renderEditor = () => {
+    const editor = document.getElementById("cd-editor");
+    const actions = document.getElementById("cd-actions");
+    if (!canEdit) { editor.innerHTML = ""; actions.innerHTML = ""; return; }
+    const status = collection.status || "draft";
+    const note = status === "draft" ? t("admin_drafts_hidden") : status === "archived" ? t("admin_archived_hidden") : "";
+    editor.innerHTML = `
+      <div class="admin-panel">
+        <div class="admin-panel-head">
+          <span class="admin-badge admin-badge-${esc(status)}">${esc(t(COLLECTION_STATUS_LABEL[status]))}</span>
+          ${note ? `<small>${esc(note)}</small>` : ""}
+        </div>
+        <label class="admin-field"><span>${esc(t("admin_title_label"))}</span>
+          <input id="cd-f-title" class="code-input" value="${esc(collection.title)}" maxlength="80" autocomplete="off"></label>
+        <label class="admin-field"><span>${esc(t("admin_description_label"))}</span>
+          <textarea id="cd-f-desc" class="admin-textarea" rows="2" maxlength="1000" placeholder="${esc(t("admin_description_ph"))}">${esc(collection.description || "")}</textarea></label>
+        <button class="pbtn primary" id="cd-save">${esc(t("admin_save"))}</button>
+      </div>`;
+    actions.innerHTML = `<div class="admin-actions">
+      <button class="pbtn" id="cd-add">${esc(t("coll_add_film_btn"))}</button>
+      ${collectionStatusActions(status).map(([action, key, cls]) =>
+        `<button class="pbtn ${cls}" data-status-action="${action}">${esc(t(key))}</button>`).join("")}
+      <button class="pbtn danger" id="cd-delete">${esc(t("admin_delete_forever"))}</button>
+    </div>${esc(t("admin_reorder_hint")) ? `<p class="admin-hint">${esc(t("admin_reorder_hint"))}</p>` : ""}`;
+
+    document.getElementById("cd-add").onclick = () => showSearch({ type: "collection", id });
+    document.getElementById("cd-save").onclick = async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;  // защита от двойной отправки
+      const updated = await adminCall(`/api/admin/collections/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          version: collection.version,
+          title: document.getElementById("cd-f-title").value,
+          description: document.getElementById("cd-f-desc").value,
+        }),
+      });
+      button.disabled = false;
+      if (!updated) return;
+      collection = { ...collection, ...updated };
+      document.getElementById("cd-title").textContent = collection.title;
+      tg?.HapticFeedback?.notificationOccurred?.("success");
+      renderEditor();
+    };
+    actions.querySelectorAll("[data-status-action]").forEach(button => button.onclick = async () => {
+      button.disabled = true;
+      const updated = await adminCall(
+        `/api/admin/collections/${id}/${button.dataset.statusAction}`,
+        { method: "POST", body: JSON.stringify({ version: collection.version }) });
+      button.disabled = false;
+      if (!updated) return;
+      collection = { ...collection, ...updated };
+      tg?.HapticFeedback?.notificationOccurred?.("success");
+      renderEditor();
+    });
+    document.getElementById("cd-delete").onclick = () => {
+      tg.showConfirm(t("coll_delete_confirm", collection.title), async ok => {
+        if (!ok) return;
+        if (await adminCall(`/api/admin/collections/${id}`, { method: "DELETE" })) {
+          setActiveTab("home"); showHome();
+        }
       });
     };
-  }
+  };
+
+  renderEditor();
+  renderItems();
+}
+
+// Единая обработка админских мутаций: 403 гасит режим, 409 объясняет конфликт,
+// остальное показывает текст ошибки. Возвращает данные или null.
+async function adminCall(path, options) {
   try {
-    const c = await api(`/api/collections/${id}`);
-    document.getElementById("cd-title").textContent = c.title;
-    const el = document.getElementById("cdg");
-    if (!c.items.length) { el.innerHTML = emptyState("🎬", t("genre_empty_t"), t("genre_empty_s")); return; }
-    const back = () => showCollectionDetail(id);
-    const onTile = canEdit
-      ? (m) => tg.showConfirm(t("coll_remove_confirm", m.title), async ok => {
-          if (!ok) return;
-          await api(`/api/admin/collections/${id}/films/${m.id}`, { method: "DELETE" });
-          showCollectionDetail(id);
-        })
-      : (m) => openDetail(m.id, back, m);
-    el.replaceChildren(gridOf(c.items, m => posterTile(m, { onClick: () => onTile(m) })));
-  } catch (e) { document.getElementById("cdg").innerHTML = emptyState("⚠️", t("load_err"), ""); }
+    return await api(path, options) || true;
+  } catch (error) {
+    if (error.status === 403) { AdminMode.revoked(); return null; }
+    if (error.status === 409) { tg?.showAlert?.(t("admin_conflict")); return null; }
+    tg?.showAlert?.(String(error.message || t("load_err")));
+    return null;
+  }
 }
 
 // ── Личные списки ─────────────────────────────────────────────────────────────
@@ -1773,13 +2017,25 @@ async function showStatsSettings(returnMode = "me", managePair = false) {
           <button data-settings-language="ru" type="button" class="${lang === "ru" ? "active" : ""}" aria-pressed="${lang === "ru"}">${esc(t("settings_language_ru"))}</button>
           <button data-settings-language="en" type="button" class="${lang === "en" ? "active" : ""}" aria-pressed="${lang === "en"}">${esc(t("settings_language_en"))}</button>
         </div></div></section>
-      <section class="settings-section" aria-labelledby="settings-pair-title"><h2 id="settings-pair-title">${esc(t("settings_pair"))}</h2><div class="settings-card settings-pair-card">${settingsPairHTML(partner, partnerFailed)}</div></section>`;
+      <section class="settings-section" aria-labelledby="settings-pair-title"><h2 id="settings-pair-title">${esc(t("settings_pair"))}</h2><div class="settings-card settings-pair-card">${settingsPairHTML(partner, partnerFailed)}</div></section>
+      ${AdminMode.isCapable() ? `<section class="settings-section" aria-labelledby="settings-admin-title"><h2 id="settings-admin-title">${esc(t("admin_section"))}</h2><div class="settings-card">
+        ${settingsRow({ title: t("admin_mode_row"), subtitle: t("admin_mode_hint"), action: `<button class="settings-toggle" data-settings-admin type="button" role="switch" aria-checked="${AdminMode.enabled}" aria-label="${esc(t("admin_mode_row"))}"></button>` })}
+      </div></section>` : ""}`;
 
     const telegramToggle = page.querySelector("[data-settings-telegram]");
     if (telegramToggle) telegramToggle.onclick = async () => {
       telegramToggle.disabled = true;
       try { serverSettings = await api("/api/settings", { method: "PATCH", body: JSON.stringify({ telegram_notifications: !serverSettings.telegram_enabled }) }); }
       catch (_) { tg?.showAlert?.(t("settings_pair_load_error")); }
+      render();
+    };
+    const adminToggle = page.querySelector("[data-settings-admin]");
+    if (adminToggle) adminToggle.onclick = async () => {
+      // Перед включением перепроверяем права на сервере: если роль отозвали,
+      // тумблер не включится и раздел исчезнет при следующем рендере.
+      if (!AdminMode.enabled) await AdminMode.refresh();
+      if (!AdminMode.isCapable()) { render(); return; }
+      AdminMode.setEnabled(!AdminMode.enabled);
       render();
     };
     page.querySelectorAll("[data-settings-language]").forEach(button => button.onclick = () => setLang(button.dataset.settingsLanguage, () => showStatsSettings(returnMode, managePair)));
@@ -2220,6 +2476,9 @@ if (!tg) {
   (async () => {
     try {
       me = await api("/api/me");
+      // Возможности спрашиваем у сервера отдельно и не блокируем ими старт:
+      // обычный пользователь получит пустой набор и ничего админского не увидит.
+      AdminMode.refresh().catch(() => {});
       const sp = tg.initDataUnsafe?.start_param || "";
       if (sp.startsWith("inv_")) showAcceptInvite(sp);  // пришли по инвайт-ссылке
       else if (sp.startsWith("film_")) openDetail(+sp.slice(5));  // пришли по ссылке «Поделиться» фильмом

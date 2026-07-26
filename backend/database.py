@@ -42,6 +42,7 @@ _SCHEMA_MIGRATION_PAIR_NOTIFICATION_OUTBOX = "2026-07-26-pair-notification-outbo
 _SCHEMA_MIGRATION_PAIR_HISTORY = "2026-07-26-pair-history"
 _SCHEMA_MIGRATION_RECOMMENDATIONS = "2026-07-26-recommendations-v1"
 _SCHEMA_MIGRATION_RECOMMENDATION_RESULTS = "2026-07-26-recommendations-v2-results"
+_SCHEMA_MIGRATION_EDITORIAL_COLLECTIONS = "2026-07-27-editorial-collections-v1"
 _PAIR_INVITE_TTL = timedelta(days=7)
 
 
@@ -501,6 +502,82 @@ async def _apply_recommendation_results_migration() -> None:
     await _add_column_if_missing("recommendation_sessions", "results TEXT")
 
 
+async def _apply_editorial_collections_migration() -> None:
+    """Редакционная модель поверх СУЩЕСТВУЮЩИХ таблиц collections/collection_films.
+
+    Намеренно не заводим параллельные editorial_* таблицы: id подборок уже живут
+    в проде (и в публичных ссылках), а дублирующая модель означала бы две правды
+    и рискованный перенос. Добавляем недостающие поля и бэкфилим так, чтобы
+    ВИДИМОСТЬ КОНТЕНТА НЕ ИЗМЕНИЛАСЬ: всё, что сейчас публично, остаётся
+    published (снять с публикации админ сможет уже руками из интерфейса).
+    """
+    for col in (
+        "status TEXT NOT NULL DEFAULT 'published'",   # draft | published | archived
+        "description TEXT",
+        "cover_url TEXT",
+        "sort_order INTEGER NOT NULL DEFAULT 0",
+        "updated_by BIGINT",
+        "updated_at TEXT",
+        "published_by BIGINT",
+        "published_at TEXT",
+        "version INTEGER NOT NULL DEFAULT 1",
+    ):
+        await _add_column_if_missing("collections", col)
+    for col in ("position INTEGER NOT NULL DEFAULT 0", "added_by BIGINT"):
+        await _add_column_if_missing("collection_films", col)
+
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        # Бэкфил метаданных: существующий контент считается опубликованным.
+        await db.execute(
+            "UPDATE collections SET updated_at = created_at WHERE updated_at IS NULL")
+        await db.execute(
+            "UPDATE collections SET updated_by = created_by WHERE updated_by IS NULL")
+        await db.execute(
+            "UPDATE collections SET published_at = created_at, published_by = created_by "
+            "WHERE status = 'published' AND published_at IS NULL")
+        await db.execute(
+            "UPDATE collection_films SET added_by = ("
+            "  SELECT created_by FROM collections c WHERE c.id = collection_films.collection_id"
+            ") WHERE added_by IS NULL")
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS admin_audit_log (
+                id          {id_col},
+                actor_id    BIGINT NOT NULL,
+                actor_role  TEXT NOT NULL,
+                action      TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id   TEXT NOT NULL,
+                details     TEXT,
+                created_at  TEXT NOT NULL
+            )
+        """.format(id_col="BIGSERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"))
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_entity "
+                         "ON admin_audit_log(entity_type, entity_id, created_at DESC)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_actor "
+                         "ON admin_audit_log(actor_id, created_at DESC)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_collections_public "
+                         "ON collections(status, sort_order)")
+        await db.commit()
+
+    # Порядок внутри подборки: до миграции он был неявным (added_at ASC) —
+    # сохраняем ровно его, иначе у существующих подборок «переедут» фильмы.
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT collection_id, film_id FROM collection_films "
+            "WHERE position = 0 ORDER BY collection_id, added_at ASC, film_id ASC")
+        rows = [dict(r) for r in await cur.fetchall()]
+    positions: dict[int, int] = {}
+    for row in rows:
+        collection_id = row["collection_id"]
+        positions[collection_id] = positions.get(collection_id, 0) + 1
+        async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+            await db.execute(
+                "UPDATE collection_films SET position = ? WHERE collection_id = ? AND film_id = ?",
+                (positions[collection_id], collection_id, row["film_id"]))
+            await db.commit()
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -515,6 +592,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_PAIR_HISTORY, _apply_pair_history_migration),
         (_SCHEMA_MIGRATION_RECOMMENDATIONS, _apply_recommendations_migration),
         (_SCHEMA_MIGRATION_RECOMMENDATION_RESULTS, _apply_recommendation_results_migration),
+        (_SCHEMA_MIGRATION_EDITORIAL_COLLECTIONS, _apply_editorial_collections_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -3032,27 +3110,47 @@ async def get_user_role(user_id: int) -> str | None:
         return row[0] if row else None
 
 
-async def list_collections() -> list[dict]:
-    """Все подборки: id, title, film_count, cover (постер первого добавленного фильма)."""
+# ── Редакционные подборки: статусы, порядок, оптимистичная блокировка ─────────
+# Публичный слой видит ТОЛЬКО published; draft/archived доступны через админские
+# функции. Один канонический status вместо противоречивых булевых флагов.
+COLLECTION_STATUSES = ("draft", "published", "archived")
+COLLECTION_TRANSITIONS: dict[str, frozenset[str]] = {
+    "draft": frozenset({"published", "archived"}),
+    "published": frozenset({"draft", "archived"}),
+    "archived": frozenset({"draft"}),
+}
+_COLLECTION_COLS = ("c.id, c.title, c.description, c.cover_url, c.status, c.sort_order, "
+                    "c.version, c.created_by, c.created_at, c.updated_at, c.published_at")
+
+
+async def list_collections(statuses: tuple[str, ...] = ("published",)) -> list[dict]:
+    """Подборки с обложкой и счётчиком. Публичный вызов передаёт только
+    ('published',) — черновики и архив не должны утекать в общий каталог."""
+    placeholders = ",".join("?" for _ in statuses)
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute("""
-            SELECT c.id, c.title,
+        cur = await db.execute(f"""
+            SELECT {_COLLECTION_COLS},
                    (SELECT COUNT(*) FROM collection_films WHERE collection_id = c.id) AS film_count,
-                   (SELECT f.poster_url FROM collection_films cf JOIN films f ON f.id = cf.film_id
-                    WHERE cf.collection_id = c.id ORDER BY cf.added_at ASC LIMIT 1) AS cover
+                   COALESCE(c.cover_url,
+                     (SELECT f.poster_url FROM collection_films cf JOIN films f ON f.id = cf.film_id
+                      WHERE cf.collection_id = c.id ORDER BY cf.position ASC LIMIT 1)) AS cover
             FROM collections c
-            ORDER BY c.created_at DESC
-        """)
+            WHERE c.status IN ({placeholders})
+            ORDER BY c.sort_order ASC, c.created_at DESC
+        """, statuses)
         return [dict(r) for r in await cur.fetchall()]
 
 
-async def create_collection(title: str, created_by: int) -> int:
+async def create_collection(title: str, created_by: int, description: str | None = None) -> int:
+    """Новая подборка всегда рождается черновиком: публикация — явное действие."""
+    now = _now()
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "INSERT INTO collections (title, created_by, created_at) VALUES (?,?,?) RETURNING id",
-            (title, created_by, _now()))
+            "INSERT INTO collections (title, description, created_by, created_at, updated_by, "
+            "updated_at, status, version) VALUES (?,?,?,?,?,?, 'draft', 1) RETURNING id",
+            (title, description, created_by, now, created_by, now))
         row = await cur.fetchone()
         await db.commit()
         return row["id"]
@@ -3065,36 +3163,130 @@ async def delete_collection(collection_id: int) -> None:
         await db.commit()
 
 
-async def get_collection(collection_id: int) -> dict | None:
+async def get_collection(collection_id: int, statuses: tuple[str, ...] | None = None) -> dict | None:
+    """statuses=None — админский доступ (любой статус); публичный слой передаёт
+    ('published',), иначе черновик открывался бы по прямой ссылке."""
+    clause, params = "", [collection_id]
+    if statuses is not None:
+        clause = f" AND c.status IN ({','.join('?' for _ in statuses)})"
+        params.extend(statuses)
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT id, title FROM collections WHERE id = ?", (collection_id,))
+        cur = await db.execute(
+            f"SELECT {_COLLECTION_COLS} FROM collections c WHERE c.id = ?{clause}", params)
         row = await cur.fetchone()
         return dict(row) if row else None
 
 
-async def add_film_to_collection(collection_id: int, film_id: int) -> bool:
-    """True — фильм реально добавлен (не был в подборке раньше)."""
+async def update_collection(collection_id: int, expected_version: int, actor_id: int,
+                            fields: dict) -> dict | None:
+    """Оптимистичная блокировка: версия не совпала → None (вызывающий шлёт 409)."""
+    allowed = {k: v for k, v in fields.items() if k in ("title", "description", "cover_url")}
+    if not allowed:
+        return await get_collection(collection_id)
+    assignments = ", ".join(f"{k} = ?" for k in allowed)
+    params = [*allowed.values(), actor_id, _now(), collection_id, expected_version]
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "INSERT INTO collection_films (collection_id, film_id, added_at) VALUES (?,?,?) "
-            "ON CONFLICT(collection_id, film_id) DO NOTHING RETURNING film_id",
-            (collection_id, film_id, _now()))
+            f"UPDATE collections SET {assignments}, updated_by = ?, updated_at = ?, "
+            "version = version + 1 WHERE id = ? AND version = ? RETURNING id", params)
+        row = await cur.fetchone()
+        await db.commit()
+    return await get_collection(collection_id) if row else None
+
+
+async def set_collection_status(collection_id: int, new_status: str, expected_version: int,
+                                actor_id: int) -> dict | None:
+    """Переход статуса с проверкой допустимости и версии (409 → None)."""
+    current = await get_collection(collection_id)
+    if current is None or new_status not in COLLECTION_TRANSITIONS.get(current["status"], frozenset()):
+        return None
+    publish_set = (", published_by = ?, published_at = ?" if new_status == "published" else "")
+    params: list = [new_status, actor_id, _now()]
+    if new_status == "published":
+        params.extend([actor_id, _now()])
+    params.extend([collection_id, expected_version])
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"UPDATE collections SET status = ?, updated_by = ?, updated_at = ?{publish_set}, "
+            "version = version + 1 WHERE id = ? AND version = ? RETURNING id", params)
+        row = await cur.fetchone()
+        await db.commit()
+    return await get_collection(collection_id) if row else None
+
+
+async def add_film_to_collection(collection_id: int, film_id: int, added_by: int | None = None) -> bool:
+    """True — фильм реально добавлен (не был в подборке раньше). Позиция — в конец."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT COALESCE(MAX(position), 0) + 1 AS next FROM collection_films "
+            "WHERE collection_id = ?", (collection_id,))
+        position = (await cur.fetchone())["next"]
+        cur = await db.execute(
+            "INSERT INTO collection_films (collection_id, film_id, added_at, position, added_by) "
+            "VALUES (?,?,?,?,?) ON CONFLICT(collection_id, film_id) DO NOTHING RETURNING film_id",
+            (collection_id, film_id, _now(), position, added_by))
         row = await cur.fetchone()
         await db.commit()
         return row is not None
 
 
 async def remove_film_from_collection(collection_id: int, film_id: int) -> None:
+    """Удаляем и сразу схлопываем «дырку» в позициях — порядок остаётся плотным."""
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT position FROM collection_films WHERE collection_id = ? AND film_id = ?",
+            (collection_id, film_id))
+        row = await cur.fetchone()
+        if row is None:
+            return
         await db.execute(
             "DELETE FROM collection_films WHERE collection_id = ? AND film_id = ?",
             (collection_id, film_id))
+        await db.execute(
+            "UPDATE collection_films SET position = position - 1 "
+            "WHERE collection_id = ? AND position > ?", (collection_id, row["position"]))
         await db.commit()
 
 
+async def reorder_collection_items(collection_id: int, ordered_film_ids: list[int],
+                                   expected_version: int, actor_id: int) -> dict | None:
+    """Полная перестановка одной транзакцией. Набор ID обязан точно совпадать с
+    текущим составом — иначе это рассинхрон клиента, а не переупорядочивание."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT version FROM collections WHERE id = ?", (collection_id,))
+        row = await cur.fetchone()
+        if row is None or row["version"] != expected_version:
+            return None
+        cur = await db.execute(
+            "SELECT film_id FROM collection_films WHERE collection_id = ?", (collection_id,))
+        current = {r["film_id"] for r in await cur.fetchall()}
+        if current != set(ordered_film_ids):
+            return None
+        # Двухфазная запись: UNIQUE(collection_id, position) не переживёт
+        # промежуточных коллизий, поэтому сначала уводим позиции в отрицательные.
+        for index, film_id in enumerate(ordered_film_ids, start=1):
+            await db.execute(
+                "UPDATE collection_films SET position = ? WHERE collection_id = ? AND film_id = ?",
+                (-index, collection_id, film_id))
+        for index, film_id in enumerate(ordered_film_ids, start=1):
+            await db.execute(
+                "UPDATE collection_films SET position = ? WHERE collection_id = ? AND film_id = ?",
+                (index, collection_id, film_id))
+        await db.execute(
+            "UPDATE collections SET updated_by = ?, updated_at = ?, version = version + 1 "
+            "WHERE id = ?", (actor_id, _now(), collection_id))
+        await db.commit()
+    return await get_collection(collection_id)
+
+
 async def get_collection_films(collection_id: int, user_id: int) -> list[dict]:
-    """Фильмы подборки в порядке добавления куратором — тот же формат, что browse_*
+    """Фильмы подборки в кураторском порядке — тот же формат, что browse_*
     (community-рейтинг + мой статус), чтобы фронтенд переиспользовал posterTile()."""
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
@@ -3104,6 +3296,28 @@ async def get_collection_films(collection_id: int, user_id: int) -> list[dict]:
             FROM films f
             JOIN collection_films cf ON cf.film_id = f.id AND cf.collection_id = ?
             LEFT JOIN user_films me ON me.film_id = f.id AND me.user_id = ?
-            ORDER BY cf.added_at ASC
+            ORDER BY cf.position ASC, cf.added_at ASC
             """, (collection_id, user_id))
         return [_browse_dict(r) for r in await cur.fetchall()]
+
+
+async def write_audit(actor_id: int, actor_role: str, action: str, entity_type: str,
+                      entity_id: str | int, details: dict | None = None) -> None:
+    """Append-only журнал админских мутаций. Секреты/initData сюда не попадают —
+    вызывающий передаёт только редактируемые поля."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute(
+            "INSERT INTO admin_audit_log (actor_id, actor_role, action, entity_type, entity_id, "
+            "details, created_at) VALUES (?,?,?,?,?,?,?)",
+            (actor_id, actor_role, action, entity_type, str(entity_id),
+             json.dumps(details, ensure_ascii=False) if details else None, _now()))
+        await db.commit()
+
+
+async def list_audit_log(limit: int = 50) -> list[dict]:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT actor_id, actor_role, action, entity_type, entity_id, details, created_at "
+            "FROM admin_audit_log ORDER BY created_at DESC LIMIT ?", (limit,))
+        return [dict(r) for r in await cur.fetchall()]
