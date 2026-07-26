@@ -42,6 +42,7 @@ let _tabbarScrollHandler = null;
 // показывает устаревший статус фильма.
 const _readCache = new Map();
 const _READ_CACHE_TTL = 30_000;
+let _notificationUnread = 0;
 
 function cacheableRead(path, opts) {
   const method = (opts.method || "GET").toUpperCase();
@@ -58,9 +59,9 @@ const DICT = {
     chip_popular: "Популярное", chip_top: "Топ сообщества", chip_genres: "Жанры", chip_collections: "Подборки",
     see_all: "Смотреть все",
     reco_title: "Оценивай и получай рекомендации", reco_sub: "Персональные подборки на основе твоих оценок", reco_cta: "Начать",
-    notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся напоминания оценить просмотренное",
+    notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся важные события вашей пары", notif_mark_all: "Прочитать все", notif_load_more: "Показать ещё", notif_loading: "Загружаю уведомления…", notif_error: "Не удалось загрузить уведомления", notif_retry: "Повторить", notif_now: "только что", notif_min_ago: (n) => `${n} мин назад`, notif_hour_ago: (n) => `${n} ч назад`, notif_day_ago: (n) => `${n} дн назад`, notif_inapp: "В приложении", notif_telegram: "В Telegram", notif_telegram_hint: "События пары от бота Addict Film", notif_telegram_unavailable: "Бот сейчас недоступен", notif_browser: "В браузере", notif_browser_hint: "Локальные напоминания на этом устройстве",
     back: "Назад", settings_title: "Настройки", settings_loading: "Загружаю настройки…",
-    settings_notifications: "Уведомления", settings_notifications_hint: "Напоминания и обновления Addict Film", settings_notifications_on: "Включены", settings_notifications_off: "Выключены", settings_notifications_permission: "Нужно разрешение", settings_notifications_denied: "Разрешения отключены в Telegram или браузере", settings_notifications_unavailable: "Недоступны на этом устройстве", settings_notifications_error: "Не удалось запросить разрешение",
+    settings_notifications: "Уведомления", settings_notifications_hint: "Важные события пары всегда видны в приложении", settings_notifications_on: "Включены", settings_notifications_off: "Выключены", settings_notifications_permission: "Нужно разрешение", settings_notifications_denied: "Разрешения отключены в Telegram или браузере", settings_notifications_unavailable: "Недоступны на этом устройстве", settings_notifications_error: "Не удалось запросить разрешение",
     settings_language: "Язык", settings_language_hint: "Изменится сразу во всём приложении", settings_language_ru: "Русский", settings_language_en: "English",
     settings_pair: "Пара", settings_pair_none: "Создайте пару, чтобы смотреть и оценивать фильмы вместе", settings_pair_create: "Создать пару", settings_pair_current: "Ваша пара", settings_pair_manage: "Управление парой", settings_pair_invited: "Приглашение ожидает принятия", settings_pair_load_error: "Не удалось загрузить статус пары", settings_pair_try_again: "Повторить",
     collections_empty_s: "Загляни позже", collections_empty_admin_s: "Создай первую подборку",
@@ -134,9 +135,9 @@ const DICT = {
     chip_popular: "Popular", chip_top: "Community Top", chip_genres: "Genres", chip_collections: "Collections",
     see_all: "See all",
     reco_title: "Rate films, get recommendations", reco_sub: "Personal picks based on your ratings", reco_cta: "Start",
-    notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "Reminders to rate what you've watched will show up here",
+    notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "Important pair events will appear here", notif_mark_all: "Mark all read", notif_load_more: "Show more", notif_loading: "Loading notifications…", notif_error: "Couldn't load notifications", notif_retry: "Try again", notif_now: "just now", notif_min_ago: (n) => `${n}m ago`, notif_hour_ago: (n) => `${n}h ago`, notif_day_ago: (n) => `${n}d ago`, notif_inapp: "In app", notif_telegram: "In Telegram", notif_telegram_hint: "Pair events from the Addict Film bot", notif_telegram_unavailable: "The bot is unavailable right now", notif_browser: "In browser", notif_browser_hint: "Local reminders on this device",
     back: "Back", settings_title: "Settings", settings_loading: "Loading settings…",
-    settings_notifications: "Notifications", settings_notifications_hint: "Addict Film reminders and updates", settings_notifications_on: "On", settings_notifications_off: "Off", settings_notifications_permission: "Permission needed", settings_notifications_denied: "Notifications are blocked in Telegram or your browser", settings_notifications_unavailable: "Unavailable on this device", settings_notifications_error: "Couldn't request permission",
+    settings_notifications: "Notifications", settings_notifications_hint: "Important pair events are always shown in the app", settings_notifications_on: "On", settings_notifications_off: "Off", settings_notifications_permission: "Permission needed", settings_notifications_denied: "Notifications are blocked in Telegram or your browser", settings_notifications_unavailable: "Unavailable on this device", settings_notifications_error: "Couldn't request permission",
     settings_language: "Language", settings_language_hint: "Applies immediately across the app", settings_language_ru: "Русский", settings_language_en: "English",
     settings_pair: "Partner", settings_pair_none: "Create a pair to watch and rate films together", settings_pair_create: "Create a pair", settings_pair_current: "Your pair", settings_pair_manage: "Manage pair", settings_pair_invited: "Invite is waiting to be accepted", settings_pair_load_error: "Couldn't load pair status", settings_pair_try_again: "Try again",
     collections_empty_s: "Check back later", collections_empty_admin_s: "Create your first collection",
@@ -211,6 +212,8 @@ function setLang(l, onApplied = null) {
   if (!DICT[l]) return;
   lang = l;
   try { localStorage.setItem("lang", l); } catch (e) {}
+  // The backend uses this preference for a localized Telegram bot message.
+  api("/api/settings", { method: "PATCH", body: JSON.stringify({ language: l }) }).catch(() => {});
   applyTabLabels();
   if (typeof onApplied === "function") onApplied();
   else showHome();
@@ -538,6 +541,7 @@ async function showHome() {
         </button>
         <button class="bell" id="bell-btn" aria-label="${esc(t("notif_title"))}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+          ${_notificationUnread ? `<span class="dot" aria-hidden="true"></span>` : ""}
         </button>
       </div>
     </header>
@@ -580,6 +584,20 @@ async function showHome() {
   loadRail("rail-top", "/api/browse?sort=top&limit=20");
   loadGenrePills();
   loadCollectionsRail();
+  refreshNotificationBadge();
+}
+
+async function refreshNotificationBadge() {
+  try {
+    const { unread_count } = await api("/api/notifications?limit=1");
+    _notificationUnread = Number(unread_count) || 0;
+    const bell = document.getElementById("bell-btn");
+    if (bell) {
+      let dot = bell.querySelector(".dot");
+      if (_notificationUnread && !dot) { dot = document.createElement("span"); dot.className = "dot"; dot.setAttribute("aria-hidden", "true"); bell.appendChild(dot); }
+      if (!_notificationUnread && dot) dot.remove();
+    }
+  } catch (_) { /* The home screen remains usable if the inbox is offline. */ }
 }
 
 function recoCardHTML() {
@@ -708,13 +726,77 @@ async function showAllGenres() {
   } catch (e) { document.getElementById("ag").innerHTML = emptyState("⚠️", t("load_err"), ""); }
 }
 
-// Уведомления — экран честно пуст: напоминания оценить появятся позже (бот-слой).
-function showNotifications() {
+function notificationGlyph(eventType) {
+  const paths = eventType === "pair.ended"
+    ? '<path d="m7 7 10 10M17 7 7 17"/><path d="M5 5h14v14H5z"/>'
+    : eventType.includes("invite")
+      ? '<path d="M12 20s-7-4.35-7-10a4 4 0 0 1 7-2.65A4 4 0 0 1 19 10c0 5.65-7 10-7 10Z"/><path d="M12 7v6m-3-3h6"/>'
+      : '<path d="M12 20s-7-4.35-7-10a4 4 0 0 1 7-2.65A4 4 0 0 1 19 10c0 5.65-7 10-7 10Z"/>';
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+}
+function relativeNotificationTime(raw) {
+  const ms = Date.now() - new Date(raw || 0).getTime();
+  if (!Number.isFinite(ms) || ms < 60_000) return t("notif_now");
+  const min = Math.floor(ms / 60_000); if (min < 60) return t("notif_min_ago", min);
+  const hour = Math.floor(min / 60); if (hour < 24) return t("notif_hour_ago", hour);
+  return t("notif_day_ago", Math.floor(hour / 24));
+}
+function notificationRow(item) {
+  const payload = item.payload || {};
+  const avatar = item.actor?.photo_url ? `<img src="${posterSrc(item.actor.photo_url)}" alt="" data-img-retry>` : "";
+  return `<article class="notification-row ${item.read ? "" : "unread"}" data-notification-id="${Number(item.id)}" data-notification-link="${esc(item.deep_link || "")}" tabindex="0" role="button">
+    <span class="notification-event-icon">${notificationGlyph(item.event_type || "")}</span>
+    <span class="notification-copy"><b>${esc(payload.title || t("notif_title"))}</b><span>${esc(payload.body || "")}</span><time datetime="${esc(item.created_at || "")}">${esc(relativeNotificationTime(item.created_at))}</time></span>
+    ${item.actor ? `<span class="notification-avatar">${avatar || `<span>${esc(initials(item.actor.name || ""))}</span>`}</span>` : ""}
+    ${item.deep_link ? `<button type="button" class="notification-action" data-notification-action>${esc(payload.action_label || t("back"))}</button>` : ""}
+  </article>`;
+}
+async function openNotification(item, page) {
+  try { await api(`/api/notifications/${item.id}/read`, { method: "POST" }); } catch (_) {}
+  _notificationUnread = Math.max(0, _notificationUnread - (item.read ? 0 : 1));
+  const link = item.deep_link || "";
+  if (link.startsWith("inv_")) { showAcceptInvite(link); return; }
+  if (link === "stats") { setActiveTab("stats"); showStats("pair"); return; }
+  setActiveTab("home"); showHome();
+}
+async function showNotifications() {
   unwireDetailScroll();
   window.scrollTo(0, 0);
-  screen.innerHTML = `<div class="sub-head">${backBtn()}<h1>${esc(t("notif_title"))}</h1></div>
-    ${emptyState("🔔", t("notif_empty_t"), t("notif_empty_s"))}`;
+  screen.innerHTML = `<div class="sub-head notification-head">${backBtn()}<h1>${esc(t("notif_title"))}</h1><button type="button" class="notification-mark-all" disabled>${esc(t("notif_mark_all"))}</button></div><main class="notifications-page"><div class="notifications-loading">${esc(t("notif_loading"))}</div></main>`;
   wireBack(() => { setActiveTab("home"); showHome(); });
+  const page = screen.querySelector(".notifications-page");
+  let nextBeforeId = null;
+  let loading = false;
+  const load = async (append = false) => {
+    if (loading || !page) return;
+    loading = true;
+    try {
+      const query = `?limit=20${append && nextBeforeId ? `&before_id=${encodeURIComponent(nextBeforeId)}` : ""}`;
+      const result = await api(`/api/notifications${query}`);
+      _notificationUnread = Number(result.unread_count) || 0;
+      nextBeforeId = result.next_before_id;
+      const rows = result.items || [];
+      if (!append) page.innerHTML = rows.length ? `<div class="notifications-list">${rows.map(notificationRow).join("")}</div>` : `<div class="notifications-empty"><span>${notificationGlyph("")}</span><h2>${esc(t("notif_empty_t"))}</h2><p>${esc(t("notif_empty_s"))}</p></div>`;
+      else page.querySelector(".notifications-list")?.insertAdjacentHTML("beforeend", rows.map(notificationRow).join(""));
+      const existing = page.querySelector(".notifications-more"); if (existing) existing.remove();
+      if (nextBeforeId) page.insertAdjacentHTML("beforeend", `<button class="notifications-more" type="button">${esc(t("notif_load_more"))}</button>`);
+      const markAll = screen.querySelector(".notification-mark-all");
+      if (markAll) { markAll.disabled = !_notificationUnread; markAll.onclick = async () => { markAll.disabled = true; await api("/api/notifications/read-all", { method: "POST" }); _notificationUnread = 0; page.querySelectorAll(".notification-row.unread").forEach(row => row.classList.remove("unread")); refreshNotificationBadge(); }; }
+      page.querySelector(".notifications-more")?.addEventListener("click", () => load(true));
+      page.querySelectorAll(".notification-row").forEach(row => {
+        const id = Number(row.dataset.notificationId);
+        const item = rows.find(entry => Number(entry.id) === id) || { id, deep_link: row.dataset.notificationLink, read: !row.classList.contains("unread") };
+        const open = () => openNotification(item, page);
+        row.addEventListener("click", event => { if (event.target.closest("button")) return; open(); });
+        row.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } });
+        row.querySelector("[data-notification-action]")?.addEventListener("click", open);
+      });
+    } catch (_) {
+      if (!append) page.innerHTML = `<div class="notifications-empty"><h2>${esc(t("notif_error"))}</h2><button class="notifications-more" type="button">${esc(t("notif_retry"))}</button></div>`;
+      page.querySelector(".notifications-more")?.addEventListener("click", () => load(false));
+    } finally { loading = false; }
+  };
+  await load();
 }
 
 // ── Подборки (публичный просмотр + in-app админка для editor/admin) ───────────
@@ -1306,6 +1388,10 @@ function settingsStatusLabel(state) {
   };
   return t(map[state.status] || "settings_notifications_off");
 }
+function telegramNotificationStatus(settings) {
+  if (!settings?.telegram_available) return t("notif_telegram_unavailable");
+  return settings.telegram_enabled ? t("settings_notifications_on") : t("settings_notifications_off");
+}
 
 function settingsRow({ title, subtitle = "", action = "", className = "", attrs = "" }) {
   return `<div class="settings-row ${className}" ${attrs}><span class="settings-row-copy"><b>${esc(title)}</b>${subtitle ? `<small>${esc(subtitle)}</small>` : ""}</span>${action}</div>`;
@@ -1332,8 +1418,9 @@ async function showStatsSettings(returnMode = "me", managePair = false) {
   wireBack(() => showStats(returnMode));
   const page = screen.querySelector(".settings-page");
   let partner = { status: "none" };
+  let serverSettings = { language: lang, telegram_enabled: false, telegram_available: false };
   let partnerFailed = false;
-  try { partner = await api("/api/partner"); } catch (_) { partnerFailed = true; }
+  try { [partner, serverSettings] = await Promise.all([api("/api/partner"), api("/api/settings")]); } catch (_) { partnerFailed = true; }
   if (!page) return;
 
   const render = () => {
@@ -1341,7 +1428,9 @@ async function showStatsSettings(returnMode = "me", managePair = false) {
     const disabled = !notification.enabled && !notification.canEnable;
     page.innerHTML = `
       <section class="settings-section" aria-labelledby="settings-notifications-title"><h2 id="settings-notifications-title">${esc(t("settings_notifications"))}</h2><div class="settings-card">
-        ${settingsRow({ title: t("settings_notifications"), subtitle: `${t("settings_notifications_hint")} · ${settingsStatusLabel(notification)}`, action: `<button class="settings-toggle" data-settings-notifications type="button" role="switch" aria-checked="${notification.enabled}" aria-label="${esc(t("settings_notifications"))}" ${disabled ? "disabled" : ""}></button>` })}
+        ${settingsRow({ title: t("notif_inapp"), subtitle: t("settings_notifications_hint"), action: `<span class="settings-fixed-status">${esc(t("settings_notifications_on"))}</span>` })}
+        ${settingsRow({ title: t("notif_telegram"), subtitle: `${t("notif_telegram_hint")} · ${telegramNotificationStatus(serverSettings)}`, action: `<button class="settings-toggle" data-settings-telegram type="button" role="switch" aria-checked="${!!serverSettings.telegram_enabled}" aria-label="${esc(t("notif_telegram"))}" ${serverSettings.telegram_available ? "" : "disabled"}></button>` })}
+        ${settingsRow({ title: t("settings_notifications"), subtitle: `${t("notif_browser_hint")} · ${settingsStatusLabel(notification)}`, action: `<button class="settings-toggle" data-settings-notifications type="button" role="switch" aria-checked="${notification.enabled}" aria-label="${esc(t("settings_notifications"))}" ${disabled ? "disabled" : ""}></button>` })}
       </div></section>
       <section class="settings-section" aria-labelledby="settings-language-title"><h2 id="settings-language-title">${esc(t("settings_language"))}</h2><div class="settings-card settings-language-card">
         <p>${esc(t("settings_language_hint"))}</p><div class="settings-language-options" role="group" aria-label="${esc(t("settings_language"))}">
@@ -1352,6 +1441,13 @@ async function showStatsSettings(returnMode = "me", managePair = false) {
 
     const toggle = page.querySelector("[data-settings-notifications]");
     if (toggle) toggle.onclick = async () => { toggle.disabled = true; await updateNotifications(!notificationsState().enabled); render(); };
+    const telegramToggle = page.querySelector("[data-settings-telegram]");
+    if (telegramToggle) telegramToggle.onclick = async () => {
+      telegramToggle.disabled = true;
+      try { serverSettings = await api("/api/settings", { method: "PATCH", body: JSON.stringify({ telegram_notifications: !serverSettings.telegram_enabled }) }); }
+      catch (_) { tg?.showAlert?.(t("settings_pair_load_error")); }
+      render();
+    };
     page.querySelectorAll("[data-settings-language]").forEach(button => button.onclick = () => setLang(button.dataset.settingsLanguage, () => showStatsSettings(returnMode, managePair)));
     const retry = page.querySelector("[data-settings-pair-retry]");
     if (retry) retry.onclick = () => showStatsSettings(returnMode, managePair);
@@ -1740,7 +1836,12 @@ async function showAcceptInvite(param) {
       title.innerHTML = `${esc(before)}<span class="accept-inviter-name">${esc(name)}</span>${esc(after)}`;
     }
   } catch (_) { /* A stale link still keeps its normal accept/reject flow. */ }
-  document.getElementById("acc-no").onclick = () => { setActiveTab("home"); showHome(); };
+  document.getElementById("acc-no").onclick = async () => {
+    const button = document.getElementById("acc-no");
+    if (button) button.disabled = true;
+    try { await api("/api/partner/decline", { method: "POST", body: JSON.stringify({ token: param }) }); } catch (_) {}
+    setActiveTab("home"); showHome();
+  };
   document.getElementById("acc-yes").onclick = async () => {
     const r = await api("/api/partner/accept", { method: "POST", body: JSON.stringify({ token: param }) });
     if (r.ok) {

@@ -36,6 +36,8 @@ _SCHEMA_MIGRATION_DIRECTOR_PHOTOS = "2026-07-25-director-photos"
 _SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY = "2026-07-25-person-portrait-retry"
 _SCHEMA_MIGRATION_PERSON_PORTRAIT_COMPLETENESS = "2026-07-25-person-portrait-completeness"
 _SCHEMA_MIGRATION_SEARCH_TEXT_DIRECTORS = "2026-07-26-search-text-directors"
+_SCHEMA_MIGRATION_PAIR_NOTIFICATIONS = "2026-07-26-pair-notifications"
+_PAIR_INVITE_TTL = timedelta(days=7)
 
 
 def _now() -> str:
@@ -243,6 +245,72 @@ async def _apply_search_text_directors_migration() -> None:
         await db.commit()
 
 
+async def _apply_pair_notifications_migration() -> None:
+    """Create the durable notification outbox and upgrade pair invitations.
+
+    Notifications are persisted before a best-effort Telegram Bot API send.  The
+    app can therefore always show a reliable in-app inbox even when a user has
+    blocked the bot or Telegram is temporarily unavailable.
+    """
+    await _add_column_if_missing("partner_invites", "expires_at TEXT")
+    notification_id = "SERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_notification_settings (
+                user_id BIGINT PRIMARY KEY,
+                language TEXT NOT NULL DEFAULT 'ru',
+                telegram_enabled INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS pair_invite_recipients (
+                invite_token TEXT NOT NULL,
+                user_id BIGINT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (invite_token, user_id),
+                FOREIGN KEY (invite_token) REFERENCES partner_invites(token),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        await db.execute(f"""
+            CREATE TABLE IF NOT EXISTS notifications (
+                id {notification_id},
+                event_type TEXT NOT NULL,
+                recipient_id BIGINT NOT NULL,
+                actor_id BIGINT,
+                entity_id TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{{}}',
+                deep_link TEXT,
+                read_at TEXT,
+                created_at TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                FOREIGN KEY (recipient_id) REFERENCES users(id),
+                FOREIGN KEY (actor_id) REFERENCES users(id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS notification_deliveries (
+                notification_id INTEGER NOT NULL,
+                channel TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                sent_at TEXT,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                PRIMARY KEY (notification_id, channel),
+                FOREIGN KEY (notification_id) REFERENCES notifications(id)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient_id, id DESC)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(recipient_id, read_at, id DESC)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_invite_recipients_user ON pair_invite_recipients(user_id, invite_token)")
+        await db.commit()
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -251,6 +319,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY, _apply_person_portrait_retry_migration),
         (_SCHEMA_MIGRATION_PERSON_PORTRAIT_COMPLETENESS, _apply_person_portrait_completeness_migration),
         (_SCHEMA_MIGRATION_SEARCH_TEXT_DIRECTORS, _apply_search_text_directors_migration),
+        (_SCHEMA_MIGRATION_PAIR_NOTIFICATIONS, _apply_pair_notifications_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -1692,6 +1761,129 @@ async def get_user(user_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+# ── Центр уведомлений и пользовательские настройки ───────────────────────────
+async def get_notification_settings(user_id: int) -> dict:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        row = await (await db.execute(
+            "SELECT language, telegram_enabled FROM user_notification_settings WHERE user_id = ?", (user_id,))).fetchone()
+        if not row:
+            return {"language": "ru", "telegram_enabled": True}
+        return {"language": row["language"] if row["language"] in ("ru", "en") else "ru",
+                "telegram_enabled": bool(row["telegram_enabled"])}
+
+
+async def update_notification_settings(user_id: int, *, language: str | None = None,
+                                       telegram_enabled: bool | None = None) -> dict:
+    current = await get_notification_settings(user_id)
+    next_language = language if language in ("ru", "en") else current["language"]
+    next_telegram = current["telegram_enabled"] if telegram_enabled is None else bool(telegram_enabled)
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute(
+            "INSERT INTO user_notification_settings (user_id, language, telegram_enabled, updated_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET language = excluded.language, "
+            "telegram_enabled = excluded.telegram_enabled, updated_at = excluded.updated_at",
+            (user_id, next_language, int(next_telegram), _now()))
+        await db.commit()
+    return {"language": next_language, "telegram_enabled": next_telegram}
+
+
+async def create_notification(*, event_type: str, recipient_id: int, actor_id: int | None,
+                              entity_id: str, payload: dict, deep_link: str | None,
+                              idempotency_key: str) -> tuple[int, bool]:
+    """Persist one inbox entry exactly once; returns ``(id, created)``."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "INSERT INTO notifications (event_type, recipient_id, actor_id, entity_id, payload, deep_link, created_at, idempotency_key) "
+            "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",
+            (event_type, recipient_id, actor_id, entity_id, json.dumps(payload, ensure_ascii=False),
+             deep_link, _now(), idempotency_key))
+        row = await cur.fetchone()
+        if row:
+            await db.commit()
+            return int(row[0]), True
+        row = await (await db.execute(
+            "SELECT id FROM notifications WHERE idempotency_key = ?", (idempotency_key,))).fetchone()
+        await db.commit()
+        return int(row[0]), False
+
+
+async def create_notification_delivery(notification_id: int, *, channel: str,
+                                       idempotency_key: str) -> bool:
+    now = _now()
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "INSERT INTO notification_deliveries (notification_id, channel, status, created_at, updated_at, idempotency_key) "
+            "VALUES (?,?,'pending',?,?,?) ON CONFLICT(idempotency_key) DO NOTHING RETURNING notification_id",
+            (notification_id, channel, now, now, idempotency_key))
+        created = await cur.fetchone()
+        await db.commit()
+        return created is not None
+
+
+async def finish_notification_delivery(notification_id: int, *, channel: str, sent: bool,
+                                       error: str | None = None) -> None:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute(
+            "UPDATE notification_deliveries SET status = ?, attempts = attempts + 1, last_error = ?, "
+            "updated_at = ?, sent_at = CASE WHEN ? THEN ? ELSE sent_at END "
+            "WHERE notification_id = ? AND channel = ?",
+            ("sent" if sent else "failed", (error or "")[:500] if error else None,
+             _now(), int(sent), _now(), notification_id, channel))
+        await db.commit()
+
+
+async def list_notifications(user_id: int, *, limit: int = 20, before_id: int | None = None) -> dict:
+    limit = max(1, min(int(limit), 50))
+    params: list = [user_id]
+    where = "WHERE n.recipient_id = ?"
+    if before_id is not None:
+        where += " AND n.id < ?"
+        params.append(int(before_id))
+    params.append(limit + 1)
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(
+            "SELECT n.id, n.event_type, n.recipient_id, n.actor_id, n.entity_id, n.payload, n.deep_link, "
+            "n.read_at, n.created_at, u.first_name AS actor_name, u.username AS actor_username, u.photo_url AS actor_photo_url "
+            "FROM notifications n LEFT JOIN users u ON u.id = n.actor_id " + where + " ORDER BY n.id DESC LIMIT ?",
+            params)).fetchall()
+        unread = await (await db.execute(
+            "SELECT COUNT(*) FROM notifications WHERE recipient_id = ? AND read_at IS NULL", (user_id,))).fetchone()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    items: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["payload"] = json.loads(item["payload"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            item["payload"] = {}
+        item["read"] = item.pop("read_at") is not None
+        item["actor"] = {"id": item.pop("actor_id"), "name": item.pop("actor_name") or "",
+                         "username": item.pop("actor_username"), "photo_url": item.pop("actor_photo_url")}
+        items.append(item)
+    return {"items": items, "unread_count": int(unread[0]),
+            "next_before_id": items[-1]["id"] if has_more and items else None}
+
+
+async def mark_notification_read(user_id: int, notification_id: int) -> bool:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE notifications SET read_at = COALESCE(read_at, ?) WHERE id = ? AND recipient_id = ?",
+            (_now(), notification_id, user_id))
+        await db.commit()
+        return bool(cur.rowcount)
+
+
+async def mark_all_notifications_read(user_id: int) -> int:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE notifications SET read_at = ? WHERE recipient_id = ? AND read_at IS NULL", (_now(), user_id))
+        await db.commit()
+        return cur.rowcount
+
+
 async def get_partner(user_id: int) -> int | None:
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute("SELECT partner_id FROM partners WHERE user_id = ?", (user_id,))
@@ -1704,7 +1896,8 @@ async def get_pending_invite(from_user: int) -> str | None:
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute(
             "SELECT token FROM partner_invites WHERE from_user = ? AND status = 'pending' "
-            "ORDER BY created_at DESC LIMIT 1", (from_user,))
+            "AND (expires_at IS NULL OR expires_at > ?) "
+            "ORDER BY created_at DESC LIMIT 1", (from_user, _now()))
         row = await cur.fetchone()
         return row[0] if row else None
 
@@ -1721,7 +1914,8 @@ async def get_invite_sender(token: str) -> dict | None:
         cur = await db.execute(
             "SELECT u.id, u.first_name, u.username, u.photo_url "
             "FROM partner_invites i JOIN users u ON u.id = i.from_user "
-            "WHERE i.token = ? AND i.status = 'pending'", (token,))
+            "WHERE i.token = ? AND i.status = 'pending' "
+            "AND (i.expires_at IS NULL OR i.expires_at > ?)", (token, _now()))
         row = await cur.fetchone()
         return dict(row) if row else None
 
@@ -1747,7 +1941,7 @@ async def _lock_pair_users(db, *user_ids: int) -> None:
             f"UPDATE users SET last_seen = last_seen WHERE id IN ({marks})", ids)
 
 
-async def create_invite(from_user: int) -> str | None:
+async def create_invite(from_user: int, *, with_state: bool = False) -> str | dict | None:
     """Створити або перевикористати єдиний pending invite.
 
     ``None`` означає, що користувач уже в парі. Перевірка виконується після
@@ -1763,31 +1957,33 @@ async def create_invite(from_user: int) -> str | None:
 
         cur = await db.execute(
             "SELECT token FROM partner_invites WHERE from_user = ? AND status = 'pending' "
-            "ORDER BY created_at DESC LIMIT 1", (from_user,))
+            "AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at DESC LIMIT 1", (from_user, _now()))
         existing = await cur.fetchone()
         if existing:
             await db.commit()
-            return existing[0]
+            return {"token": existing[0], "created": False} if with_state else existing[0]
 
         token = secrets.token_urlsafe(12)
+        now = _now()
+        expires_at = (datetime.now(timezone.utc) + _PAIR_INVITE_TTL).isoformat()
         cur = await db.execute(
-            "INSERT INTO partner_invites (token, from_user, status, created_at) VALUES (?,?, 'pending', ?) "
+            "INSERT INTO partner_invites (token, from_user, status, created_at, expires_at) VALUES (?,?, 'pending', ?, ?) "
             "ON CONFLICT DO NOTHING RETURNING token",
-            (token, from_user, _now()))
+            (token, from_user, now, expires_at))
         created = await cur.fetchone()
         if created:
             await db.commit()
-            return created[0]
+            return {"token": created[0], "created": True} if with_state else created[0]
 
         # Defensive fallback for a legacy database without the partial unique
         # index or for a concurrent deployment that has not yet migrated.
         cur = await db.execute(
             "SELECT token FROM partner_invites WHERE from_user = ? AND status = 'pending' "
-            "ORDER BY created_at DESC LIMIT 1", (from_user,))
+            "AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at DESC LIMIT 1", (from_user, _now()))
         existing = await cur.fetchone()
         await db.commit()
         if existing:
-            return existing[0]
+            return {"token": existing[0], "created": False} if with_state else existing[0]
     raise RuntimeError("Could not create or retrieve a pending partner invite")
 
 
@@ -1809,7 +2005,8 @@ async def accept_invite(token: str, accepting_user: int) -> dict:
         async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
-                "SELECT from_user FROM partner_invites WHERE token = ? AND status = 'pending'", (token,))
+                "SELECT from_user FROM partner_invites WHERE token = ? AND status = 'pending' "
+                "AND (expires_at IS NULL OR expires_at > ?)", (token, _now()))
             row = await cur.fetchone()
             if not row:
                 raise _InviteRejected("invalid")
@@ -1853,7 +2050,82 @@ async def accept_invite(token: str, accepting_user: int) -> dict:
         return {"ok": False, "reason": e.reason}
 
 
-async def unpair(user_id: int) -> None:
+async def register_invite_recipient(token: str, user_id: int) -> bool:
+    """Remember who opened a generic share link, once and without locking it.
+
+    Invites intentionally remain shareable capabilities.  This table is *not*
+    an allow-list: it only lets cancellation/expiry reach people who actually
+    saw the invitation and gives the app an honest recipient for its inbox.
+    """
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "SELECT from_user FROM partner_invites WHERE token = ? AND status = 'pending' "
+            "AND (expires_at IS NULL OR expires_at > ?)", (token, _now()))
+        row = await cur.fetchone()
+        if not row or int(row[0]) == int(user_id):
+            await db.commit()
+            return False
+        cur = await db.execute(
+            "INSERT INTO pair_invite_recipients (invite_token, user_id, created_at) VALUES (?,?,?) "
+            "ON CONFLICT(invite_token, user_id) DO NOTHING RETURNING user_id",
+            (token, user_id, _now()))
+        created = await cur.fetchone()
+        await db.commit()
+        return created is not None
+
+
+async def get_invite_recipients(token: str) -> list[int]:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "SELECT user_id FROM pair_invite_recipients WHERE invite_token = ? ORDER BY user_id", (token,))
+        return [int(row[0]) for row in await cur.fetchall()]
+
+
+async def decline_invite(token: str, declining_user: int) -> dict:
+    """Decline an invitation without deleting its audit trail."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT from_user FROM partner_invites WHERE token = ? AND status = 'pending' "
+            "AND (expires_at IS NULL OR expires_at > ?)", (token, _now()))
+        row = await cur.fetchone()
+        if not row:
+            return {"ok": False, "reason": "invalid"}
+        from_user = int(row["from_user"])
+        if from_user == int(declining_user):
+            return {"ok": False, "reason": "self"}
+        cur = await db.execute(
+            "UPDATE partner_invites SET status = 'declined' WHERE token = ? AND status = 'pending' RETURNING from_user",
+            (token,))
+        changed = await cur.fetchone()
+        await db.commit()
+        return {"ok": bool(changed), "from_user": from_user, "reason": "invalid" if not changed else None}
+
+
+async def expire_pending_invites() -> list[dict]:
+    """Atomically expire old invitations and return their known participants."""
+    now = _now()
+    expired: list[dict] = []
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT token, from_user FROM partner_invites WHERE status = 'pending' "
+            "AND expires_at IS NOT NULL AND expires_at <= ?", (now,))
+        rows = await cur.fetchall()
+        for row in rows:
+            cur = await db.execute(
+                "UPDATE partner_invites SET status = 'expired' WHERE token = ? AND status = 'pending' RETURNING token",
+                (row["token"],))
+            if await cur.fetchone():
+                recipients = await (await db.execute(
+                    "SELECT user_id FROM pair_invite_recipients WHERE invite_token = ?", (row["token"],))).fetchall()
+                expired.append({"token": row["token"], "from_user": int(row["from_user"]),
+                                "recipient_ids": [int(item[0]) for item in recipients]})
+        await db.commit()
+    return expired
+
+
+async def unpair(user_id: int) -> dict:
     """Разорвать только текущую симметричную пару пользователя.
 
     Поиск партнёра и удаление выполняются в одной транзакции. Поэтому
@@ -1868,11 +2140,24 @@ async def unpair(user_id: int) -> None:
                 "DELETE FROM partners "
                 "WHERE (user_id = ? AND partner_id = ?) OR (user_id = ? AND partner_id = ?)",
                 (user_id, partner_id, partner_id, user_id))
+            await db.commit()
+            return {"kind": "ended", "partner_id": int(partner_id)}
         # Calling unpair while not paired also cancels the caller's pending invite.
         # We intentionally do not touch another user's newer invite or relationship.
+        cur = await db.execute(
+            "SELECT token FROM partner_invites WHERE from_user = ? AND status = 'pending' "
+            "ORDER BY created_at DESC LIMIT 1", (user_id,))
+        pending = await cur.fetchone()
+        if not pending:
+            await db.commit()
+            return {"kind": "none"}
+        token = pending[0]
+        recipients = await (await db.execute(
+            "SELECT user_id FROM pair_invite_recipients WHERE invite_token = ?", (token,))).fetchall()
         await db.execute(
-            "DELETE FROM partner_invites WHERE from_user = ? AND status = 'pending'", (user_id,))
+            "UPDATE partner_invites SET status = 'cancelled' WHERE token = ? AND status = 'pending'", (token,))
         await db.commit()
+        return {"kind": "cancelled", "token": token, "recipient_ids": [int(item[0]) for item in recipients]}
 
 
 async def get_pair(user_id: int) -> dict | None:

@@ -30,6 +30,7 @@ import database as db
 import db_runtime
 import kinopoisk
 import omdb
+import pair_notifications
 from observability import RequestMetrics, observe_request
 import posters
 import ratelimit
@@ -78,6 +79,7 @@ async def log_slow_requests(request: Request, call_next):
 
 # Фоновий щоденний бекап SQLite (Postgres робить бекапи сам — backup_db там no-op).
 _backup_task: asyncio.Task | None = None
+_pair_expiry_task: asyncio.Task | None = None
 _visual_enrichment_tasks: set[asyncio.Task] = set()
 _visual_enrichment_film_ids: set[int] = set()
 _people_enrichment_tasks: set[asyncio.Task] = set()
@@ -100,21 +102,43 @@ async def _periodic_backup() -> None:
         except Exception:  # noqa: BLE001
             logger.warning("Scheduled backup failed", exc_info=True)
 
+
+async def _emit_expired_pair_invites() -> None:
+    for invite in await db.expire_pending_invites():
+        await pair_notifications.emit_pair_event(
+            event_type="pair.invite.expired", entity_id=invite["token"], actor_id=invite["from_user"],
+            recipient_ids=[invite["from_user"], *invite["recipient_ids"]], deep_link="", telegram=False)
+
+
+async def _periodic_pair_expiry() -> None:
+    """A small hourly sweep; the database transition makes it safe on many Fly instances."""
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            await _emit_expired_pair_invites()
+        except Exception:  # noqa: BLE001
+            logger.warning("Pair invite expiry sweep failed", exc_info=True)
+
 @app.on_event("startup")
 async def startup() -> None:
     await db_runtime.start(DATABASE_URL)  # пул Postgres; для SQLite — no-op
     await db.init_db()
+    # Expiry is durable and idempotent; only newly transitioned rows are
+    # returned.  Old links never remain actionable after a restart/deploy.
+    await _emit_expired_pair_invites()
     await search.purge_expired()  # подчистить протухший кэш поиска при старте
     # SQLite требует прикладного бэкапа; PostgreSQL обслуживается провайдером.
-    global _backup_task
+    global _backup_task, _pair_expiry_task
     if not DATABASE_URL and (_backup_task is None or _backup_task.done()):
         _backup_task = asyncio.create_task(_periodic_backup(), name="sqlite-periodic-backup")
+    if _pair_expiry_task is None or _pair_expiry_task.done():
+        _pair_expiry_task = asyncio.create_task(_periodic_pair_expiry(), name="pair-invite-expiry")
     logger.info("Database initialized (%s)", "Postgres" if DATABASE_URL else "SQLite")
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global _backup_task
+    global _backup_task, _pair_expiry_task
     if _backup_task is not None:
         _backup_task.cancel()
         try:
@@ -122,6 +146,13 @@ async def shutdown() -> None:
         except asyncio.CancelledError:
             pass
         _backup_task = None
+    if _pair_expiry_task is not None:
+        _pair_expiry_task.cancel()
+        try:
+            await _pair_expiry_task
+        except asyncio.CancelledError:
+            pass
+        _pair_expiry_task = None
     for task in list(_visual_enrichment_tasks):
         task.cancel()
     if _visual_enrichment_tasks:
@@ -139,6 +170,7 @@ async def shutdown() -> None:
             await mod.aclose()
         except Exception:  # noqa: BLE001
             pass
+    await pair_notifications.drain()
     await db_runtime.close()
     global _img_session
     if _img_session and not _img_session.closed:
@@ -203,9 +235,45 @@ async def require_editor(user: dict = Depends(current_user)) -> dict:
 # ── API: список пользователя ──────────────────────────────────────────────────
 @app.get("/api/me")
 async def me(user: dict = Depends(current_user)):
+    settings = await db.get_notification_settings(user["id"])
     return {"id": user["id"], "label": user.get("first_name", ""),
             "username": user.get("username"), "photo_url": user.get("photo_url"),
-            "role": await _effective_role(user["id"])}
+            "role": await _effective_role(user["id"]), "telegram_available": bool(BOT_TOKEN), **settings}
+
+
+class SettingsBody(BaseModel):
+    language: str | None = Field(default=None, max_length=8)
+    telegram_notifications: bool | None = None
+
+
+@app.get("/api/settings")
+async def get_settings(user: dict = Depends(current_user)):
+    return {**(await db.get_notification_settings(user["id"])), "telegram_available": bool(BOT_TOKEN)}
+
+
+@app.patch("/api/settings")
+async def patch_settings(body: SettingsBody, user: dict = Depends(current_user)):
+    if body.language is not None and body.language not in ("ru", "en"):
+        raise HTTPException(status_code=422, detail="Unsupported language")
+    settings = await db.update_notification_settings(
+        user["id"], language=body.language, telegram_enabled=body.telegram_notifications)
+    return {**settings, "telegram_available": bool(BOT_TOKEN)}
+
+
+@app.get("/api/notifications")
+async def notifications(limit: int = 20, before_id: int | None = None,
+                        user: dict = Depends(current_user)):
+    return await db.list_notifications(user["id"], limit=limit, before_id=before_id)
+
+
+@app.post("/api/notifications/read-all")
+async def notifications_read_all(user: dict = Depends(current_user)):
+    return {"updated": await db.mark_all_notifications_read(user["id"])}
+
+
+@app.post("/api/notifications/{notification_id}/read")
+async def notification_read(notification_id: int, user: dict = Depends(current_user)):
+    return {"ok": await db.mark_notification_read(user["id"], notification_id)}
 
 
 @app.get("/api/movies")
@@ -708,9 +776,10 @@ async def partner(user: dict = Depends(current_user)):
 async def partner_invite(user: dict = Depends(current_user)):
     if await db.get_partner(user["id"]) is not None:
         raise HTTPException(status_code=409, detail="Пара уже есть")
-    token = await db.create_invite(user["id"])
-    if token is None:  # pair could have been created after the pre-check above
+    invite = await db.create_invite(user["id"], with_state=True)
+    if invite is None:  # pair could have been created after the pre-check above
         raise HTTPException(status_code=409, detail="Пара уже есть")
+    token = invite["token"]
     return {"link": _invite_link(token), "code": token}
 
 
@@ -723,6 +792,12 @@ async def partner_invite_preview(token: str, user: dict = Depends(current_user))
     sender = await db.get_invite_sender(token)
     if not sender:
         raise HTTPException(status_code=404, detail="Приглашение недействительно или уже использовано")
+    # Share links deliberately do not encode a recipient.  As soon as a real
+    # non-sender opens one, we can safely create their inbox/bot notification.
+    if await db.register_invite_recipient(token, user["id"]):
+        await pair_notifications.emit_pair_event(
+            event_type="pair.invite.created", entity_id=token, actor_id=sender["id"],
+            recipient_ids=[user["id"]], deep_link=f"inv_{token}")
     return {"inviter": _partner_brief(sender, user["id"])}
 
 
@@ -739,13 +814,37 @@ async def partner_accept(body: AcceptBody, user: dict = Depends(current_user)):
     if not res["ok"]:
         return {"ok": False, "reason": res["reason"]}
     stats_cache.clear()
+    await pair_notifications.emit_pair_event(
+        event_type="pair.invite.accepted", entity_id=token, actor_id=user["id"],
+        recipient_ids=[res["partner_id"], user["id"]], deep_link="stats")
     return {"ok": True, "partner": _partner_brief(await db.get_user(res["partner_id"]), user["id"])}
+
+
+@app.post("/api/partner/decline")
+async def partner_decline(body: AcceptBody, user: dict = Depends(current_user)):
+    token = body.token.strip()
+    if token.startswith("inv_"):
+        token = token[4:]
+    result = await db.decline_invite(token, user["id"])
+    if result["ok"]:
+        await pair_notifications.emit_pair_event(
+            event_type="pair.invite.declined", entity_id=token, actor_id=user["id"],
+            recipient_ids=[result["from_user"]], deep_link="stats")
+    return result
 
 
 @app.post("/api/partner/unpair")
 async def partner_unpair(user: dict = Depends(current_user)):
-    await db.unpair(user["id"])
+    result = await db.unpair(user["id"])
     stats_cache.clear()
+    if result["kind"] == "ended":
+        await pair_notifications.emit_pair_event(
+            event_type="pair.ended", entity_id=f"{user['id']}:{result['partner_id']}:{int(time.time())}",
+            actor_id=user["id"], recipient_ids=[user["id"], result["partner_id"]], deep_link="stats")
+    elif result["kind"] == "cancelled":
+        await pair_notifications.emit_pair_event(
+            event_type="pair.invite.cancelled", entity_id=result["token"], actor_id=user["id"],
+            recipient_ids=result["recipient_ids"], deep_link="")
     return {"ok": True}
 
 

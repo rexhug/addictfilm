@@ -64,6 +64,12 @@ async function openStats(page, paired = false, options = {}) {
     const partnerApi = options.partnerApi;
     const json = path === "/api/me"
       ? { id: 1, label: "Denys", username: "denys", role: null }
+      : path === "/api/settings"
+        ? { language: "ru", telegram_enabled: true, telegram_available: true }
+      : path === "/api/notifications"
+        ? (options.notifications || { items: [], unread_count: 0, next_before_id: null })
+      : path.startsWith("/api/notifications/")
+        ? { ok: true }
       : path === "/api/movie/1"
         ? { id: 1, title: "The Last of Us", title_original: "The Last of Us", year: "2023", poster_url: null, genres: "Drama" }
       : path === "/api/partner"
@@ -189,6 +195,22 @@ test("pair profile is reachable and key movie cards remain interactive", async (
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
   await page.locator('[data-film-id="1"]').click();
   await expect(page.getByRole("heading", { name: "The Last of Us" })).toBeVisible();
+});
+
+test("notification inbox shows unread pair events and follows their deep link", async ({ page }) => {
+  await openStats(page, false, { notifications: {
+    unread_count: 1,
+    next_before_id: null,
+    items: [{ id: 42, event_type: "pair.invite.created", read: false, deep_link: "inv_test", created_at: new Date().toISOString(),
+      actor: { name: "Kristina", username: "kristina", photo_url: null },
+      payload: { title: "Приглашение в пару", body: "Kristina приглашает тебя отмечать фильмы вместе.", action_label: "Открыть" } }],
+  } });
+  await page.getByRole("button", { name: "Главная" }).click();
+  await expect(page.locator("#bell-btn .dot")).toBeVisible();
+  await page.getByRole("button", { name: "Уведомления" }).click();
+  await expect(page.getByText("Приглашение в пару")).toBeVisible();
+  await page.getByRole("button", { name: "Открыть", exact: true }).click();
+  await expect(page.getByRole("heading", { name: /Вас зовёт/ })).toBeVisible();
 });
 
 test("settings switches language immediately and only enables real notification permission", async ({ page }) => {

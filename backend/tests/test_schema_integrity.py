@@ -39,6 +39,7 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
             db._SCHEMA_MIGRATION_LEGACY_COLUMNS,
             db._SCHEMA_MIGRATION_PERSON_PORTRAIT_COMPLETENESS,
             db._SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY,
+            db._SCHEMA_MIGRATION_PAIR_NOTIFICATIONS,
             db._SCHEMA_MIGRATION_SEARCH_TEXT_DIRECTORS,
         ])
 
