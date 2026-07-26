@@ -10,6 +10,24 @@ if (tg) {
   // the Mini App. CSS can prevent browser overscroll, but only this native API
   // prevents the Telegram container itself from handling the gesture.
   try { tg.disableVerticalSwipes?.(); } catch (e) {}
+
+  // Полноэкранный режим: контент уходит под системную область iPhone и под
+  // «шапку» Telegram (кнопки Закрыть/⋯). Пробрасываем их высоту в CSS-переменную
+  // --tg-inset-top; заголовки экранов начинаются ниже неё (см. --safe-top в CSS).
+  // safeAreaInset — вырез устройства, contentSafeAreaInset — панель самого Telegram.
+  const applyTgInsets = () => {
+    const sa = tg.safeAreaInset || {}, ca = tg.contentSafeAreaInset || {};
+    const top = Math.max(0, (sa.top || 0) + (ca.top || 0));
+    const bottom = Math.max(0, (sa.bottom || 0) + (ca.bottom || 0));
+    const root = document.documentElement.style;
+    root.setProperty("--tg-inset-top", top + "px");
+    root.setProperty("--tg-inset-bottom", bottom + "px");
+  };
+  applyTgInsets();
+  ["safeAreaChanged", "contentSafeAreaChanged", "fullscreenChanged"].forEach(
+    ev => { try { tg.onEvent?.(ev, applyTgInsets); } catch (e) {} });
+  // Инсеты иногда приходят чуть позже готовности — добираем повторной попыткой.
+  setTimeout(applyTgInsets, 300);
 }
 
 const screen = document.getElementById("screen");
