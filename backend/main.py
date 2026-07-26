@@ -287,7 +287,7 @@ async def movies(status: str = "want_to_watch", sort: str = "date",
                  limit: int = 50, offset: int = 0, user: dict = Depends(current_user)):
     if status not in ("want_to_watch", "watched", "top"):
         raise HTTPException(status_code=422, detail="Неизвестный статус")
-    if sort not in ("date", "rating"):
+    if sort not in ("date", "rating", "best", "worst", "new", "old"):
         raise HTTPException(status_code=422, detail="Неизвестная сортировка")
     limit = max(1, min(limit, 100))   # защита от чрезмерной выборки
     offset = max(0, offset)

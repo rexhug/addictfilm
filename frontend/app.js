@@ -72,6 +72,7 @@ const DICT = {
     coll_delete_btn: "Удалить подборку", coll_delete_confirm: (t) => `Удалить подборку «${t}»? Фильмы останутся в каталоге.`,
     tab_home: "Главная", tab_want: "Хочу", tab_watched: "Смотрел", tab_top: "Мой топ", tab_stats: "Статистика",
     list_want: "Хочу посмотреть", list_watched: "Смотрел", list_top: "Мой топ",
+    sort_title: "Сортировка", sort_best: "Лучшие", sort_new: "Сначала новые", sort_old: "Сначала старые", sort_worst: "Худшие",
     count_films: (n) => pl(n, ["фильм", "фильма", "фильмов"]),
     rail_empty: "Пока пусто — добавь фильмы через поиск", rail_err: "Не удалось загрузить",
     genres_empty: "Каталог пока пуст",
@@ -148,6 +149,7 @@ const DICT = {
     coll_delete_btn: "Delete collection", coll_delete_confirm: (t) => `Delete collection "${t}"? Films stay in the catalog.`,
     tab_home: "Home", tab_want: "Wishlist", tab_watched: "Watched", tab_top: "My Top", tab_stats: "Stats",
     list_want: "Wishlist", list_watched: "Watched", list_top: "My Top",
+    sort_title: "Sort", sort_best: "Best rated", sort_new: "Newest first", sort_old: "Oldest first", sort_worst: "Worst rated",
     count_films: (n) => (n === 1 ? "film" : "films"),
     rail_empty: "Empty — add films via search", rail_err: "Couldn't load",
     genres_empty: "Catalog is empty yet",
@@ -848,16 +850,70 @@ async function showCollectionDetail(id) {
 
 // ── Личные списки ─────────────────────────────────────────────────────────────
 const STATUS_MAP = { want: "want_to_watch", watched: "watched", top: "top" };
+// Сортировка экрана «Смотрел». Ключи совпадают с бэкендом (get_user_films).
+// Значение хранится локально, чтобы выбор жил, пока пользователь в приложении.
+let _watchedSort = null;
+function watchedSort() {
+  if (_watchedSort == null) {
+    try { _watchedSort = localStorage.getItem("watchedSort") || "new"; } catch (e) { _watchedSort = "new"; }
+  }
+  return _watchedSort;
+}
+const _SORT_STAR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8L12 16.9 6.7 19.6l1-5.8-4.2-4.1 5.9-.9Z"/></svg>';
+const _SORT_CLOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+const _SORT_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4.5 4.5L19 7"/></svg>';
+function watchedSortOptions() {
+  return [
+    { k: "best", label: t("sort_best"), icon: _SORT_STAR },
+    { k: "new", label: t("sort_new"), icon: _SORT_CLOCK },
+    { k: "old", label: t("sort_old"), icon: _SORT_CLOCK },
+    { k: "worst", label: t("sort_worst"), icon: _SORT_STAR },
+  ];
+}
+function openSortMenu() {
+  const active = watchedSort();
+  const sheet = document.createElement("div");
+  sheet.className = "sort-sheet";
+  sheet.innerHTML = `<div class="sort-backdrop"></div><div class="sort-card" role="menu">${
+    watchedSortOptions().map(o => `<button class="sort-item${o.k === active ? " on" : ""}" role="menuitemradio" aria-checked="${o.k === active}" data-k="${o.k}">
+      <span class="sort-ic">${o.icon}</span><span class="sort-lbl">${esc(o.label)}</span>
+      <span class="sort-check">${o.k === active ? _SORT_CHECK : ""}</span></button>`).join("")}</div>`;
+  document.body.appendChild(sheet);
+  requestAnimationFrame(() => sheet.classList.add("in"));
+  const close = () => { sheet.classList.remove("in"); setTimeout(() => sheet.remove(), 180); };
+  sheet.querySelector(".sort-backdrop").onclick = close;
+  sheet.querySelectorAll(".sort-item").forEach(b => b.onclick = () => {
+    const k = b.dataset.k;
+    if (k !== _watchedSort) {
+      _watchedSort = k;
+      try { localStorage.setItem("watchedSort", k); } catch (e) {}
+      tg?.HapticFeedback?.selectionChanged?.();
+      loadList("watched");  // обновляем только сетку, без перезагрузки экрана
+    }
+    close();
+  });
+}
+
 async function showList(tab) {
   unwireDetailScroll();
   window.scrollTo(0, 0);
   const title = tab === "want" ? t("list_want") : tab === "watched" ? t("list_watched") : t("list_top");
-  screen.innerHTML = `<div class="page-head"><h1>${esc(title)}</h1></div><div id="list">${skeletonGrid(6)}</div>`;
+  const action = tab === "watched"
+    ? `<button class="page-head-action" id="sort-btn" aria-label="${esc(t("sort_title"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M7 12h10M10 18h4"/></svg></button>`
+    : "";
+  screen.innerHTML = `<div class="page-head"><h1>${esc(title)}</h1>${action}</div><div id="list">${skeletonGrid(6)}</div>`;
+  if (tab === "watched") document.getElementById("sort-btn").onclick = () => openSortMenu();
+  await loadList(tab);
+}
+
+async function loadList(tab) {
   const el = document.getElementById("list");
+  if (!el) return;
+  el.innerHTML = skeletonGrid(6);
+  const pageSize = 30;
+  const sortQ = tab === "watched" ? `&sort=${watchedSort()}` : "";
   try {
-    const pageSize = 30;
-    const data = await api(`/api/movies?status=${STATUS_MAP[tab]}&limit=${pageSize}`);
-    const { items, total } = data;
+    const { items, total } = await api(`/api/movies?status=${STATUS_MAP[tab]}&limit=${pageSize}${sortQ}`);
     if (!items.length) {
       el.innerHTML = tab === "want" ? emptyState("🔖", t("want_empty_t"), t("want_empty_s"))
         : tab === "watched" ? emptyState("✅", t("watched_empty_t"), t("watched_empty_s"))
@@ -877,7 +933,7 @@ async function showList(tab) {
         more.disabled = true;
         more.textContent = t("loading");
         try {
-          const next = await api(`/api/movies?status=${STATUS_MAP[tab]}&limit=${pageSize}&offset=${offset}`);
+          const next = await api(`/api/movies?status=${STATUS_MAP[tab]}&limit=${pageSize}&offset=${offset}${sortQ}`);
           grid.append(...renderCards(next.items));
           offset += next.items.length;
           if (!next.items.length || offset >= total) more.remove();

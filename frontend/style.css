@@ -406,6 +406,27 @@ section{margin-top:30px;}
   opacity:0;transition:opacity .2s ease;}
 #top-scrim.show{opacity:1;}
 
+/* ── сортировка «Смотрел» (компактный bottom-sheet) ─────────────────────── */
+.sort-sheet{position:fixed;inset:0;z-index:60;}
+.sort-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.5);opacity:0;transition:opacity .18s;
+  -webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px);}
+.sort-sheet.in .sort-backdrop{opacity:1;}
+.sort-card{position:absolute;left:0;right:0;bottom:0;max-width:520px;margin:0 auto;
+  background:var(--s1);border-top:1px solid var(--hair-2);border-radius:22px 22px 0 0;
+  padding:10px 10px calc(14px + env(safe-area-inset-bottom));box-shadow:0 -18px 40px -20px rgba(0,0,0,.9);
+  transform:translateY(100%);transition:transform .2s cubic-bezier(.2,.8,.2,1);}
+.sort-sheet.in .sort-card{transform:none;}
+.sort-item{display:flex;align-items:center;gap:12px;width:100%;border:0;background:none;cursor:pointer;
+  padding:14px;border-radius:14px;color:var(--ink);font:550 15px var(--font);text-align:left;transition:background .14s;}
+.sort-item:active{background:rgba(255,255,255,.05);}
+.sort-item.on{color:var(--accent-2);}
+.sort-ic{flex:none;display:grid;place-items:center;color:var(--ink-2);}
+.sort-item.on .sort-ic{color:var(--accent-2);}
+.sort-ic svg{width:20px;height:20px;display:block;}
+.sort-lbl{flex:1;min-width:0;}
+.sort-check{flex:none;width:20px;height:20px;color:var(--accent);}
+.sort-check svg{width:20px;height:20px;display:block;}
+
 /* ── floating tab bar ───────────────────────── */
 #tabbar{position:fixed;left:0;right:0;bottom:calc(16px + env(safe-area-inset-bottom));z-index:30;
   margin:0 auto;width:min(400px,calc(100% - 32px));height:60px;border-radius:26px;

@@ -1473,7 +1473,20 @@ async def get_user_films(user_id: int, status: str, limit: int = 50, offset: int
                        "ORDER BY uf.rating DESC, uf.watched_at DESC LIMIT ? OFFSET ?",
                 (user_id, limit, offset))
         elif status == "watched":
-            order = "uf.rating DESC" if sort == "rating" else "uf.watched_at DESC"
+            # Сортировки экрана «Смотрел». Ключи — из фиксированного словаря (без
+            # инъекций). Неоценённые всегда после оценённых (rating IS NULL → 1),
+            # вторичный ключ f.id — стабильный порядок при равных значениях.
+            # «new/old» берут реальный watched_at (с фолбэком на added_at), НЕ год.
+            orders = {
+                "best":  "(uf.rating IS NULL), uf.rating DESC, uf.watched_at DESC, f.id DESC",
+                "worst": "(uf.rating IS NULL), uf.rating ASC,  uf.watched_at DESC, f.id DESC",
+                "new":   "COALESCE(uf.watched_at, uf.added_at) DESC, f.id DESC",
+                "old":   "COALESCE(uf.watched_at, uf.added_at) ASC,  f.id ASC",
+                # обратная совместимость со старыми значениями
+                "rating": "(uf.rating IS NULL), uf.rating DESC, uf.watched_at DESC, f.id DESC",
+                "date":   "COALESCE(uf.watched_at, uf.added_at) DESC, f.id DESC",
+            }
+            order = orders.get(sort, orders["date"])
             cur = await db.execute(
                 base + f" AND uf.status='watched' ORDER BY {order} LIMIT ? OFFSET ?",
                 (user_id, limit, offset))
