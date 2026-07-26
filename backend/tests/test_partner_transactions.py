@@ -30,7 +30,11 @@ class PartnerTransactionTests(unittest.IsolatedAsyncioTestCase):
 
         result = await db.accept_invite(token, 2)
 
-        self.assertEqual(result, {"ok": True, "partner_id": 1})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["partner_id"], 1)
+        self.assertEqual(result["event"]["event_type"], "pair.invite.accepted")
+        self.assertEqual(result["event"]["inviter_user_id"], 1)
+        self.assertEqual(result["event"]["invitee_user_id"], 2)
         self.assertEqual(await db.get_partner(1), 2)
         self.assertEqual(await db.get_partner(2), 1)
         self.assertIsNone(await db.get_pending_invite(1))

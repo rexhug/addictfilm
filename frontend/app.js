@@ -116,7 +116,7 @@ const DICT = {
     partner_settings: "Настройки пары", partner_exact_hint: "Одинаковые оценки", partner_shared_best: "Ваш фаворит", partner_shared_dispute: "Самое большое расхождение",
     partner_no_common: "Пока нет фильмов, которые оценили оба",
     partner_matches: "Точных совпадений", partner_best: "Лучший общий", partner_controversial: "Самый спорный", partner_genres: "Общие жанры",
-    partner_unpair_btn: "Разорвать пару", partner_unpair_confirm: "Разорвать пару? Личные списки останутся у каждого.",
+    partner_unpair_btn: "Разорвать пару", partner_unpair_confirm: "Разорвать пару? Личные списки останутся у каждого.", partner_unpair_success: "Пара завершена.",
     partner_code_btn: "У меня есть код", partner_code_ph: "Код партнёра", partner_connect: "Подключить",
     partner_code_hint: "Или отправь партнёру этот код:",
     pair_empty: "Добавляйте фильмы вместе — здесь появится ваша совместная статистика",
@@ -192,7 +192,7 @@ const DICT = {
     partner_settings: "Pair settings", partner_exact_hint: "Same ratings", partner_shared_best: "Your shared favorite", partner_shared_dispute: "Biggest difference",
     partner_no_common: "No films you both rated yet",
     partner_matches: "Exact matches", partner_best: "Best shared", partner_controversial: "Most divisive", partner_genres: "Shared genres",
-    partner_unpair_btn: "Unpair", partner_unpair_confirm: "Unpair? Each keeps their personal lists.",
+    partner_unpair_btn: "Unpair", partner_unpair_confirm: "Unpair? Each keeps their personal lists.", partner_unpair_success: "Pair ended.",
     partner_code_btn: "I have a code", partner_code_ph: "Partner code", partner_connect: "Connect",
     partner_code_hint: "Or send your partner this code:",
     pair_empty: "Add films together — your shared stats will show here",
@@ -1403,7 +1403,7 @@ async function showStatsSettings(returnMode = "me", managePair = false) {
       card.querySelector("[data-settings-pair-manage]")?.addEventListener("click", openPairManagement);
     });
     card.querySelector("[data-settings-pair-unpair]")?.addEventListener("click", () => confirmPairUnlink(async () => {
-      try { await api("/api/partner/unpair", { method: "POST" }); showStatsSettings(returnMode); }
+      try { await api("/api/partner/unpair", { method: "POST" }); tg?.showAlert?.(t("partner_unpair_success")); showStatsSettings(returnMode); }
       catch (_) { tg?.showAlert?.(t("settings_pair_load_error")); }
     }));
   };
@@ -1747,6 +1747,7 @@ function wirePartner(box) {
   if (unpair) unpair.onclick = () => tg.showConfirm(t("partner_unpair_confirm"), async ok => {
     if (!ok) return;
     await api("/api/partner/unpair", { method: "POST" });
+    tg?.showAlert?.(t("partner_unpair_success"));
     showStats();
   });
   const share = box.querySelector("#p-share");

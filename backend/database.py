@@ -37,6 +37,8 @@ _SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY = "2026-07-25-person-portrait-retry"
 _SCHEMA_MIGRATION_PERSON_PORTRAIT_COMPLETENESS = "2026-07-25-person-portrait-completeness"
 _SCHEMA_MIGRATION_SEARCH_TEXT_DIRECTORS = "2026-07-26-search-text-directors"
 _SCHEMA_MIGRATION_PAIR_NOTIFICATIONS = "2026-07-26-pair-notifications"
+_SCHEMA_MIGRATION_PAIR_NOTIFICATION_EVENTS = "2026-07-26-pair-notification-event-model"
+_SCHEMA_MIGRATION_PAIR_NOTIFICATION_OUTBOX = "2026-07-26-pair-notification-outbox"
 _PAIR_INVITE_TTL = timedelta(days=7)
 
 
@@ -311,6 +313,54 @@ async def _apply_pair_notifications_migration() -> None:
         await db.commit()
 
 
+async def _apply_pair_notification_event_model_migration() -> None:
+    """Add canonical event records and remove old duplicate invite notices."""
+    await _add_column_if_missing("partner_invites", "accepted_by_user_id BIGINT")
+    await _add_column_if_missing("notifications", "event_id TEXT")
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS pair_events (
+                id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                invitation_id TEXT,
+                pair_id TEXT,
+                inviter_user_id BIGINT,
+                invitee_user_id BIGINT,
+                actor_user_id BIGINT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (inviter_user_id) REFERENCES users(id),
+                FOREIGN KEY (invitee_user_id) REFERENCES users(id),
+                FOREIGN KEY (actor_user_id) REFERENCES users(id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS pair_event_recipients (
+                event_id TEXT NOT NULL,
+                recipient_user_id BIGINT NOT NULL,
+                partner_user_id BIGINT,
+                dispatched_at TEXT,
+                PRIMARY KEY (event_id, recipient_user_id),
+                FOREIGN KEY (event_id) REFERENCES pair_events(id) ON DELETE CASCADE,
+                FOREIGN KEY (recipient_user_id) REFERENCES users(id),
+                FOREIGN KEY (partner_user_id) REFERENCES users(id)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_pair_events_invitation ON pair_events(invitation_id, created_at DESC)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_pair_event_recipients_recipient ON pair_event_recipients(recipient_user_id, event_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_notifications_event ON notifications(event_id, recipient_id)")
+        # Before canonical events, merely opening an invite generated a second
+        # notification beside the invite card itself.  It was never a meaningful
+        # completed event, so remove it together with its outbox rows.
+        await db.execute("DELETE FROM notification_deliveries WHERE notification_id IN (SELECT id FROM notifications WHERE event_type = 'pair.invite.created')")
+        await db.execute("DELETE FROM notifications WHERE event_type = 'pair.invite.created'")
+        await db.commit()
+
+
+async def _apply_pair_notification_outbox_migration() -> None:
+    """Allow a restarted process to resume event delivery exactly once."""
+    await _add_column_if_missing("pair_event_recipients", "dispatched_at TEXT")
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -320,6 +370,8 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_PERSON_PORTRAIT_COMPLETENESS, _apply_person_portrait_completeness_migration),
         (_SCHEMA_MIGRATION_SEARCH_TEXT_DIRECTORS, _apply_search_text_directors_migration),
         (_SCHEMA_MIGRATION_PAIR_NOTIFICATIONS, _apply_pair_notifications_migration),
+        (_SCHEMA_MIGRATION_PAIR_NOTIFICATION_EVENTS, _apply_pair_notification_event_model_migration),
+        (_SCHEMA_MIGRATION_PAIR_NOTIFICATION_OUTBOX, _apply_pair_notification_outbox_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -1790,13 +1842,13 @@ async def update_notification_settings(user_id: int, *, language: str | None = N
 
 async def create_notification(*, event_type: str, recipient_id: int, actor_id: int | None,
                               entity_id: str, payload: dict, deep_link: str | None,
-                              idempotency_key: str) -> tuple[int, bool]:
+                              idempotency_key: str, event_id: str | None = None) -> tuple[int, bool]:
     """Persist one inbox entry exactly once; returns ``(id, created)``."""
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute(
-            "INSERT INTO notifications (event_type, recipient_id, actor_id, entity_id, payload, deep_link, created_at, idempotency_key) "
-            "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",
-            (event_type, recipient_id, actor_id, entity_id, json.dumps(payload, ensure_ascii=False),
+            "INSERT INTO notifications (event_id, event_type, recipient_id, actor_id, entity_id, payload, deep_link, created_at, idempotency_key) "
+            "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",
+            (event_id, event_type, recipient_id, actor_id, entity_id, json.dumps(payload, ensure_ascii=False),
              deep_link, _now(), idempotency_key))
         row = await cur.fetchone()
         if row:
@@ -1941,6 +1993,72 @@ async def _lock_pair_users(db, *user_ids: int) -> None:
             f"UPDATE users SET last_seen = last_seen WHERE id IN ({marks})", ids)
 
 
+def _pair_id(first_user_id: int, second_user_id: int, since: str) -> str:
+    low, high = sorted((int(first_user_id), int(second_user_id)))
+    return f"pair:{low}:{high}:{since}"
+
+
+def _new_pair_event(*, event_type: str, invitation_id: str | None = None,
+                    pair_id: str | None = None, inviter_user_id: int | None = None,
+                    invitee_user_id: int | None = None, actor_user_id: int | None = None) -> dict:
+    return {
+        "id": f"evt_{secrets.token_urlsafe(18)}", "event_type": event_type,
+        "invitation_id": invitation_id, "pair_id": pair_id,
+        "inviter_user_id": inviter_user_id, "invitee_user_id": invitee_user_id,
+        "actor_user_id": actor_user_id, "created_at": _now(),
+    }
+
+
+async def _insert_pair_event(db, event: dict, *, recipients: list[tuple[int, int | None]]) -> None:
+    """Write an event and its explicit delivery audience in one transaction."""
+    await db.execute(
+        "INSERT INTO pair_events (id, event_type, invitation_id, pair_id, inviter_user_id, invitee_user_id, actor_user_id, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (event["id"], event["event_type"], event["invitation_id"], event["pair_id"],
+         event["inviter_user_id"], event["invitee_user_id"], event["actor_user_id"], event["created_at"]))
+    for recipient_user_id, partner_user_id in recipients:
+        await db.execute(
+            "INSERT INTO pair_event_recipients (event_id, recipient_user_id, partner_user_id) VALUES (?,?,?) "
+            "ON CONFLICT(event_id, recipient_user_id) DO NOTHING",
+            (event["id"], int(recipient_user_id), int(partner_user_id) if partner_user_id is not None else None))
+
+
+async def get_pair_event_recipients(event_id: str) -> list[dict]:
+    """Return the immutable, transactionally stored audience of a pair event."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(
+            "SELECT recipient_user_id, partner_user_id FROM pair_event_recipients "
+            "WHERE event_id = ? AND dispatched_at IS NULL ORDER BY recipient_user_id",
+            (event_id,))).fetchall()
+        return [{"recipient_user_id": int(row["recipient_user_id"]),
+                 "partner_user_id": int(row["partner_user_id"]) if row["partner_user_id"] is not None else None}
+                for row in rows]
+
+
+async def mark_pair_event_recipient_dispatched(event_id: str, recipient_user_id: int) -> None:
+    """A durable outbox acknowledgement after inbox/bot work has been queued."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute(
+            "UPDATE pair_event_recipients SET dispatched_at = ? "
+            "WHERE event_id = ? AND recipient_user_id = ? AND dispatched_at IS NULL",
+            (_now(), event_id, int(recipient_user_id)))
+        await db.commit()
+
+
+async def list_pending_pair_events(limit: int = 100) -> list[dict]:
+    """Read the durable notification outbox without scanning already dispatched events."""
+    limit = max(1, min(int(limit), 500))
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(
+            "SELECT DISTINCT pe.id, pe.event_type, pe.invitation_id, pe.pair_id, pe.inviter_user_id, "
+            "pe.invitee_user_id, pe.actor_user_id, pe.created_at "
+            "FROM pair_events pe JOIN pair_event_recipients per ON per.event_id = pe.id "
+            "WHERE per.dispatched_at IS NULL ORDER BY pe.created_at ASC LIMIT ?", (limit,))).fetchall()
+        return [dict(row) for row in rows]
+
+
 async def create_invite(from_user: int, *, with_state: bool = False) -> str | dict | None:
     """Створити або перевикористати єдиний pending invite.
 
@@ -2019,8 +2137,8 @@ async def accept_invite(token: str, accepting_user: int) -> dict:
             # (and is revoked below) or observes the newly created pair later.
             await _lock_pair_users(db, from_user, accepting_user)
             cur = await db.execute(
-                "UPDATE partner_invites SET status='accepted' WHERE token = ? AND status = 'pending' "
-                "RETURNING from_user", (token,))
+                "UPDATE partner_invites SET status='accepted', accepted_by_user_id = ? WHERE token = ? AND status = 'pending' "
+                "RETURNING from_user", (accepting_user, token))
             row = await cur.fetchone()
             if not row:
                 raise _InviteRejected("invalid")
@@ -2044,8 +2162,14 @@ async def accept_invite(token: str, accepting_user: int) -> dict:
             await db.execute(
                 "DELETE FROM partner_invites WHERE from_user IN (?, ?) AND status = 'pending'",
                 (from_user, accepting_user))
+            event = _new_pair_event(
+                event_type="pair.invite.accepted", invitation_id=token,
+                pair_id=_pair_id(from_user, accepting_user, now), inviter_user_id=int(from_user),
+                invitee_user_id=int(accepting_user), actor_user_id=int(accepting_user))
+            await _insert_pair_event(db, event, recipients=[(int(from_user), int(accepting_user)),
+                                                             (int(accepting_user), int(from_user))])
             await db.commit()
-            return {"ok": True, "partner_id": from_user}
+            return {"ok": True, "partner_id": from_user, "event": event}
     except _InviteRejected as e:
         return {"ok": False, "reason": e.reason}
 
@@ -2098,8 +2222,15 @@ async def decline_invite(token: str, declining_user: int) -> dict:
             "UPDATE partner_invites SET status = 'declined' WHERE token = ? AND status = 'pending' RETURNING from_user",
             (token,))
         changed = await cur.fetchone()
+        event = None
+        if changed:
+            event = _new_pair_event(event_type="pair.invite.declined", invitation_id=token,
+                                     inviter_user_id=from_user, invitee_user_id=int(declining_user),
+                                     actor_user_id=int(declining_user))
+            await _insert_pair_event(db, event, recipients=[(int(from_user), int(declining_user))])
         await db.commit()
-        return {"ok": bool(changed), "from_user": from_user, "reason": "invalid" if not changed else None}
+        return {"ok": bool(changed), "from_user": from_user, "reason": "invalid" if not changed else None,
+                "event": event}
 
 
 async def expire_pending_invites() -> list[dict]:
@@ -2119,8 +2250,13 @@ async def expire_pending_invites() -> list[dict]:
             if await cur.fetchone():
                 recipients = await (await db.execute(
                     "SELECT user_id FROM pair_invite_recipients WHERE invite_token = ?", (row["token"],))).fetchall()
+                event = _new_pair_event(event_type="pair.invite.expired", invitation_id=row["token"],
+                                         inviter_user_id=int(row["from_user"]), actor_user_id=None)
+                recipient_rows = [(int(row["from_user"]), None)]
+                recipient_rows.extend((int(item[0]), int(row["from_user"])) for item in recipients)
+                await _insert_pair_event(db, event, recipients=recipient_rows)
                 expired.append({"token": row["token"], "from_user": int(row["from_user"]),
-                                "recipient_ids": [int(item[0]) for item in recipients]})
+                                "recipient_ids": [int(item[0]) for item in recipients], "event": event})
         await db.commit()
     return expired
 
@@ -2132,16 +2268,26 @@ async def unpair(user_id: int) -> dict:
     запоздалый запрос не может удалить новую пару бывшего партнёра.
     """
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        cur = await db.execute("SELECT partner_id FROM partners WHERE user_id = ?", (user_id,))
+        cur = await db.execute("SELECT partner_id, since FROM partners WHERE user_id = ?", (user_id,))
         row = await cur.fetchone()
         if row:
-            partner_id = row[0]
+            partner_id, since = int(row[0]), row[1]
+            origin = await (await db.execute(
+                "SELECT from_user, accepted_by_user_id FROM partner_invites WHERE status = 'accepted' "
+                "AND ((from_user = ? AND accepted_by_user_id = ?) OR (from_user = ? AND accepted_by_user_id = ?)) "
+                "ORDER BY created_at DESC LIMIT 1", (user_id, partner_id, partner_id, user_id))).fetchone()
             await db.execute(
                 "DELETE FROM partners "
                 "WHERE (user_id = ? AND partner_id = ?) OR (user_id = ? AND partner_id = ?)",
                 (user_id, partner_id, partner_id, user_id))
+            event = _new_pair_event(
+                event_type="pair.ended", pair_id=_pair_id(user_id, partner_id, since),
+                inviter_user_id=int(origin[0]) if origin else None,
+                invitee_user_id=int(origin[1]) if origin and origin[1] is not None else None,
+                actor_user_id=int(user_id))
+            await _insert_pair_event(db, event, recipients=[(int(user_id), partner_id), (partner_id, int(user_id))])
             await db.commit()
-            return {"kind": "ended", "partner_id": int(partner_id)}
+            return {"kind": "ended", "partner_id": partner_id, "event": event}
         # Calling unpair while not paired also cancels the caller's pending invite.
         # We intentionally do not touch another user's newer invite or relationship.
         cur = await db.execute(
@@ -2156,8 +2302,12 @@ async def unpair(user_id: int) -> dict:
             "SELECT user_id FROM pair_invite_recipients WHERE invite_token = ?", (token,))).fetchall()
         await db.execute(
             "UPDATE partner_invites SET status = 'cancelled' WHERE token = ? AND status = 'pending'", (token,))
+        event = _new_pair_event(event_type="pair.invite.cancelled", invitation_id=token,
+                                 inviter_user_id=int(user_id), actor_user_id=int(user_id))
+        await _insert_pair_event(db, event, recipients=[(int(item[0]), int(user_id)) for item in recipients])
         await db.commit()
-        return {"kind": "cancelled", "token": token, "recipient_ids": [int(item[0]) for item in recipients]}
+        return {"kind": "cancelled", "token": token, "recipient_ids": [int(item[0]) for item in recipients],
+                "event": event}
 
 
 async def get_pair(user_id: int) -> dict | None:

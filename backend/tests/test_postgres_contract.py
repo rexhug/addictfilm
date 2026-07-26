@@ -24,7 +24,8 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
         await db.init_db()
         async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
             await conn.execute(
-                "TRUNCATE TABLE collection_films, collections, partners, partner_invites, "
+                "TRUNCATE TABLE notification_deliveries, notifications, pair_event_recipients, pair_events, "
+                "collection_films, collections, partners, partner_invites, "
                 "user_films, films, users, search_cache, search_budget RESTART IDENTITY CASCADE")
             await conn.commit()
 
@@ -43,7 +44,9 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
 
         result = await db.accept_invite(token, 2)
 
-        self.assertEqual(result, {"ok": True, "partner_id": 1})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["partner_id"], 1)
+        self.assertEqual(result["event"]["event_type"], "pair.invite.accepted")
         self.assertEqual(await db.get_partner(1), 2)
         self.assertEqual(await db.get_partner(2), 1)
         self.assertIsNone(await db.create_invite(1))

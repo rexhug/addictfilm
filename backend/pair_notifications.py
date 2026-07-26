@@ -1,15 +1,16 @@
-"""Durable, localized notifications for pair lifecycle events.
+"""Recipient-aware delivery for durable pair lifecycle events.
 
-The database inbox is the source of truth. Telegram delivery is deliberately an
-asynchronous best-effort channel: a blocked bot, a network timeout or Telegram
-rate limit can never roll back accepting, declining or ending a pair.
+The pair action writes one immutable event in the same database transaction as
+the state change.  This module only turns that already-committed event into
+recipient-specific inbox rows and best-effort Telegram messages.  It never
+guesses roles from user order or from the user currently using the Mini App.
 """
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import logging
 import os
-from typing import Iterable
 
 import aiohttp
 
@@ -21,26 +22,30 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "addictfilmbot").lstrip("@")
 _tasks: set[asyncio.Task] = set()
 
 
-_TEXT = {
-    "ru": {
-        "pair.invite.created": ("Приглашение в пару", "{actor} приглашает тебя отмечать фильмы вместе.", "Открыть"),
-        "pair.invite.accepted": ("Теперь вы в паре", "{actor} принял(а) приглашение. Ваша общая статистика уже готова.", "Смотреть статистику"),
-        "pair.invite.declined": ("Приглашение отклонено", "{actor} пока не присоединился(ась) к паре.", "Открыть"),
-        "pair.invite.cancelled": ("Приглашение отменено", "{actor} отменил(а) приглашение в пару.", "Открыть"),
-        "pair.invite.expired": ("Приглашение истекло", "Приглашение в пару больше не активно.", "Открыть"),
-        "pair.ended.actor": ("Пара завершена", "Вы завершили пару с {partner}.", "Открыть"),
-        "pair.ended.partner": ("Пара завершена", "{actor} завершил(а) вашу пару.", "Открыть"),
-    },
-    "en": {
-        "pair.invite.created": ("Pair invitation", "{actor} invited you to track films together.", "Open"),
-        "pair.invite.accepted": ("You're now paired", "{actor} accepted the invite. Your shared stats are ready.", "View stats"),
-        "pair.invite.declined": ("Invitation declined", "{actor} did not join the pair right now.", "Open"),
-        "pair.invite.cancelled": ("Invitation cancelled", "{actor} cancelled the pair invitation.", "Open"),
-        "pair.invite.expired": ("Invitation expired", "The pair invitation is no longer active.", "Open"),
-        "pair.ended.actor": ("Pair ended", "You ended your pair with {partner}.", "Open"),
-        "pair.ended.partner": ("Pair ended", "{actor} ended your pair.", "Open"),
-    },
-}
+@dataclass(frozen=True)
+class RecipientContext:
+    """A canonical event viewed by exactly one recipient."""
+
+    event: dict
+    recipient_user_id: int
+    partner_user_id: int | None
+    recipient: dict
+    inviter: dict | None
+    invitee: dict | None
+    actor: dict | None
+    partner: dict | None
+    language: str
+
+
+def display_name(user: dict | None, language: str) -> str:
+    """Use a stable, human-facing name without guessing grammatical gender."""
+    if user:
+        return (user.get("display_name") or user.get("first_name") or user.get("username") or "").strip() or _fallback_name(language)
+    return _fallback_name(language)
+
+
+def _fallback_name(language: str) -> str:
+    return "Пользователь" if language == "ru" else "User"
 
 
 def _startapp_url(deep_link: str | None) -> str:
@@ -48,41 +53,100 @@ def _startapp_url(deep_link: str | None) -> str:
     return f"https://t.me/{BOT_USERNAME}?startapp={suffix}" if suffix else f"https://t.me/{BOT_USERNAME}"
 
 
-def _copy(language: str, event_type: str, *, is_actor: bool, actor_name: str, partner_name: str) -> dict:
-    language = language if language in _TEXT else "ru"
-    key = "pair.ended.actor" if event_type == "pair.ended" and is_actor else (
-        "pair.ended.partner" if event_type == "pair.ended" else event_type)
-    title, body, action_label = _TEXT[language].get(key, _TEXT[language]["pair.invite.created"])
-    values = {"actor": actor_name or ("Партнёр" if language == "ru" else "Your partner"),
-              "partner": partner_name or ("партнёром" if language == "ru" else "your partner")}
-    return {"title": title.format(**values), "body": body.format(**values), "action_label": action_label}
+def delivery_channels(context: RecipientContext) -> tuple[str, ...]:
+    """The complete channel policy, intentionally independent of API routes."""
+    event_type = context.event["event_type"]
+    actor_id = context.event.get("actor_user_id")
+    recipient_id = context.recipient_user_id
+    inviter_id = context.event.get("inviter_user_id")
+
+    if event_type == "pair.invite.accepted":
+        # The person who accepted gets a useful in-app confirmation, but never
+        # a redundant bot message about their own tap.
+        return ("inapp", "telegram") if recipient_id == inviter_id else ("inapp",)
+    if event_type in ("pair.invite.declined", "pair.invite.cancelled"):
+        return ("inapp", "telegram")
+    if event_type == "pair.invite.expired":
+        return ("inapp",)
+    if event_type == "pair.ended":
+        return () if recipient_id == actor_id else ("inapp", "telegram")
+    if event_type == "pair.ended.system":
+        return ("inapp", "telegram")
+    # Creating an invitation is represented by its direct invite card/link.
+    return ()
 
 
-async def _send_telegram(*, recipient_id: int, text: dict, deep_link: str | None) -> None:
+def format_pair_notification(context: RecipientContext) -> dict:
+    """Create localized copy from explicit event and recipient roles only."""
+    event_type = context.event["event_type"]
+    language = context.language if context.language in ("ru", "en") else "ru"
+    inviter_name = display_name(context.inviter, language)
+    invitee_name = display_name(context.invitee, language)
+    actor_name = display_name(context.actor, language)
+    partner_name = display_name(context.partner, language)
+    recipient_id = context.recipient_user_id
+    inviter_id = context.event.get("inviter_user_id")
+
+    if language == "ru":
+        if event_type == "pair.invite.accepted":
+            if recipient_id == inviter_id:
+                return {"title": "Приглашение принято", "body": f"Пользователь {invitee_name} принял ваше приглашение. Теперь вы в паре.", "action_label": "Открыть пару", "deep_link": "stats"}
+            return {"title": "Теперь вы в паре", "body": f"Вы приняли приглашение от {inviter_name}.", "action_label": "Смотреть статистику", "deep_link": "stats"}
+        if event_type == "pair.invite.declined":
+            return {"title": "Приглашение отклонено", "body": f"Пользователь {invitee_name} отклонил приглашение в пару.", "action_label": "Открыть приложение", "deep_link": "stats"}
+        if event_type == "pair.invite.cancelled":
+            return {"title": "Приглашение отменено", "body": f"Пользователь {inviter_name} отменил приглашение в пару.", "action_label": "Открыть приложение", "deep_link": ""}
+        if event_type == "pair.invite.expired":
+            body = (f"Ваше приглашение для {invitee_name} больше не активно."
+                    if recipient_id == inviter_id and context.invitee
+                    else "Ваше приглашение больше не активно." if recipient_id == inviter_id
+                    else f"Приглашение от {inviter_name} больше не активно.")
+            return {"title": "Приглашение истекло", "body": body, "action_label": "Открыть приложение", "deep_link": ""}
+        if event_type == "pair.ended":
+            return {"title": "Пара завершена", "body": f"{actor_name} завершил вашу пару.", "action_label": "Открыть приложение", "deep_link": "stats"}
+        return {"title": "Пара завершена", "body": f"Ваша пара с {partner_name} была завершена.", "action_label": "Открыть приложение", "deep_link": "stats"}
+
+    if event_type == "pair.invite.accepted":
+        if recipient_id == inviter_id:
+            return {"title": "Invitation accepted", "body": f"{invitee_name} accepted your invitation. You are now paired.", "action_label": "Open pair", "deep_link": "stats"}
+        return {"title": "You're now paired", "body": f"You accepted {inviter_name}'s invitation.", "action_label": "View stats", "deep_link": "stats"}
+    if event_type == "pair.invite.declined":
+        return {"title": "Invitation declined", "body": f"{invitee_name} declined the pair invitation.", "action_label": "Open app", "deep_link": "stats"}
+    if event_type == "pair.invite.cancelled":
+        return {"title": "Invitation cancelled", "body": f"{inviter_name} cancelled the pair invitation.", "action_label": "Open app", "deep_link": ""}
+    if event_type == "pair.invite.expired":
+        body = (f"Your invitation for {invitee_name} is no longer active."
+                if recipient_id == inviter_id and context.invitee
+                else "Your invitation is no longer active." if recipient_id == inviter_id
+                else f"The invitation from {inviter_name} is no longer active.")
+        return {"title": "Invitation expired", "body": body, "action_label": "Open app", "deep_link": ""}
+    if event_type == "pair.ended":
+        return {"title": "Pair ended", "body": f"{actor_name} ended your pair.", "action_label": "Open app", "deep_link": "stats"}
+    return {"title": "Pair ended", "body": f"Your pair with {partner_name} was ended.", "action_label": "Open app", "deep_link": "stats"}
+
+
+async def _send_telegram(*, recipient_id: int, text: dict) -> None:
     if not BOT_TOKEN:
         return
     body = {
         "chat_id": recipient_id,
         "text": f"{text['title']}\n\n{text['body']}",
         "disable_web_page_preview": True,
-        "reply_markup": {"inline_keyboard": [[{"text": text["action_label"], "url": _startapp_url(deep_link)}]]},
+        "reply_markup": {"inline_keyboard": [[{"text": text["action_label"], "url": _startapp_url(text["deep_link"])}]]},
     }
     timeout = aiohttp.ClientTimeout(total=8)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=body) as response:
             if response.status >= 400:
-                detail = (await response.text())[:300]
-                raise RuntimeError(f"Telegram {response.status}: {detail}")
+                raise RuntimeError(f"Telegram {response.status}: {(await response.text())[:300]}")
 
 
-async def _deliver(notification_id: int, recipient_id: int, text: dict, deep_link: str | None) -> None:
+async def _deliver(notification_id: int, recipient_id: int, text: dict) -> None:
     for attempt in range(2):
         try:
-            await _send_telegram(recipient_id=recipient_id, text=text, deep_link=deep_link)
-        except Exception as exc:  # bot delivery is not allowed to break pair actions
+            await _send_telegram(recipient_id=recipient_id, text=text)
+        except Exception as exc:  # Delivery must never roll back a pair action.
             message = str(exc)
-            # Retry only a transport error, 429, or a temporary Telegram 5xx.
-            # A blocked bot (403) is final and must not waste a user's request.
             retryable = not message.startswith("Telegram ") or message.startswith("Telegram 429") or message.startswith("Telegram 5")
             if retryable and attempt == 0:
                 await asyncio.sleep(1)
@@ -90,9 +154,8 @@ async def _deliver(notification_id: int, recipient_id: int, text: dict, deep_lin
             logger.info("Telegram notification %s for %s failed: %s", notification_id, recipient_id, exc)
             await db.finish_notification_delivery(notification_id, channel="telegram", sent=False, error=message)
             return
-        else:
-            await db.finish_notification_delivery(notification_id, channel="telegram", sent=True)
-            return
+        await db.finish_notification_delivery(notification_id, channel="telegram", sent=True)
+        return
 
 
 def _schedule(coro) -> None:
@@ -101,41 +164,92 @@ def _schedule(coro) -> None:
     task.add_done_callback(_tasks.discard)
 
 
-async def emit_pair_event(*, event_type: str, entity_id: str, actor_id: int | None,
-                          recipient_ids: Iterable[int], deep_link: str | None,
-                          telegram: bool = True) -> None:
-    """Create idempotent inbox rows and schedule opt-in Telegram delivery."""
-    unique_recipients = sorted({int(user_id) for user_id in recipient_ids if user_id is not None})
-    if not unique_recipients:
+def _partner_id(event: dict, recipient_id: int) -> int | None:
+    """Find the other participant strictly from stored role IDs."""
+    candidates = (event.get("inviter_user_id"), event.get("invitee_user_id"), event.get("actor_user_id"))
+    for user_id in candidates:
+        if user_id is not None and int(user_id) != int(recipient_id):
+            return int(user_id)
+    return None
+
+
+async def dispatch_pair_event(*, event: dict) -> None:
+    """Deliver a committed event to its immutable, transactionally stored audience."""
+    recipient_rows = await db.get_pair_event_recipients(event["id"])
+    if not recipient_rows:
         return
-    actor = await db.get_user(actor_id) if actor_id is not None else None
-    actor_name = (actor or {}).get("first_name") or (actor or {}).get("username") or ""
+    unique_recipients = [row["recipient_user_id"] for row in recipient_rows]
+    recipient_partners = {row["recipient_user_id"]: row["partner_user_id"] for row in recipient_rows}
+    user_ids = {int(user_id) for user_id in (
+        event.get("inviter_user_id"), event.get("invitee_user_id"), event.get("actor_user_id")) if user_id is not None}
+    user_ids.update(unique_recipients)
+    users = {user_id: await db.get_user(user_id) for user_id in user_ids}
     for recipient_id in unique_recipients:
-        recipient = await db.get_user(recipient_id)
+        recipient = users.get(recipient_id)
         if not recipient:
+            # The account may have been deleted after the pair event committed.
+            # Acknowledge it so a replay worker does not retry it forever.
+            await db.mark_pair_event_recipient_dispatched(event["id"], recipient_id)
             continue
         settings = await db.get_notification_settings(recipient_id)
-        partner_name = actor_name
-        if event_type == "pair.ended" and actor_id == recipient_id:
-            # The person who ended a pair sees the other participant's name.
-            partner_name = ""
-        copy = _copy(settings["language"], event_type, is_actor=actor_id == recipient_id,
-                     actor_name=actor_name, partner_name=partner_name)
-        payload = {**copy, "event_type": event_type}
-        notification_id, created = await db.create_notification(
-            event_type=event_type, recipient_id=recipient_id, actor_id=actor_id,
-            entity_id=entity_id, payload=payload, deep_link=deep_link,
-            idempotency_key=f"{event_type}:{entity_id}:{recipient_id}:inapp")
-        if not created or not telegram or not settings["telegram_enabled"] or not BOT_TOKEN:
+        partner_id = recipient_partners.get(recipient_id)
+        context = RecipientContext(
+            event=event, recipient_user_id=recipient_id, partner_user_id=partner_id,
+            recipient=recipient, inviter=users.get(event.get("inviter_user_id")),
+            invitee=users.get(event.get("invitee_user_id")), actor=users.get(event.get("actor_user_id")),
+            partner=users.get(partner_id), language=settings["language"],
+        )
+        channels = delivery_channels(context)
+        if not channels:
+            await db.mark_pair_event_recipient_dispatched(event["id"], recipient_id)
             continue
-        created_delivery = await db.create_notification_delivery(
-            notification_id, channel="telegram", idempotency_key=f"{event_type}:{entity_id}:{recipient_id}:telegram")
-        if created_delivery:
-            _schedule(_deliver(notification_id, recipient_id, copy, deep_link))
+        text = format_pair_notification(context)
+        payload = {
+            "title": text["title"], "body": text["body"], "action_label": text["action_label"],
+            "event_type": event["event_type"],
+            "roles": {
+                "inviter_user_id": event.get("inviter_user_id"), "invitee_user_id": event.get("invitee_user_id"),
+                "actor_user_id": event.get("actor_user_id"), "recipient_user_id": recipient_id,
+                "partner_user_id": partner_id, "invitation_id": event.get("invitation_id"),
+                "pair_id": event.get("pair_id"), "event_type": event["event_type"],
+            },
+        }
+        notification_id = None
+        if "inapp" in channels:
+            notification_id, _ = await db.create_notification(
+                event_id=event["id"], event_type=event["event_type"], recipient_id=recipient_id,
+                actor_id=event.get("actor_user_id"), entity_id=event.get("invitation_id") or event.get("pair_id") or event["id"],
+                payload=payload, deep_link=text["deep_link"],
+                idempotency_key=f"{event['id']}:{recipient_id}:inapp")
+        if "telegram" not in channels or not settings["telegram_enabled"] or not BOT_TOKEN:
+            await db.mark_pair_event_recipient_dispatched(event["id"], recipient_id)
+            continue
+        # Telegram delivery belongs to the canonical event even when the inbox
+        # item is intentionally omitted (for example, a system event).
+        if notification_id is None:
+            notification_id, _ = await db.create_notification(
+                event_id=event["id"], event_type=event["event_type"], recipient_id=recipient_id,
+                actor_id=event.get("actor_user_id"), entity_id=event.get("invitation_id") or event.get("pair_id") or event["id"],
+                payload=payload, deep_link=text["deep_link"],
+                idempotency_key=f"{event['id']}:{recipient_id}:telegram-source")
+        if await db.create_notification_delivery(notification_id, channel="telegram", idempotency_key=f"{event['id']}:{recipient_id}:telegram"):
+            _schedule(_deliver(notification_id, recipient_id, text))
+        # A queued delivery is durable in notification_deliveries.  The outbox
+        # event itself can now be acknowledged even if Telegram is temporarily
+        # unavailable; _deliver records the retryable failure without rolling
+        # back a valid pair action.
+        await db.mark_pair_event_recipient_dispatched(event["id"], recipient_id)
+
+
+async def replay_pending_pair_events(limit: int = 100) -> int:
+    """Recover events committed just before a process restart or crash."""
+    events = await db.list_pending_pair_events(limit=limit)
+    for event in events:
+        await dispatch_pair_event(event=event)
+    return len(events)
 
 
 async def drain() -> None:
-    """Stop background delivery gracefully during an app shutdown."""
     if not _tasks:
         return
     for task in list(_tasks):

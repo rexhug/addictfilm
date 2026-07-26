@@ -105,9 +105,7 @@ async def _periodic_backup() -> None:
 
 async def _emit_expired_pair_invites() -> None:
     for invite in await db.expire_pending_invites():
-        await pair_notifications.emit_pair_event(
-            event_type="pair.invite.expired", entity_id=invite["token"], actor_id=invite["from_user"],
-            recipient_ids=[invite["from_user"], *invite["recipient_ids"]], deep_link="", telegram=False)
+        await pair_notifications.dispatch_pair_event(event=invite["event"])
 
 
 async def _periodic_pair_expiry() -> None:
@@ -115,6 +113,7 @@ async def _periodic_pair_expiry() -> None:
     while True:
         await asyncio.sleep(3600)
         try:
+            await pair_notifications.replay_pending_pair_events()
             await _emit_expired_pair_invites()
         except Exception:  # noqa: BLE001
             logger.warning("Pair invite expiry sweep failed", exc_info=True)
@@ -123,6 +122,9 @@ async def _periodic_pair_expiry() -> None:
 async def startup() -> None:
     await db_runtime.start(DATABASE_URL)  # пул Postgres; для SQLite — no-op
     await db.init_db()
+    # Events and their audience are committed together with the pair state.
+    # Replaying unacknowledged rows makes an interrupted HTTP request safe.
+    await pair_notifications.replay_pending_pair_events()
     # Expiry is durable and idempotent; only newly transitioned rows are
     # returned.  Old links never remain actionable after a restart/deploy.
     await _emit_expired_pair_invites()
@@ -792,12 +794,10 @@ async def partner_invite_preview(token: str, user: dict = Depends(current_user))
     sender = await db.get_invite_sender(token)
     if not sender:
         raise HTTPException(status_code=404, detail="Приглашение недействительно или уже использовано")
-    # Share links deliberately do not encode a recipient.  As soon as a real
-    # non-sender opens one, we can safely create their inbox/bot notification.
-    if await db.register_invite_recipient(token, user["id"]):
-        await pair_notifications.emit_pair_event(
-            event_type="pair.invite.created", entity_id=token, actor_id=sender["id"],
-            recipient_ids=[user["id"]], deep_link=f"inv_{token}")
+    # Opening the direct invite is itself the invitation UX.  Remember a known
+    # recipient for cancellation/expiry, but never create a duplicate inbox or
+    # bot notification beside that invite card.
+    await db.register_invite_recipient(token, user["id"])
     return {"inviter": _partner_brief(sender, user["id"])}
 
 
@@ -814,9 +814,7 @@ async def partner_accept(body: AcceptBody, user: dict = Depends(current_user)):
     if not res["ok"]:
         return {"ok": False, "reason": res["reason"]}
     stats_cache.clear()
-    await pair_notifications.emit_pair_event(
-        event_type="pair.invite.accepted", entity_id=token, actor_id=user["id"],
-        recipient_ids=[res["partner_id"], user["id"]], deep_link="stats")
+    await pair_notifications.dispatch_pair_event(event=res["event"])
     return {"ok": True, "partner": _partner_brief(await db.get_user(res["partner_id"]), user["id"])}
 
 
@@ -827,10 +825,9 @@ async def partner_decline(body: AcceptBody, user: dict = Depends(current_user)):
         token = token[4:]
     result = await db.decline_invite(token, user["id"])
     if result["ok"]:
-        await pair_notifications.emit_pair_event(
-            event_type="pair.invite.declined", entity_id=token, actor_id=user["id"],
-            recipient_ids=[result["from_user"]], deep_link="stats")
-    return result
+        await pair_notifications.dispatch_pair_event(event=result["event"])
+    # Canonical roles stay server-side; clients only need the outcome.
+    return {"ok": result["ok"], "reason": result.get("reason")}
 
 
 @app.post("/api/partner/unpair")
@@ -838,13 +835,9 @@ async def partner_unpair(user: dict = Depends(current_user)):
     result = await db.unpair(user["id"])
     stats_cache.clear()
     if result["kind"] == "ended":
-        await pair_notifications.emit_pair_event(
-            event_type="pair.ended", entity_id=f"{user['id']}:{result['partner_id']}:{int(time.time())}",
-            actor_id=user["id"], recipient_ids=[user["id"], result["partner_id"]], deep_link="stats")
+        await pair_notifications.dispatch_pair_event(event=result["event"])
     elif result["kind"] == "cancelled":
-        await pair_notifications.emit_pair_event(
-            event_type="pair.invite.cancelled", entity_id=result["token"], actor_id=user["id"],
-            recipient_ids=result["recipient_ids"], deep_link="")
+        await pair_notifications.dispatch_pair_event(event=result["event"])
     return {"ok": True}
 
 
