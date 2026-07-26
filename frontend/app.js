@@ -59,6 +59,10 @@ const DICT = {
     see_all: "Смотреть все",
     reco_title: "Оценивай и получай рекомендации", reco_sub: "Оценивай фильмы и получай персональные рекомендации на основе твоего вкуса", reco_cta: "Начать",
     notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся напоминания оценить просмотренное",
+    back: "Назад", settings_title: "Настройки", settings_loading: "Загружаю настройки…",
+    settings_notifications: "Уведомления", settings_notifications_hint: "Напоминания и обновления Addict Film", settings_notifications_on: "Включены", settings_notifications_off: "Выключены", settings_notifications_permission: "Нужно разрешение", settings_notifications_denied: "Разрешения отключены в Telegram или браузере", settings_notifications_unavailable: "Недоступны на этом устройстве", settings_notifications_error: "Не удалось запросить разрешение",
+    settings_language: "Язык", settings_language_hint: "Изменится сразу во всём приложении", settings_language_ru: "Русский", settings_language_en: "English",
+    settings_pair: "Пара", settings_pair_none: "Создайте пару, чтобы смотреть и оценивать фильмы вместе", settings_pair_create: "Создать пару", settings_pair_current: "Ваша пара", settings_pair_manage: "Управление парой", settings_pair_invited: "Приглашение ожидает принятия", settings_pair_load_error: "Не удалось загрузить статус пары", settings_pair_try_again: "Повторить",
     collections_empty_s: "Загляни позже", collections_empty_admin_s: "Создай первую подборку",
     collections_title_ph: "Название подборки", collections_create_btn: "Создать",
     coll_confirm_add: (t) => `Добавить «${t}» в подборку?`, coll_already_in: "Уже в этой подборке",
@@ -131,6 +135,10 @@ const DICT = {
     see_all: "See all",
     reco_title: "Rate films, get recommendations", reco_sub: "Rate films and get personal recommendations based on your taste", reco_cta: "Start",
     notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "Reminders to rate what you've watched will show up here",
+    back: "Back", settings_title: "Settings", settings_loading: "Loading settings…",
+    settings_notifications: "Notifications", settings_notifications_hint: "Addict Film reminders and updates", settings_notifications_on: "On", settings_notifications_off: "Off", settings_notifications_permission: "Permission needed", settings_notifications_denied: "Notifications are blocked in Telegram or your browser", settings_notifications_unavailable: "Unavailable on this device", settings_notifications_error: "Couldn't request permission",
+    settings_language: "Language", settings_language_hint: "Applies immediately across the app", settings_language_ru: "Русский", settings_language_en: "English",
+    settings_pair: "Partner", settings_pair_none: "Create a pair to watch and rate films together", settings_pair_create: "Create a pair", settings_pair_current: "Your pair", settings_pair_manage: "Manage pair", settings_pair_invited: "Invite is waiting to be accepted", settings_pair_load_error: "Couldn't load pair status", settings_pair_try_again: "Try again",
     collections_empty_s: "Check back later", collections_empty_admin_s: "Create your first collection",
     collections_title_ph: "Collection name", collections_create_btn: "Create",
     coll_confirm_add: (t) => `Add "${t}" to the collection?`, coll_already_in: "Already in this collection",
@@ -199,10 +207,52 @@ const DICT = {
 let lang = "ru";
 try { lang = localStorage.getItem("lang") || ((tg?.initDataUnsafe?.user?.language_code || "").startsWith("en") ? "en" : "ru"); } catch (e) {}
 function t(key, ...args) { const v = (DICT[lang] || DICT.ru)[key] ?? DICT.ru[key] ?? key; return typeof v === "function" ? v(...args) : v; }
-function setLang(l) { lang = l; try { localStorage.setItem("lang", l); } catch (e) {} applyTabLabels(); showHome(); }
+function setLang(l, onApplied = null) {
+  if (!DICT[l]) return;
+  lang = l;
+  try { localStorage.setItem("lang", l); } catch (e) {}
+  applyTabLabels();
+  if (typeof onApplied === "function") onApplied();
+  else showHome();
+}
 function applyTabLabels() {
   const map = { home: "tab_home", want: "tab_want", watched: "tab_watched", top: "tab_top", stats: "tab_stats" };
   document.querySelectorAll("#tabbar .tab").forEach(b => { const s = b.querySelector("span"); if (s) s.textContent = t(map[b.dataset.tab]); });
+}
+
+// A preference alone must never be presented as an active subscription.  The
+// browser (and, on iOS, Telegram's WebView) remains the source of truth for
+// permission.  This also keeps the setting useful on devices where the API is
+// unavailable: a user can turn the preference off, but cannot be misled into
+// thinking notifications are working when they are not.
+const NOTIFICATION_PREF_KEY = "addict-film:notifications-enabled";
+function notificationsPreference() {
+  try { return localStorage.getItem(NOTIFICATION_PREF_KEY) === "true"; } catch (_) { return false; }
+}
+function saveNotificationsPreference(value) {
+  try { localStorage.setItem(NOTIFICATION_PREF_KEY, value ? "true" : "false"); } catch (_) {}
+}
+function notificationsState() {
+  if (!("Notification" in window)) return { status: "unavailable", enabled: false, canEnable: false };
+  const permission = window.Notification.permission;
+  if (permission === "denied") return { status: "denied", enabled: false, canEnable: false };
+  if (permission !== "granted") return { status: "permission", enabled: false, canEnable: true };
+  return { status: notificationsPreference() ? "on" : "off", enabled: notificationsPreference(), canEnable: true };
+}
+async function updateNotifications(enabled) {
+  if (!enabled) { saveNotificationsPreference(false); return notificationsState(); }
+  let state = notificationsState();
+  if (!state.canEnable) return state;
+  try {
+    let permission = window.Notification.permission;
+    if (permission === "default") permission = await window.Notification.requestPermission();
+    saveNotificationsPreference(permission === "granted");
+    return notificationsState();
+  } catch (_) {
+    saveNotificationsPreference(false);
+    state = notificationsState();
+    return state.status === "permission" ? { ...state, status: "error" } : state;
+  }
 }
 
 async function api(path, opts = {}) {
@@ -1185,7 +1235,7 @@ function showSearch(mode = null) {
 async function showStats(initialMode = "me") {
   unwireDetailScroll();
   window.scrollTo(0, 0);
-  screen.innerHTML = `<div class="page-head"><h1>${esc(t("stats_title"))}</h1><button class="page-head-action" data-stats-share type="button" aria-label="Share">↗</button></div><div id="stats"><div class="empty"><div class="empty-sub">${esc(t("calc"))}</div></div></div>`;
+  screen.innerHTML = `<div class="page-head"><h1>${esc(t("stats_title"))}</h1><button class="page-head-action" data-stats-settings type="button" aria-label="${esc(t("settings_title"))}">${settingsSvg()}</button></div><div id="stats"><div class="empty"><div class="empty-sub">${esc(t("calc"))}</div></div></div>`;
   const box = document.getElementById("stats");
 
   // 1. Пара — приоритетно, первым блоком.
@@ -1241,12 +1291,124 @@ async function showStats(initialMode = "me") {
         scope: mode,
       });
     });
-    const shareStatsButton = screen.querySelector("[data-stats-share]");
-    if (shareStatsButton) shareStatsButton.onclick = () => shareStats();
+    const settingsButton = screen.querySelector("[data-stats-settings]");
+    if (settingsButton) settingsButton.onclick = () => showStatsSettings(mode);
     wirePartner(box);
     revealLoadedPersonPhotos(box);
   };
   render();
+}
+
+function settingsSvg() {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.12 2.12-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.04 1.56v.08h-3v-.08A1.7 1.7 0 0 0 10.66 18.7a1.7 1.7 0 0 0-1.88.34l-.06.06-2.12-2.12.06-.06A1.7 1.7 0 0 0 7 15.04a1.7 1.7 0 0 0-1.56-1.04h-.08v-3h.08A1.7 1.7 0 0 0 7 9.96a1.7 1.7 0 0 0-.34-1.88L6.6 8.02 8.72 5.9l.06.06A1.7 1.7 0 0 0 10.66 6.3a1.7 1.7 0 0 0 1.04-1.56v-.08h3v.08A1.7 1.7 0 0 0 15.74 6.3a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.12 2.12-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.56 1.04h.08v3h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg>`;
+}
+
+function settingsStatusLabel(state) {
+  const map = {
+    on: "settings_notifications_on", off: "settings_notifications_off",
+    permission: "settings_notifications_permission", denied: "settings_notifications_denied",
+    unavailable: "settings_notifications_unavailable", error: "settings_notifications_error",
+  };
+  return t(map[state.status] || "settings_notifications_off");
+}
+
+function settingsRow({ title, subtitle = "", action = "", className = "", attrs = "" }) {
+  return `<div class="settings-row ${className}" ${attrs}><span class="settings-row-copy"><b>${esc(title)}</b>${subtitle ? `<small>${esc(subtitle)}</small>` : ""}</span>${action}</div>`;
+}
+
+function settingsPairHTML(partner, failed) {
+  if (failed) return settingsRow({ title: t("settings_pair_load_error"), action: `<button class="settings-retry" data-settings-pair-retry type="button">${esc(t("settings_pair_try_again"))}</button>` });
+  if (partner.status === "paired") {
+    const name = partner.partner?.name || t("partner_word");
+    return settingsRow({ title: t("settings_pair_current"), subtitle: name, action: `<button class="settings-chevron-button" data-settings-pair-manage type="button" aria-label="${esc(t("settings_pair_manage"))}">${settingsChevron()}</button>` });
+  }
+  if (partner.status === "invited") {
+    return settingsRow({ title: t("settings_pair_invited"), subtitle: partner.code || "", action: `<button class="settings-chevron-button" data-settings-pair-invited type="button" aria-label="${esc(t("partner_share_btn"))}">${settingsChevron()}</button>` });
+  }
+  return settingsRow({ title: t("settings_pair_none"), action: `<button class="settings-primary-action" data-settings-pair-create type="button">${esc(t("settings_pair_create"))}</button>` });
+}
+
+function settingsChevron() { return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>`; }
+
+async function showStatsSettings(returnMode = "me", managePair = false) {
+  unwireDetailScroll();
+  window.scrollTo(0, 0);
+  screen.innerHTML = `<div class="sub-head"><button class="back" aria-label="${esc(t("back"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button><h1>${esc(t("settings_title"))}</h1></div><main class="settings-page"><div class="settings-loading">${esc(t("settings_loading"))}</div></main>`;
+  wireBack(() => showStats(returnMode));
+  const page = screen.querySelector(".settings-page");
+  let partner = { status: "none" };
+  let partnerFailed = false;
+  try { partner = await api("/api/partner"); } catch (_) { partnerFailed = true; }
+  if (!page) return;
+
+  const render = () => {
+    const notification = notificationsState();
+    const disabled = !notification.enabled && !notification.canEnable;
+    page.innerHTML = `
+      <section class="settings-section" aria-labelledby="settings-notifications-title"><h2 id="settings-notifications-title">${esc(t("settings_notifications"))}</h2><div class="settings-card">
+        ${settingsRow({ title: t("settings_notifications"), subtitle: `${t("settings_notifications_hint")} · ${settingsStatusLabel(notification)}`, action: `<button class="settings-toggle" data-settings-notifications type="button" role="switch" aria-checked="${notification.enabled}" aria-label="${esc(t("settings_notifications"))}" ${disabled ? "disabled" : ""}></button>` })}
+      </div></section>
+      <section class="settings-section" aria-labelledby="settings-language-title"><h2 id="settings-language-title">${esc(t("settings_language"))}</h2><div class="settings-card settings-language-card">
+        <p>${esc(t("settings_language_hint"))}</p><div class="settings-language-options" role="group" aria-label="${esc(t("settings_language"))}">
+          <button data-settings-language="ru" type="button" class="${lang === "ru" ? "active" : ""}" aria-pressed="${lang === "ru"}">${esc(t("settings_language_ru"))}</button>
+          <button data-settings-language="en" type="button" class="${lang === "en" ? "active" : ""}" aria-pressed="${lang === "en"}">${esc(t("settings_language_en"))}</button>
+        </div></div></section>
+      <section class="settings-section" aria-labelledby="settings-pair-title"><h2 id="settings-pair-title">${esc(t("settings_pair"))}</h2><div class="settings-card settings-pair-card">${settingsPairHTML(partner, partnerFailed)}${managePair && partner.status === "paired" ? `<div class="settings-pair-actions"><button class="settings-danger-action" data-settings-pair-unpair type="button">${esc(t("partner_unpair_btn"))}</button></div>` : ""}</div></section>`;
+
+    const toggle = page.querySelector("[data-settings-notifications]");
+    if (toggle) toggle.onclick = async () => { toggle.disabled = true; await updateNotifications(!notificationsState().enabled); render(); };
+    page.querySelectorAll("[data-settings-language]").forEach(button => button.onclick = () => setLang(button.dataset.settingsLanguage, () => showStatsSettings(returnMode, managePair)));
+    const retry = page.querySelector("[data-settings-pair-retry]");
+    if (retry) retry.onclick = () => showStatsSettings(returnMode, managePair);
+    const create = page.querySelector("[data-settings-pair-create]");
+    if (create) create.onclick = async () => {
+      create.disabled = true;
+      try { const invite = await api("/api/partner/invite", { method: "POST" }); sharePartnerLink(invite.link); } catch (_) { tg?.showAlert?.(t("settings_pair_load_error")); create.disabled = false; return; }
+      showStatsSettings(returnMode);
+    };
+    const invited = page.querySelector("[data-settings-pair-invited]");
+    if (invited) invited.onclick = () => settingsInvitePanel(page, partner, returnMode);
+    const manage = page.querySelector("[data-settings-pair-manage]");
+    if (manage) manage.onclick = () => showStatsSettings(returnMode, true);
+    const unpair = page.querySelector("[data-settings-pair-unpair]");
+    if (unpair) unpair.onclick = () => confirmPairUnlink(async () => {
+      try { await api("/api/partner/unpair", { method: "POST" }); showStatsSettings(returnMode); }
+      catch (_) { tg?.showAlert?.(t("settings_pair_load_error")); }
+    });
+  };
+  render();
+}
+
+function settingsInvitePanel(page, partner, returnMode) {
+  const card = page.querySelector(".settings-pair-card");
+  if (!card) return;
+  card.innerHTML = `<div class="settings-invite"><b>${esc(t("settings_pair_invited"))}</b><div class="settings-invite-code" data-settings-pair-code>${esc(partner.code || "")}</div><button class="settings-primary-full" data-settings-pair-share type="button">${esc(t("partner_share_btn"))}</button><button class="settings-text-action" data-settings-pair-code-enter type="button">${esc(t("partner_code_btn"))}</button></div>`;
+  card.querySelector("[data-settings-pair-code]")?.addEventListener("click", () => copyText(partner.code || ""));
+  card.querySelector("[data-settings-pair-share]")?.addEventListener("click", () => sharePartnerLink(partner.link));
+  card.querySelector("[data-settings-pair-code-enter]")?.addEventListener("click", () => settingsPartnerCodeForm(card, returnMode));
+}
+
+function settingsPartnerCodeForm(card, returnMode) {
+  card.innerHTML = `<div class="settings-invite"><b>${esc(t("partner_code_btn"))}</b><input class="code-input" data-settings-pair-input placeholder="${esc(t("partner_code_ph"))}" autocomplete="off" autocapitalize="off"><button class="settings-primary-full" data-settings-pair-connect type="button">${esc(t("partner_connect"))}</button></div>`;
+  const input = card.querySelector("[data-settings-pair-input]");
+  input?.focus();
+  card.querySelector("[data-settings-pair-connect]")?.addEventListener("click", async event => {
+    let code = input?.value.trim() || "";
+    const match = code.match(/inv_[A-Za-z0-9_-]+/);
+    if (match) code = match[0];
+    if (!code) return;
+    event.currentTarget.disabled = true;
+    try {
+      const result = await api("/api/partner/accept", { method: "POST", body: JSON.stringify({ token: code }) });
+      if (result.ok) { tg?.HapticFeedback?.notificationOccurred("success"); tg?.showAlert?.(t("accept_ok", result.partner?.name), () => showStatsSettings(returnMode)); }
+      else { tg?.showAlert?.(t("accept_fail_" + result.reason) || t("accept_fail_invalid")); event.currentTarget.disabled = false; }
+    } catch (_) { event.currentTarget.disabled = false; }
+  });
+}
+
+function confirmPairUnlink(onConfirm) {
+  if (tg?.showConfirm) { tg.showConfirm(t("partner_unpair_confirm"), ok => { if (ok) onConfirm(); }); return; }
+  if (window.confirm(t("partner_unpair_confirm"))) onConfirm();
 }
 
 async function showPersonFilms({ name, role, scope }) {
@@ -1557,12 +1719,6 @@ function sharePartnerLink(link) {
   const url = "https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent(t("partner_share_text"));
   if (tg.openTelegramLink) tg.openTelegramLink(url); else window.open(url, "_blank");
 }
-function shareStats() {
-  const text = lang === "ru" ? "Моя статистика в Addict Film" : "My Addict Film profile";
-  const url = "https://t.me/share/url?url=" + encodeURIComponent("https://t.me/addictfilmbot") + "&text=" + encodeURIComponent(text);
-  if (tg.openTelegramLink) tg.openTelegramLink(url); else window.open(url, "_blank");
-}
-
 async function showAcceptInvite(param) {
   unwireDetailScroll();
   window.scrollTo(0, 0);
@@ -1593,7 +1749,7 @@ function hbar(label, valueText, pct) { return `<div class="hbar-row"><div class=
 function personPill(name, count, photoUrl = null) { return `<div class="person-pill"><span class="person-avatar"><span class="fb">${esc(initials(name))}</span>${photoUrl ? `<img loading="lazy" decoding="async" src="${posterSrc(photoUrl)}" alt="" data-img-retry data-person-photo>` : ""}</span><span><b>${esc(name)}</b><small>${esc(t("stats_films", count))}</small></span></div>`; }
 
 // ── Навигация ─────────────────────────────────────────────────────────────────
-function backBtn() { return `<button class="back" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>`; }
+function backBtn() { return `<button class="back" aria-label="${esc(t("back"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>`; }
 function wireBack(fn) { const b = screen.querySelector(".back"); if (b) b.onclick = fn; }
 function setActiveTab(t) {
   document.querySelectorAll("#tabbar .tab").forEach(b => {

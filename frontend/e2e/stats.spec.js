@@ -27,10 +27,18 @@ const pairStats = {
   ],
 };
 
-async function openStats(page, paired = false) {
+async function openStats(page, paired = false, options = {}) {
   await page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
-  await page.addInitScript(() => {
+  await page.addInitScript((notification) => {
     window.__verticalSwipeDisableCalls = 0;
+    if (notification) {
+      let permission = notification.permission;
+      window.__notificationRequests = 0;
+      Object.defineProperty(window, "Notification", { configurable: true, value: {
+        get permission() { return permission; },
+        async requestPermission() { window.__notificationRequests += 1; permission = notification.requestResult; return permission; },
+      } });
+    }
     window.Telegram = { WebApp: {
       initData: "test-init-data",
       initDataUnsafe: { user: { id: 1, first_name: "Denys", username: "denys" } },
@@ -39,7 +47,7 @@ async function openStats(page, paired = false) {
       HapticFeedback: { impactOccurred() {}, notificationOccurred() {} },
       showConfirm(_text, callback) { callback(true); }, showAlert() {}, openTelegramLink() {},
     } };
-  });
+  }, options.notification || null);
   await page.route("**/img?**", async route => {
     const source = new URL(route.request().url()).searchParams.get("u") || "";
     const [width, height] = source.includes("wide") ? [960, 540]
@@ -53,12 +61,15 @@ async function openStats(page, paired = false) {
   });
   await page.route("**/api/**", async route => {
     const path = new URL(route.request().url()).pathname;
+    const partnerApi = options.partnerApi;
     const json = path === "/api/me"
       ? { id: 1, label: "Denys", username: "denys", role: null }
       : path === "/api/movie/1"
         ? { id: 1, title: "The Last of Us", title_original: "The Last of Us", year: "2023", poster_url: null, genres: "Drama" }
       : path === "/api/partner"
-        ? (paired ? { status: "paired", partner: { name: "Kristina", username: "kristina" } } : { status: "none" })
+        ? (partnerApi?.current ? partnerApi.current() : (paired ? { status: "paired", partner: { name: "Kristina", username: "kristina" } } : { status: "none" }))
+        : path === "/api/partner/invite"
+          ? (partnerApi?.invite ? partnerApi.invite() : { link: "https://t.me/addictfilmbot?startapp=inv_test", code: "inv_test" })
         : path === "/api/partner/stats" ? pairStats
           : path === "/api/stats/person" ? { items: [{ id: 17, title: "Donnie Darko", year: "2001", poster_url: null, my_rating: 9 }] }
             : personalStats;
@@ -175,4 +186,52 @@ test("pair profile is reachable and key movie cards remain interactive", async (
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
   await page.locator('[data-film-id="1"]').click();
   await expect(page.getByRole("heading", { name: "The Last of Us" })).toBeVisible();
+});
+
+test("settings switches language immediately and only enables real notification permission", async ({ page }) => {
+  await openStats(page, false, { notification: { permission: "default", requestResult: "granted" } });
+  await page.getByRole("button", { name: "Настройки" }).click();
+  await expect(page.getByRole("heading", { name: "Настройки" })).toBeVisible();
+  const toggle = page.getByRole("switch", { name: "Уведомления" });
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await expect.poll(() => page.evaluate(() => ({ requests: window.__notificationRequests, enabled: localStorage.getItem("addict-film:notifications-enabled") }))).toEqual({ requests: 1, enabled: "true" });
+  await page.getByRole("button", { name: "English" }).click();
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await expect(page.getByRole("switch", { name: "Notifications" })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByRole("heading", { name: "My movie profile" })).toBeVisible();
+});
+
+test("settings never fakes notification access when it is denied", async ({ page }) => {
+  await openStats(page, false, { notification: { permission: "denied", requestResult: "denied" } });
+  await page.getByRole("button", { name: "Настройки" }).click();
+  const toggle = page.getByRole("switch", { name: "Уведомления" });
+  await expect(toggle).toBeDisabled();
+  await expect(page.getByText("Разрешения отключены в Telegram или браузере")).toBeVisible();
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+});
+
+test("settings uses the existing invite and paired management states", async ({ page }) => {
+  let partnerState = { status: "none" };
+  await openStats(page, false, {
+    partnerApi: {
+      current: () => partnerState,
+      invite: () => {
+        partnerState = { status: "invited", link: "https://t.me/addictfilmbot?startapp=inv_settings", code: "inv_settings" };
+        return partnerState;
+      },
+    },
+  });
+  await page.getByRole("button", { name: "Настройки" }).click();
+  await page.getByRole("button", { name: "Создать пару" }).click();
+  await expect(page.getByText("Приглашение ожидает принятия")).toBeVisible();
+  await expect(page.getByText("inv_settings")).toBeVisible();
+  partnerState = { status: "paired", partner: { name: "Kristina", username: "kristina" } };
+  await page.getByRole("button", { name: "Назад" }).click();
+  await page.getByRole("button", { name: "Настройки" }).click();
+  await expect(page.getByText("Ваша пара")).toBeVisible();
+  await page.getByRole("button", { name: "Управление парой" }).click();
+  await expect(page.getByRole("button", { name: "Разорвать пару" })).toBeVisible();
 });
