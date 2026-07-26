@@ -37,6 +37,13 @@ let _heroSource = null;      // {rect, src} стартовой точки hero-t
 let _detailScrollHandler = null;  // текущий scroll-listener страницы фильма (снимается при уходе)
 let _detailLoadController = null; // отменяет устаревший detail-fetch при быстром переходе
 let _tabbarScrollHandler = null;
+// Навигация «экран → фильм → назад»: стек снимков предыдущего экрана (реальный
+// DOM + позиция скролла), чтобы выход из фильма возвращал ровно то, что было,
+// без перезагрузки и сброса скролла. _detailFilm/_detailBaseline — для точечного
+// обновления карточки, если внутри фильма изменили оценку/статус.
+const _navStack = [];
+let _detailFilm = null;
+let _detailBaseline = null;
 // Короткий session cache для тяжёлых home-rails. Он живёт только пока открыт
 // Mini App и сбрасывается после любого изменения списка/оценки, поэтому UI не
 // показывает устаревший статус фильма.
@@ -459,6 +466,7 @@ function emptyState(icon, text, sub = "") { return `<div class="empty"><div clas
 function posterTile(m, { onClick, badge } = {}) {
   const card = document.createElement("div");
   card.className = "poster";
+  card.dataset.filmId = m.id;  // для точечного обновления карточки при возврате из фильма
   // Рейтинг живёт в мета-строке под постером (год слева, оценка справа), а не поверх арта.
   let rv = badge !== undefined ? badge : (ratingOf(m) || "");
   rv = String(rv).replace(/^★\s*/, "").trim();
@@ -482,7 +490,63 @@ function posterTile(m, { onClick, badge } = {}) {
   return card;
 }
 function gridOf(items, toCard) { const g = document.createElement("div"); g.className = "grid"; for (const it of items) g.appendChild(toCard(it)); return g; }
-function openDetail(id, back, preview = null) { if (back) _returnTo = back; showDetail(id, preview); }
+function openDetail(id, back, preview = null) {
+  if (back) _returnTo = back;
+  captureScreenSnapshot();
+  showDetail(id, preview);
+}
+
+// Снимаем текущий экран целиком (реальные узлы, а не innerHTML — обработчики и
+// догруженные страницы сохраняются) вместе с позицией скролла.
+function captureScreenSnapshot() {
+  const scrollY = window.scrollY;  // ДО открепления: иначе высота схлопнется и scrollY станет 0
+  const frag = document.createDocumentFragment();
+  frag.append(...screen.childNodes);
+  _navStack.push({ frag, scrollY, returnTo: _returnTo, empty: !frag.childNodes.length });
+}
+
+// Сброс стека при смене верхнего экрана (таб/дип-линк): иначе «назад» из фильма
+// восстановил бы уже неактуальный экран.
+function resetNavStack() { _navStack.length = 0; }
+
+function returnFromDetail() {
+  const snap = _navStack.pop();
+  const film = _detailFilm;
+  const changed = film && _detailBaseline &&
+    (film.status !== _detailBaseline.status || film.my_rating !== _detailBaseline.my_rating);
+  _detailFilm = null; _detailBaseline = null;
+  if (!snap || snap.empty) { ((snap && snap.returnTo) || _returnTo)(); return; }
+  _returnTo = snap.returnTo;
+  unwireDetailScroll();
+  screen.replaceChildren(snap.frag);
+  if (changed) reconcileFilmCard(film);
+  // Форсируем layout реаттаченных узлов: иначе scrollTo клампится по ещё не
+  // посчитанной (неполной) высоте документа и позиция теряется.
+  void document.documentElement.scrollHeight;
+  window.scrollTo(0, snap.scrollY);
+  // rAF-повтор — страховка для iOS WebView, восстанавливающего скролл на след. кадре.
+  requestAnimationFrame(() => window.scrollTo(0, snap.scrollY));
+}
+
+// Точечно обновляем карточку изменённого фильма в восстановленном списке, не
+// перезагружая экран. Статус-фильтрованные списки («Хочу»/«Смотрел») помечены
+// data-status-filter; каталог/поиск показывают общий рейтинг — их не трогаем.
+function reconcileFilmCard(m) {
+  screen.querySelectorAll(`.poster[data-film-id="${m.id}"]`).forEach(card => {
+    const list = card.closest("[data-status-filter]");
+    if (!list) return;
+    if (m.status !== list.dataset.statusFilter) { card.remove(); return; }
+    const row = card.querySelector(".meta-row");
+    if (!row) return;
+    const pill = row.querySelector(".rate-pill");
+    if (m.my_rating) {
+      const html = `<span class="rate-pill"><span class="s">★</span>${esc(String(m.my_rating))}</span>`;
+      if (pill) pill.outerHTML = html; else row.insertAdjacentHTML("beforeend", html);
+    } else if (pill) {
+      pill.remove();
+    }
+  });
+}
 
 // ── Главная ───────────────────────────────────────────────────────────────────
 // Единый набор line-иконок для категорийных чипов (в стиле нижней навигации),
@@ -1078,6 +1142,7 @@ async function showList(tab) {
 async function loadList(tab) {
   const el = document.getElementById("list");
   if (!el) return;
+  el.dataset.statusFilter = STATUS_MAP[tab];  // метка для точечного апдейта карточек при возврате
   el.innerHTML = skeletonGrid(6);
   const pageSize = 30;
   const sortQ = tab === "watched" ? `&sort=${watchedSort()}` : "";
@@ -1220,11 +1285,12 @@ function renderDetailPreview(preview) {
         <div class="d-preview-lines"><div class="sk sk-line wide"></div><div class="sk sk-line"></div></div>
       </div>
     </div>`;
-  document.getElementById("d-back-preview").onclick = () => closeDetailThen(_returnTo);
+  document.getElementById("d-back-preview").onclick = () => closeDetailThen(returnFromDetail);
 }
 
 async function showDetail(id, preview = null) {
   unwireDetailScroll();
+  _detailFilm = null; _detailBaseline = null;  // актуальные ставит renderDetail после загрузки
   if (preview) renderDetailPreview(preview);
   else {
     screen.innerHTML = `<div class="detail-v2">
@@ -1233,7 +1299,7 @@ async function showDetail(id, preview = null) {
         <div class="sk sk-line wide"></div><div class="sk sk-line"></div></div>
       <div class="d-floatctrls" style="position:fixed;top:0;left:0;right:0;padding:calc(10px + env(safe-area-inset-top)) 14px 0;z-index:41;">${backBtn()}</div>
     </div>`;
-    wireBack(() => closeDetailThen(_returnTo));
+    wireBack(() => closeDetailThen(returnFromDetail));
   }
   resetDetailViewport();
   const controller = new AbortController();
@@ -1252,6 +1318,10 @@ async function showDetail(id, preview = null) {
 }
 
 function renderDetail(id, m) {
+  // Запоминаем фильм и его исходное состояние — при возврате точечно обновим карточку,
+  // если оценка/статус изменились.
+  _detailFilm = m;
+  _detailBaseline = { status: m.status, my_rating: m.my_rating };
   const genres = (m.genres || "").split(",").map(g => g.trim()).filter(Boolean).join(" · ");
   const metaParts = [m.year, m.age_rating, m.runtime].filter(Boolean);
   const bdUrl = m.backdrop_url || m.poster_url;
@@ -1309,7 +1379,7 @@ function renderDetail(id, m) {
   renderActions(id, m);
   revealLoadedPersonPhotos(screen);
 
-  const back = () => closeDetailThen(_returnTo);
+  const back = () => closeDetailThen(returnFromDetail);
   document.getElementById("d-back-top").onclick = back;
   document.getElementById("d-back-sticky").onclick = back;
   document.getElementById("d-more-top").onclick = () => shareMovie(m);
@@ -2063,7 +2133,7 @@ function setActiveTab(t) {
     b.setAttribute("aria-current", active ? "page" : "false");
   });
 }
-function route(tab) { if (tab === "home") showHome(); else if (tab === "stats") showStats(); else if (tab === "pick") showPicker(); else showList(tab); }
+function route(tab) { resetNavStack(); if (tab === "home") showHome(); else if (tab === "stats") showStats(); else if (tab === "pick") showPicker(); else showList(tab); }
 function wireTabbarAutoHide() {
   if (_tabbarScrollHandler) window.removeEventListener("scroll", _tabbarScrollHandler);
   let lastY = window.scrollY;

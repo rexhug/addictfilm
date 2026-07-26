@@ -441,3 +441,45 @@ test("pair invite stays balanced and safe across compact mobile viewports", asyn
   await page.getByRole("button", { name: "Не сейчас" }).click();
   await expect(page.getByRole("button", { name: "Статистика" })).toBeVisible();
 });
+
+test("returning from a film keeps list scroll and loaded cards intact", async ({ page }) => {
+  // Изолированный харнесс: список «Смотрел» на 24 фильма + деталь любого из них.
+  const films = Array.from({ length: 24 }, (_, i) => ({
+    id: 100 + i, title: `Film ${i + 1}`, year: `${2000 + i}`, poster_url: null, my_rating: (i % 10) + 1,
+  }));
+  await page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
+  await page.addInitScript(() => {
+    window.Telegram = { WebApp: {
+      initData: "test", initDataUnsafe: { user: { id: 1, first_name: "D" } },
+      ready() {}, expand() {}, setHeaderColor() {}, setBackgroundColor() {}, disableVerticalSwipes() {},
+      HapticFeedback: { impactOccurred() {}, notificationOccurred() {} },
+      showConfirm(_t, cb) { cb(true); }, showAlert() {}, openTelegramLink() {},
+    } };
+  });
+  await page.route("**/api/**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    const json = path === "/api/me" ? { id: 1, label: "D", role: null }
+      : path === "/api/movies" ? { items: films, total: films.length }
+        : /^\/api\/movie\/\d+$/.test(path)
+          ? { id: +path.split("/").pop(), title: "Film", year: "2010", poster_url: null, genres: "Drama", status: "watched", my_rating: 5 }
+          : { items: [], total: 0 };
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(json) });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Смотрел" }).click();
+  await expect(page.locator("#list .poster")).toHaveCount(24);
+
+  await page.evaluate(() => window.scrollTo(0, 1200));
+  const savedY = await page.evaluate(() => window.scrollY);
+  expect(savedY).toBeGreaterThan(400);
+
+  // JS-клик, чтобы Playwright не проскроллил карточку в вид и не сбил позицию.
+  await page.locator("#list .poster").nth(9).evaluate(el => el.click());
+  await expect(page.locator(".detail-v2")).toBeVisible();
+  await page.locator("#d-back-top").click();
+
+  // Список вернулся тем же (без повторной загрузки — нет скелетонов), скролл на месте.
+  await expect(page.locator("#list .poster")).toHaveCount(24);
+  await expect(page.locator("#list .sk")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(savedY);
+});
