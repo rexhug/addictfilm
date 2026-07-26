@@ -1283,14 +1283,20 @@ async function showStats(initialMode = "me") {
   // 1. Пара — приоритетно, первым блоком.
   let partner = { status: "none" }, pstats = null;
   try { partner = await api("/api/partner"); } catch (e) {}
-  if (partner.status === "paired") { try { pstats = await api("/api/partner/stats"); } catch (e) {} }
+  let pairStatsFailed = false;
+  if (partner.status === "paired") {
+    try { pstats = await api("/api/partner/stats"); }
+    catch (e) { pairStatsFailed = true; }
+  }
 
   // 2. Личная статистика за всё время.
   const s = await api("/api/stats");
   // Only genres use a compact/expanded state. People cards always stay in one
   // horizontal rail, so the whole list is reachable with a normal swipe.
   const expanded = { genres: false };
-  const paired = partner.status === "paired" && pstats;
+  // Membership and statistics availability are separate states. A transient
+  // stats error must never hide the pair tab or alter the personal profile.
+  const paired = partner.status === "paired";
   let mode = paired && initialMode === "pair" ? "pair" : "me";
 
   const render = () => {
@@ -1300,17 +1306,21 @@ async function showStats(initialMode = "me") {
     </div>` : "";
     let content;
     if (mode === "pair" && paired) {
-      const name = esc(pstats.partner.name || t("partner_word"));
-      const hasData = pstats.watched || pstats.want || pstats.rated_together;
-      content = pairHeroHTML(pstats) +
-        (hasData ? personalStatsHTML(pstats, "pair", expanded) + pairHighlightsHTML(pstats) : `<div class="chart-card">${emptyState("💙", t("stats_together"), t("pair_empty"))}</div>`);
+      if (pstats) {
+        const hasData = pstats.watched || pstats.want || pstats.rated_together;
+        content = pairHeroHTML(pstats) +
+          (hasData ? personalStatsHTML(pstats, "pair", expanded) + pairHighlightsHTML(pstats) : `<div class="chart-card">${emptyState("💙", t("stats_together"), t("pair_empty"))}</div>`);
+      } else {
+        const retry = pairStatsFailed ? `<button class="pbtn primary" data-pair-stats-retry type="button">${esc(t("retry"))}</button>` : "";
+        content = `<div class="chart-card">${emptyState("⚠️", t("load_err"), "")}${retry}</div>`;
+      }
     } else {
       // Build this at render time: expanded genres are UI state, so reusing a
       // prebuilt string would make the “Show more” button look inert.
       const personal = statsProfileHTML(s) + ((!s.watched && !s.want)
         ? emptyState("📊", t("stats_empty_t"), t("stats_empty_s"))
         : personalStatsHTML(s, "me", expanded));
-      content = !paired && partner.status !== "none" ? partnerCardHTML(partner, null) + personal : personal;
+      content = partner.status === "invited" ? partnerCardHTML(partner, null) + personal : personal;
     }
     box.innerHTML = tabs + content;
     const heading = screen.querySelector(".page-head h1");
@@ -1325,6 +1335,7 @@ async function showStats(initialMode = "me") {
       expanded[section] = !expanded[section];
       render();
     });
+    box.querySelector("[data-pair-stats-retry]")?.addEventListener("click", () => showStats("pair"));
     box.querySelectorAll("[data-film-id]").forEach(card => card.onclick = () => openDetail(+card.dataset.filmId, showStats));
     box.querySelectorAll("[data-stats-person-name]").forEach(card => card.onclick = () => {
       showPersonFilms({
@@ -1524,7 +1535,6 @@ function pairHeroHTML(ps) {
       <div class="pair-names"><div class="pair-people"><span class="pair-person"><b>${esc(myName)}</b>${myHandle ? `<small>${esc(myHandle)}</small>` : ""}</span><i>×</i><span class="pair-person"><b>${esc(partnerName)}</b>${partnerHandle ? `<small>${esc(partnerHandle)}</small>` : ""}</span></div><p>${esc(t("pair_subtitle"))}</p></div></div>
     <div class="pair-compat"><div class="pair-compat-copy"><span>♥ ${esc(t("pair_compat_title"))}</span><strong>${compatibility}</strong><p>${esc(explainer)}</p></div><div class="pair-gauge"><div class="pair-gauge-track"><i style="--pair-score:${ps.agreement ?? 0}%"></i></div><b>${compatibility}</b></div></div>
     ${ps.matches != null ? `<div class="pair-fact"><span>${esc(t("partner_exact_hint"))}</span><b>${ps.matches}</b></div>` : ""}
-    <details class="pair-settings"><summary>${esc(t("partner_settings"))}</summary><button class="pbtn danger" id="p-unpair">${esc(t("partner_unpair_btn"))}</button></details>
   </section>`;
 }
 
@@ -1714,19 +1724,10 @@ function personalStatsHTML(s, scope = "me", expanded = { genres: false }) {
 // ── Пара ──────────────────────────────────────────────────────────────────────
 function partnerCardHTML(p, ps) {
   if (p.status === "paired") {
-    const name = esc((p.partner && p.partner.name) || t("partner_word"));
-    let body = "";
-    if (ps) {
-      body = `${ps.agreement != null
-          ? `<div class="compat"><div class="compat-num">${ps.agreement}%</div><div class="compat-lbl">${esc(t("partner_compat"))} · ${ps.rated_together} ${esc(t("count_films", ps.rated_together))}</div></div>`
-          : `<div class="partner-sub">${esc(t("partner_no_common"))}</div>`}
-        ${ps.matches ? `<div class="year-line">${esc(t("partner_matches"))}: <b>${ps.matches}</b></div>` : ""}
-        ${ps.best ? `<div class="year-line">${esc(t("partner_best"))}: ${esc(ps.best.title)} <small>(${ps.best.avg})</small></div>` : ""}
-        ${ps.controversial ? `<div class="year-line">${esc(t("partner_controversial"))}: ${esc(ps.controversial.title)} <small>(${ps.controversial.a} / ${ps.controversial.b})</small></div>` : ""}
-        ${ps.top_genres.length ? `<div class="year-line">${esc(t("partner_genres"))}: ${ps.top_genres.map(g => esc(cap(g))).join(", ")}</div>` : ""}`;
-    }
-    return `<div class="chart-card partner"><div class="chart-title">${t("partner_with")} ${name}</div>${body}
-      <button class="pbtn danger" id="p-unpair">${esc(t("partner_unpair_btn"))}</button></div>`;
+    // The active pair has a dedicated statistics tab. Pair management is only
+    // available through Settings, so a stale fallback cannot expose unlinking
+    // on the personal profile again.
+    return "";
   }
   if (p.status === "invited") {
     return `<div class="chart-card partner"><div class="chart-title">${esc(t("partner_title"))}</div>
@@ -1743,13 +1744,6 @@ function partnerCardHTML(p, ps) {
 }
 
 function wirePartner(box) {
-  const unpair = box.querySelector("#p-unpair");
-  if (unpair) unpair.onclick = () => tg.showConfirm(t("partner_unpair_confirm"), async ok => {
-    if (!ok) return;
-    await api("/api/partner/unpair", { method: "POST" });
-    tg?.showAlert?.(t("partner_unpair_success"));
-    showStats();
-  });
   const share = box.querySelector("#p-share");
   if (share) share.onclick = () => sharePartnerLink(share.dataset.link);
   const copy = box.querySelector("#p-copy");

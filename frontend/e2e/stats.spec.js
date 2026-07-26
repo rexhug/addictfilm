@@ -68,6 +68,10 @@ async function openStats(page, paired = false, options = {}) {
   await page.route("**/api/**", async route => {
     const path = new URL(route.request().url()).pathname;
     const partnerApi = options.partnerApi;
+    if (path === "/api/partner/stats" && options.pairStatsFailure) {
+      await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "stats unavailable" }) });
+      return;
+    }
     const json = path === "/api/me"
       ? { id: 1, label: "Denys", username: "denys", role: null }
       : path === "/api/settings"
@@ -192,6 +196,14 @@ test("personal profile fits a 390px phone without a hidden final card", async ({
     return { lastBottom: last?.bottom, barTop: bar?.top };
   });
   expect(bounds.lastBottom).toBeLessThanOrEqual(bounds.barTop);
+});
+
+test("a temporary pair-stats failure keeps the pair tab and never exposes unlinking on the profile", async ({ page }) => {
+  await openStats(page, true, { pairStatsFailure: true });
+  await expect(page.getByRole("tab", { name: "Мы вместе" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Разорвать пару" })).toHaveCount(0);
+  await page.getByRole("tab", { name: "Мы вместе" }).click();
+  await expect(page.getByRole("button", { name: "Повторить" })).toBeVisible();
 });
 
 test("pair profile is reachable and key movie cards remain interactive", async ({ page }) => {

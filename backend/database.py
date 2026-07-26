@@ -2474,10 +2474,18 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         period_conditions: list[str] = []
         params: list = [user_id, partner_id]
         for started_at, ended_at in sessions:
-            period_conditions.append(
-                "(a.added_at >= ? AND b.added_at >= ? AND "
-                "(? IS NULL OR (a.added_at <= ? AND b.added_at <= ?)))")
-            params.extend((started_at, started_at, ended_at, ended_at, ended_at))
+            # ``? IS NULL`` is acceptable to SQLite, but PostgreSQL cannot
+            # infer the type of that NULL parameter through asyncpg.  Build
+            # each valid interval explicitly instead.  A film is shared only
+            # when both users added it during the same pair session.
+            if ended_at is None:
+                period_conditions.append("(a.added_at >= ? AND b.added_at >= ?)")
+                params.extend((started_at, started_at))
+            else:
+                period_conditions.append(
+                    "(a.added_at >= ? AND b.added_at >= ? "
+                    "AND a.added_at <= ? AND b.added_at <= ?)")
+                params.extend((started_at, started_at, ended_at, ended_at))
         rows = await (await db.execute(
             f"""
             SELECT f.id AS film_id, f.genres, f.actors, f.actors_photos, f.directors, f.directors_photos, f.runtime, f.title, f.poster_url,
