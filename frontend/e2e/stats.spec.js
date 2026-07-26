@@ -34,6 +34,29 @@ async function openStats(page, paired = false, options = {}) {
     telegram_available: true,
     ...(options.settings || {}),
   };
+  const recommendationMovie = {
+    id: 1, title: "The Last of Us", title_original: "The Last of Us", year: "2023",
+    runtime: "81 min", genres: "Drama, Thriller", rating: 8.5, poster_url: null,
+    explanation: "Подходит по запросу: комфорт, тёплая история.", role: "best", score: 72,
+  };
+  const recommendationQuestions = [
+    ["q1", "Что тебе сейчас больше всего хочется?", "relax", "Отключить голову и расслабиться"],
+    ["r1", "Как именно ты хочешь отдохнуть?", "warm", "Уютная и добрая история"],
+    ["r2", "Насколько спокойно должен идти фильм?", "medium", "Нормальный темп, без спешки"],
+    ["r3", "Какой конфликт ты сегодня готов терпеть?", "low", "Почти никакой — мне нужен комфорт"],
+    ["c1", "Сколько времени у тебя есть?", "any", "Время не важно"],
+    ["c2", "Насколько новый фильм ты хочешь?", "any", "Неважно, главное — хороший"],
+    ["c3", "Как сегодня выбираем?", "safe", "Надёжный вариант с высоким рейтингом"],
+    ["c4", "Ты будешь смотреть один?", "solo", "Один"],
+  ];
+  let recommendationStep = 0;
+  const recommendationPayload = () => {
+    const item = recommendationQuestions[recommendationStep];
+    return item
+      ? { id: "quiz_test", version: "v1", state: "active", progress: recommendationStep, total: 8,
+        pair_available: paired, question: { id: item[0], text: item[1], options: [{ id: item[2], label: item[3] }] } }
+      : { id: "quiz_test", version: "v1", state: "complete", progress: 8, total: 8, pair_available: paired, question: null };
+  };
   await page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
   await page.addInitScript(({ notification, startParam }) => {
     window.__verticalSwipeDisableCalls = 0;
@@ -74,6 +97,26 @@ async function openStats(page, paired = false, options = {}) {
     }
     const json = path === "/api/me"
       ? { id: 1, label: "Denys", username: "denys", role: null }
+      : path === "/api/recommendations/random"
+        ? { item: { ...recommendationMovie, role: "random", explanation: "Качественный вариант из фильмов, которых вы ещё не смотрели." }, context: "solo" }
+      : path === "/api/recommendations/quiz/start"
+        ? recommendationPayload()
+      : path.endsWith("/answer") && path.startsWith("/api/recommendations/quiz/")
+        ? (() => { recommendationStep += 1; return recommendationPayload(); })()
+      : path.endsWith("/back") && path.startsWith("/api/recommendations/quiz/")
+        ? (() => { recommendationStep = Math.max(0, recommendationStep - 1); return recommendationPayload(); })()
+      : path.endsWith("/restart") && path.startsWith("/api/recommendations/quiz/")
+        ? (() => { recommendationStep = 0; return recommendationPayload(); })()
+      : path.endsWith("/results") && path.startsWith("/api/recommendations/quiz/")
+        ? { id: "quiz_test", items: [
+          recommendationMovie,
+          { ...recommendationMovie, id: 3, title: "Inception", role: "reliable", explanation: "Подходит по запросу: ровный темп." },
+          { ...recommendationMovie, id: 4, title: "The Hunger Games", role: "unexpected", explanation: "Чуть необычнее, но в рамках запроса." },
+        ], context: "solo" }
+      : /^\/api\/recommendations\/\d+\/feedback$/.test(path)
+        ? { ok: true }
+      : path === "/api/movie/1/status"
+        ? { ok: true }
       : path === "/api/settings"
         ? (() => {
           if (route.request().method() === "PATCH") {
@@ -140,6 +183,33 @@ test("home category chips stay optically aligned in the mobile scroll rail", asy
   expect(layout.chips.every(({ centerDelta }) => centerDelta <= 1.5)).toBeTruthy();
   expect(layout.chips.every(({ iconWidth }) => Math.abs(iconWidth - 18) < 0.1)).toBeTruthy();
   expect(layout.chips.every(({ labelGap }) => labelGap >= 7 && labelGap <= 9)).toBeTruthy();
+});
+
+test("adaptive picker completes a mobile-safe eight-question flow without old top UI", async ({ page }) => {
+  await openStats(page);
+  await page.getByRole("button", { name: "Подбор" }).click();
+  await expect(page.getByRole("heading", { name: "Что посмотреть?" })).toBeVisible();
+  await expect(page.getByText("Мой топ")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Случайный хороший фильм" }).click();
+  await expect(page.getByText("Качественный вариант из фильмов, которых вы ещё не смотрели.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Уже смотрел" })).toBeVisible();
+  await page.getByRole("button", { name: "Другой вариант" }).click();
+  await expect(page.locator(".recommendation-film")).toHaveCount(1);
+  await page.locator(".sub-head .back").click();
+
+  await page.getByRole("button", { name: "Подбор по настроению" }).click();
+  for (let index = 0; index < 8; index += 1) {
+    await page.locator(".picker-option").first().click();
+  }
+  await expect(page.getByText("Лучший выбор")).toBeVisible();
+  await expect(page.getByText("Надёжный вариант")).toBeVisible();
+  await expect(page.getByText("Неожиданный вариант")).toBeVisible();
+  await expect(page.locator(".recommendation-film")).toHaveCount(3);
+  await expect(page.getByRole("button", { name: "Открыть фильм" }).first()).toBeVisible();
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 });
 
 test("personal profile fits a 390px phone without a hidden final card", async ({ page }) => {

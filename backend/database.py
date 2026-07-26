@@ -40,6 +40,8 @@ _SCHEMA_MIGRATION_PAIR_NOTIFICATIONS = "2026-07-26-pair-notifications"
 _SCHEMA_MIGRATION_PAIR_NOTIFICATION_EVENTS = "2026-07-26-pair-notification-event-model"
 _SCHEMA_MIGRATION_PAIR_NOTIFICATION_OUTBOX = "2026-07-26-pair-notification-outbox"
 _SCHEMA_MIGRATION_PAIR_HISTORY = "2026-07-26-pair-history"
+_SCHEMA_MIGRATION_RECOMMENDATIONS = "2026-07-26-recommendations-v1"
+_SCHEMA_MIGRATION_RECOMMENDATION_RESULTS = "2026-07-26-recommendations-v2-results"
 _PAIR_INVITE_TTL = timedelta(days=7)
 
 
@@ -423,6 +425,69 @@ async def _apply_pair_history_migration() -> None:
         await db.commit()
 
 
+async def _apply_recommendations_migration() -> None:
+    """Persistence for deterministic recommendations.
+
+    It is intentionally separate from personal lists: a rejection must not
+    mutate somebody's watch history, while a recommendation session can safely
+    expire or be restarted without losing any personal data.
+    """
+    history_id = "SERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS recommendation_sessions (
+                id TEXT PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                version TEXT NOT NULL,
+                answers TEXT NOT NULL DEFAULT '{}',
+                current_question TEXT,
+                state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'complete', 'expired')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_recommendation_sessions_user ON recommendation_sessions(user_id, state, updated_at)")
+        await db.execute(f"""
+            CREATE TABLE IF NOT EXISTS recommendation_history (
+                id {history_id},
+                user_id BIGINT NOT NULL,
+                film_id INTEGER NOT NULL,
+                mode TEXT NOT NULL CHECK (mode IN ('random', 'quiz')),
+                session_id TEXT,
+                role TEXT,
+                score REAL,
+                action TEXT NOT NULL DEFAULT 'shown' CHECK (action IN ('shown', 'opened', 'want', 'watched', 'rejected', 'another')),
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (film_id) REFERENCES films(id),
+                FOREIGN KEY (session_id) REFERENCES recommendation_sessions(id)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_recommendation_history_user_film ON recommendation_history(user_id, film_id, action, created_at)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_recommendation_history_user_recent ON recommendation_history(user_id, created_at)")
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS film_recommendation_tags (
+                film_id INTEGER NOT NULL,
+                tag TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                source TEXT NOT NULL,
+                version TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (film_id, tag, source, version),
+                FOREIGN KEY (film_id) REFERENCES films(id)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_recommendation_tags_tag ON film_recommendation_tags(tag, confidence)")
+        await db.commit()
+
+
+async def _apply_recommendation_results_migration() -> None:
+    """Keep one completed quiz stable when the user reopens its results."""
+    await _add_column_if_missing("recommendation_sessions", "results TEXT")
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -435,6 +500,8 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_PAIR_NOTIFICATION_EVENTS, _apply_pair_notification_event_model_migration),
         (_SCHEMA_MIGRATION_PAIR_NOTIFICATION_OUTBOX, _apply_pair_notification_outbox_migration),
         (_SCHEMA_MIGRATION_PAIR_HISTORY, _apply_pair_history_migration),
+        (_SCHEMA_MIGRATION_RECOMMENDATIONS, _apply_recommendations_migration),
+        (_SCHEMA_MIGRATION_RECOMMENDATION_RESULTS, _apply_recommendation_results_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -1586,6 +1653,189 @@ async def get_random_want(user_id: int) -> dict | None:
             """, (user_id, offset))
         row = await cur.fetchone()
         return dict(row) if row else None
+
+
+# ── Deterministic recommendations ───────────────────────────────────────────
+_RECOMMENDATION_SESSION_TTL = timedelta(hours=12)
+
+
+async def create_recommendation_session(user_id: int, version: str, session_id: str,
+                                        current_question: str | None) -> dict:
+    now = _now()
+    expires = (datetime.now(timezone.utc) + _RECOMMENDATION_SESSION_TTL).isoformat()
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute(
+            "INSERT INTO recommendation_sessions (id, user_id, version, answers, current_question, state, created_at, updated_at, expires_at) "
+            "VALUES (?,?,?,?,?,'active',?,?,?)",
+            (session_id, user_id, version, "{}", current_question, now, now, expires),
+        )
+        await db.commit()
+    return {"id": session_id, "user_id": user_id, "version": version, "answers": {},
+            "current_question": current_question, "state": "active", "created_at": now,
+            "updated_at": now, "expires_at": expires}
+
+
+async def get_recommendation_session(user_id: int, session_id: str) -> dict | None:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM recommendation_sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
+        row = await cur.fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        try:
+            result["answers"] = json.loads(result.get("answers") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            result["answers"] = {}
+        try:
+            result["results"] = json.loads(result.get("results") or "null")
+        except (TypeError, json.JSONDecodeError):
+            result["results"] = None
+        if result["state"] == "active" and result["expires_at"] <= _now():
+            await db.execute("UPDATE recommendation_sessions SET state='expired', updated_at=? WHERE id=?", (_now(), session_id))
+            await db.commit()
+            result["state"] = "expired"
+        return result
+
+
+async def update_recommendation_session(user_id: int, session_id: str, answers: dict,
+                                        current_question: str | None, state: str = "active") -> dict | None:
+    now = _now()
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE recommendation_sessions SET answers=?, current_question=?, state=?, results=NULL, updated_at=? "
+            "WHERE id=? AND user_id=?",
+            (json.dumps(answers, ensure_ascii=False, separators=(",", ":")), current_question, state, now, session_id, user_id),
+        )
+        await db.commit()
+        if not cur.rowcount:
+            return None
+    return await get_recommendation_session(user_id, session_id)
+
+
+async def restart_recommendation_session(user_id: int, session_id: str, current_question: str) -> dict | None:
+    now = _now()
+    expires = (datetime.now(timezone.utc) + _RECOMMENDATION_SESSION_TTL).isoformat()
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE recommendation_sessions SET answers='{}', current_question=?, state='active', results=NULL, updated_at=?, expires_at=? "
+            "WHERE id=? AND user_id=?",
+            (current_question, now, expires, session_id, user_id),
+        )
+        await db.commit()
+        if not cur.rowcount:
+            return None
+    return await get_recommendation_session(user_id, session_id)
+
+
+async def save_recommendation_session_results(user_id: int, session_id: str, items: list[dict]) -> dict | None:
+    """Persist public result cards once; re-opening a completed quiz is stable."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE recommendation_sessions SET results=?, updated_at=? WHERE id=? AND user_id=? AND state='complete'",
+            (json.dumps(items, ensure_ascii=False, separators=(",", ":")), _now(), session_id, user_id),
+        )
+        await db.commit()
+        if not cur.rowcount:
+            return None
+    return await get_recommendation_session(user_id, session_id)
+
+
+async def get_recommendation_candidates(user_id: int, partner_id: int | None = None,
+                                        limit: int = 700) -> list[dict]:
+    """Bounded local-catalog candidate pool with personal/pair state attached.
+
+    All filters which matter for privacy and history are in SQL.  The scoring
+    engine then deals only with a bounded set, never scans a public catalog.
+    """
+    limit = max(60, min(int(limit), 900))
+    partner_id = int(partner_id) if partner_id is not None else None
+    recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        if partner_id is None:
+            cur = await db.execute(
+                "SELECT f.*, mine.status AS my_status, mine.rating AS my_rating, "
+                "NULL AS partner_status, NULL AS partner_rating, "
+                "CASE WHEN mine.status='want_to_watch' THEN 1 ELSE 0 END AS in_wishlist "
+                "FROM films f LEFT JOIN user_films mine ON mine.film_id=f.id AND mine.user_id=? "
+                "WHERE COALESCE(TRIM(f.title), '') <> '' AND COALESCE(TRIM(f.poster_url), '') <> '' "
+                "AND (mine.status IS NULL OR mine.status <> 'watched') "
+                "AND NOT EXISTS (SELECT 1 FROM recommendation_history h WHERE h.user_id=? AND h.film_id=f.id AND h.action='rejected') "
+                "AND NOT EXISTS (SELECT 1 FROM recommendation_history h WHERE h.user_id=? AND h.film_id=f.id AND h.action='shown' AND h.created_at >= ?) "
+                "ORDER BY CAST(COALESCE(NULLIF(f.imdb_rating,''), NULLIF(f.kp_rating,''), '0') AS REAL) DESC, f.id DESC LIMIT ?",
+                (user_id, user_id, user_id, recent_cutoff, limit),
+            )
+        else:
+            cur = await db.execute(
+                "SELECT f.*, mine.status AS my_status, mine.rating AS my_rating, "
+                "partner.status AS partner_status, partner.rating AS partner_rating, "
+                "CASE WHEN mine.status='want_to_watch' OR partner.status='want_to_watch' THEN 1 ELSE 0 END AS in_wishlist "
+                "FROM films f "
+                "LEFT JOIN user_films mine ON mine.film_id=f.id AND mine.user_id=? "
+                "LEFT JOIN user_films partner ON partner.film_id=f.id AND partner.user_id=? "
+                "WHERE COALESCE(TRIM(f.title), '') <> '' AND COALESCE(TRIM(f.poster_url), '') <> '' "
+                "AND (mine.status IS NULL OR mine.status <> 'watched') "
+                "AND (partner.status IS NULL OR partner.status <> 'watched') "
+                "AND NOT EXISTS (SELECT 1 FROM recommendation_history h WHERE h.user_id IN (?,?) AND h.film_id=f.id AND h.action='rejected') "
+                "AND NOT EXISTS (SELECT 1 FROM recommendation_history h WHERE h.user_id IN (?,?) AND h.film_id=f.id AND h.action='shown' AND h.created_at >= ?) "
+                "ORDER BY CAST(COALESCE(NULLIF(f.imdb_rating,''), NULLIF(f.kp_rating,''), '0') AS REAL) DESC, f.id DESC LIMIT ?",
+                (user_id, partner_id, user_id, partner_id, user_id, partner_id, recent_cutoff, limit),
+            )
+        return [dict(row) for row in await cur.fetchall()]
+
+
+async def get_recommendation_preferences(user_id: int) -> dict:
+    """Small, explainable signals from personal watch history, not opaque profiling."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT f.genres, f.actors, f.directors, uf.rating FROM user_films uf JOIN films f ON f.id=uf.film_id "
+            "WHERE uf.user_id=? AND uf.status='watched' AND uf.rating IS NOT NULL ORDER BY uf.rated_at DESC LIMIT 160",
+            (user_id,),
+        )
+        rows = [dict(row) for row in await cur.fetchall()]
+    genre_scores: dict[str, float] = {}
+    people_scores: dict[str, float] = {}
+    for row in rows:
+        rating = int(row.get("rating") or 0)
+        signal = max(0, rating - 5)
+        if not signal:
+            continue
+        for genre in _split_genres(row.get("genres")):
+            key = _canon_genre(genre).casefold()
+            genre_scores[key] = genre_scores.get(key, 0) + signal
+        for person in _split_people(row.get("actors")) + _split_people(row.get("directors")):
+            key = _person_key(person)
+            people_scores[key] = people_scores.get(key, 0) + signal
+    return {"genres": genre_scores, "people": people_scores, "count": len(rows)}
+
+
+async def save_recommendation_tags(film_id: int, tags: dict[str, float], *, source: str = "rules", version: str = "v1") -> None:
+    """Keep derived tags auditable; values are confidence, not claims about a film."""
+    rows = [(film_id, tag, max(0.0, min(1.0, float(value))), source, version, _now()) for tag, value in tags.items()]
+    if not rows:
+        return
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        for row in rows:
+            await db.execute(
+                "INSERT INTO film_recommendation_tags (film_id, tag, confidence, source, version, updated_at) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(film_id, tag, source, version) DO UPDATE SET "
+                "confidence=excluded.confidence, updated_at=excluded.updated_at", row)
+        await db.commit()
+
+
+async def record_recommendation_history(user_id: int, film_id: int, mode: str, *, session_id: str | None = None,
+                                        role: str | None = None, score: float | None = None,
+                                        action: str = "shown") -> None:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute(
+            "INSERT INTO recommendation_history (user_id, film_id, mode, session_id, role, score, action, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (user_id, film_id, mode, session_id, role, score, action, _now()),
+        )
+        await db.commit()
 
 
 async def get_unrated_watched(user_id: int, since_days: int = 30, limit: int = 10) -> list[dict]:

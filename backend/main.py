@@ -34,6 +34,8 @@ import pair_notifications
 from observability import RequestMetrics, observe_request
 import posters
 import ratelimit
+import recommendations
+from recommendation_questions import QUESTION_VERSION, next_question_id, public_question
 import search
 import stats_cache
 import wikidata
@@ -648,6 +650,171 @@ def _schedule_profile_director_enrichment(user_id: int) -> None:
 async def random_movie(user: dict = Depends(current_user)):
     m = await db.get_random_want(user["id"])
     return {"item": m}
+
+
+# ── Adaptive recommendations ────────────────────────────────────────────────
+class RecommendationStartBody(BaseModel):
+    language: str = Field(default="ru", max_length=8)
+
+
+class RecommendationAnswerBody(RecommendationStartBody):
+    question_id: str = Field(min_length=1, max_length=64)
+    answer_id: str = Field(min_length=1, max_length=64)
+
+
+class RandomRecommendationBody(RecommendationStartBody):
+    context: str = Field(default="solo", max_length=16)
+
+
+class RecommendationFeedbackBody(BaseModel):
+    action: str = Field(min_length=1, max_length=24)
+    mode: str = Field(default="random", max_length=16)
+    session_id: str | None = Field(default=None, max_length=96)
+    role: str | None = Field(default=None, max_length=24)
+    score: float | None = None
+
+
+def _recommendation_language(value: str) -> str:
+    return "en" if value == "en" else "ru"
+
+
+async def _active_partner_for_recommendation(user_id: int, context: str) -> int | None:
+    if context != "pair":
+        return None
+    pair = await db.get_pair(user_id)
+    if not pair:
+        raise HTTPException(status_code=409, detail="Пара сейчас не подключена")
+    return int(pair["partner_id"])
+
+
+async def _quiz_payload(session: dict, language: str, user_id: int) -> dict:
+    current = session.get("current_question")
+    partner_available = bool(await db.get_pair(user_id))
+    question = public_question(current, language) if current else None
+    # Pair mode is not a fake option: it is absent until there is an active
+    # relationship. The server independently validates it on answer/results.
+    if question and question["id"] == "c4" and not partner_available:
+        question["options"] = [option for option in question["options"] if option["id"] != "pair"]
+    return {"id": session["id"], "version": session["version"], "state": session["state"],
+            "question": question, "progress": len(session.get("answers") or {}),
+            "total": 8, "pair_available": partner_available}
+
+
+@app.post("/api/recommendations/random")
+async def recommendation_random(body: RandomRecommendationBody, user: dict = Depends(current_user)):
+    language = _recommendation_language(body.language)
+    if body.context not in {"solo", "pair"}:
+        raise HTTPException(status_code=422, detail="Неизвестный контекст просмотра")
+    partner_id = await _active_partner_for_recommendation(user["id"], body.context)
+    item = await recommendations.random_recommendation(user["id"], language, partner_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Пока недостаточно фильмов для подбора")
+    await db.record_recommendation_history(user["id"], item["id"], "random", role="random", score=item["score"])
+    return {"item": item, "context": body.context}
+
+
+@app.post("/api/recommendations/quiz/start")
+async def recommendation_quiz_start(body: RecommendationStartBody, user: dict = Depends(current_user)):
+    language = _recommendation_language(body.language)
+    session = await db.create_recommendation_session(user["id"], QUESTION_VERSION, secrets.token_urlsafe(18), "q1")
+    return await _quiz_payload(session, language, user["id"])
+
+
+@app.get("/api/recommendations/quiz/{session_id}")
+async def recommendation_quiz_get(session_id: str, language: str = "ru", user: dict = Depends(current_user)):
+    session = await db.get_recommendation_session(user["id"], session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Опрос не найден")
+    if session["state"] == "expired":
+        raise HTTPException(status_code=410, detail="Срок опроса истёк")
+    return await _quiz_payload(session, _recommendation_language(language), user["id"])
+
+
+@app.post("/api/recommendations/quiz/{session_id}/answer")
+async def recommendation_quiz_answer(session_id: str, body: RecommendationAnswerBody,
+                                     user: dict = Depends(current_user)):
+    from recommendation_questions import option_for
+    language = _recommendation_language(body.language)
+    session = await db.get_recommendation_session(user["id"], session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Опрос не найден")
+    if session["state"] != "active":
+        raise HTTPException(status_code=409, detail="Этот опрос уже завершён")
+    expected = session.get("current_question")
+    if body.question_id != expected:
+        raise HTTPException(status_code=409, detail="Вопрос уже изменился — обновите экран")
+    option = option_for(body.question_id, body.answer_id)
+    if not option:
+        raise HTTPException(status_code=422, detail="Некорректный вариант ответа")
+    if body.question_id == "c4" and body.answer_id == "pair":
+        await _active_partner_for_recommendation(user["id"], "pair")
+    answers = dict(session.get("answers") or {})
+    answers[body.question_id] = body.answer_id
+    next_id = next_question_id(answers)
+    updated = await db.update_recommendation_session(
+        user["id"], session_id, answers, next_id, "complete" if next_id is None else "active")
+    if not updated:
+        raise HTTPException(status_code=404, detail="Опрос не найден")
+    return await _quiz_payload(updated, language, user["id"])
+
+
+@app.post("/api/recommendations/quiz/{session_id}/back")
+async def recommendation_quiz_back(session_id: str, body: RecommendationStartBody, user: dict = Depends(current_user)):
+    session = await db.get_recommendation_session(user["id"], session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Опрос не найден")
+    answers = dict(session.get("answers") or {})
+    if answers:
+        answers.pop(next(reversed(answers)))
+    next_id = next_question_id(answers)
+    updated = await db.update_recommendation_session(user["id"], session_id, answers, next_id, "active")
+    return await _quiz_payload(updated, _recommendation_language(body.language), user["id"])
+
+
+@app.post("/api/recommendations/quiz/{session_id}/restart")
+async def recommendation_quiz_restart(session_id: str, body: RecommendationStartBody, user: dict = Depends(current_user)):
+    session = await db.restart_recommendation_session(user["id"], session_id, "q1")
+    if not session:
+        raise HTTPException(status_code=404, detail="Опрос не найден")
+    return await _quiz_payload(session, _recommendation_language(body.language), user["id"])
+
+
+@app.get("/api/recommendations/quiz/{session_id}/results")
+async def recommendation_quiz_results(session_id: str, language: str = "ru", user: dict = Depends(current_user)):
+    locale = _recommendation_language(language)
+    session = await db.get_recommendation_session(user["id"], session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Опрос не найден")
+    if session["state"] != "complete":
+        raise HTTPException(status_code=409, detail="Сначала завершите опрос")
+    answers = session.get("answers") or {}
+    partner_id = await _active_partner_for_recommendation(user["id"], "pair") if answers.get("c4") == "pair" else None
+    if session.get("results") is not None:
+        return {"id": session_id, "items": session["results"], "context": "pair" if partner_id else "solo"}
+    items = await recommendations.quiz_results(user["id"], answers, locale, partner_id)
+    saved = await db.save_recommendation_session_results(user["id"], session_id, items)
+    if not saved:
+        raise HTTPException(status_code=404, detail="Опрос не найден")
+    for item in items:
+        await db.record_recommendation_history(user["id"], item["id"], "quiz", session_id=session_id,
+                                               role=item["role"], score=item["score"])
+    return {"id": session_id, "items": items, "context": "pair" if partner_id else "solo"}
+
+
+@app.post("/api/recommendations/{film_id}/feedback")
+async def recommendation_feedback(film_id: int, body: RecommendationFeedbackBody,
+                                  user: dict = Depends(current_user)):
+    if body.action not in {"opened", "want", "watched", "rejected", "another"}:
+        raise HTTPException(status_code=422, detail="Некорректное действие")
+    if body.mode not in {"random", "quiz"}:
+        raise HTTPException(status_code=422, detail="Некорректный режим")
+    if body.session_id and not await db.get_recommendation_session(user["id"], body.session_id):
+        raise HTTPException(status_code=404, detail="Опрос не найден")
+    if not await db.get_film(film_id):
+        raise HTTPException(status_code=404, detail="Фильм не найден")
+    await db.record_recommendation_history(user["id"], film_id, body.mode, session_id=body.session_id,
+                                           role=body.role, score=body.score, action=body.action)
+    return {"ok": True}
 
 
 # ── API: discovery (публичный каталог) ────────────────────────────────────────

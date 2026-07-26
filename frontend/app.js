@@ -58,7 +58,8 @@ const DICT = {
     search_ph: "Поиск фильмов, сериалов, актёров…",
     chip_popular: "Популярное", chip_top: "Топ сообщества", chip_genres: "Жанры", chip_collections: "Подборки", chip_nav: "Разделы каталога",
     see_all: "Смотреть все",
-    reco_title: "Оценивай и получай рекомендации", reco_sub: "Персональные подборки на основе твоих оценок", reco_cta: "Начать",
+    reco_title: "Не знаешь, что включить?", reco_sub: "Подберём фильм под твоё настроение", reco_cta: "Подобрать",
+    pick_tab: "Подбор", pick_title: "Что посмотреть?", pick_sub: "Выбери быстрый вариант или расскажи, какого кино хочется сегодня.", pick_random_title: "Случайный хороший фильм", pick_random_sub: "Из каталога, который ты ещё не смотрел(а)", pick_quiz_title: "Подбор по настроению", pick_quiz_sub: "7–8 коротких вопросов — и три варианта на вечер", pick_start: "Начать", pick_loading: "Подбираю фильм…", pick_another: "Другой вариант", pick_not_suggest: "Не предлагать", pick_open: "Открыть фильм", pick_want: "В «Хочу»", pick_watched: "Уже смотрел", pick_back: "Назад", pick_restart: "Начать заново", pick_progress: (n, total) => `${n} из ${total}`, pick_best: "Лучший выбор", pick_reliable: "Надёжный вариант", pick_unexpected: "Неожиданный вариант", pick_best_sub: "Максимально совпадает с твоим запросом", pick_reliable_sub: "Высокий рейтинг и уверенный выбор", pick_unexpected_sub: "Чуть необычнее, но может приятно удивить", pick_empty: "Пока не хватает фильмов для подбора", pick_empty_sub: "Добавь несколько фильмов через поиск — каталог будет расти вместе с приложением.", pick_pair: "Смотреть с партнёром", pick_solo: "Смотреть одному", pick_pair_unavailable: "Пара сейчас не подключена",
     notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся важные события вашей пары", notif_mark_all: "Прочитать все", notif_load_more: "Показать ещё", notif_loading: "Загружаю уведомления…", notif_error: "Не удалось загрузить уведомления", notif_retry: "Повторить", notif_now: "только что", notif_min_ago: (n) => `${n} мин назад`, notif_hour_ago: (n) => `${n} ч назад`, notif_day_ago: (n) => `${n} дн назад`, notif_inapp: "В приложении", notif_telegram: "В Telegram", notif_telegram_hint: "События пары от бота Addict Film", notif_telegram_unavailable: "Бот сейчас недоступен", notif_browser: "В браузере", notif_browser_hint: "Локальные напоминания на этом устройстве",
     back: "Назад", settings_title: "Настройки", settings_loading: "Загружаю настройки…",
     settings_notifications: "Уведомления", settings_notifications_hint: "Важные события пары всегда видны в приложении", settings_notifications_on: "Включены", settings_notifications_off: "Выключены", settings_notifications_permission: "Нужно разрешение", settings_notifications_denied: "Разрешения отключены в Telegram или браузере", settings_notifications_unavailable: "Недоступны на этом устройстве", settings_notifications_error: "Не удалось запросить разрешение",
@@ -70,8 +71,8 @@ const DICT = {
     coll_remove_confirm: (t) => `Убрать «${t}» из подборки?`, coll_add_film_btn: "+ Добавить фильм",
     coll_edit_hint: "Тап на фильм — убрать из подборки",
     coll_delete_btn: "Удалить подборку", coll_delete_confirm: (t) => `Удалить подборку «${t}»? Фильмы останутся в каталоге.`,
-    tab_home: "Главная", tab_want: "Хочу", tab_watched: "Смотрел", tab_top: "Мой топ", tab_stats: "Статистика",
-    list_want: "Хочу посмотреть", list_watched: "Смотрел", list_top: "Мой топ",
+    tab_home: "Главная", tab_want: "Хочу", tab_watched: "Смотрел", tab_pick: "Подбор", tab_stats: "Статистика",
+    list_want: "Хочу посмотреть", list_watched: "Смотрел",
     sort_title: "Сортировка", sort_best: "Лучшие", sort_new: "Сначала новые", sort_old: "Сначала старые", sort_worst: "Худшие",
     count_films: (n) => pl(n, ["фильм", "фильма", "фильмов"]),
     rail_empty: "Пока пусто — добавь фильмы через поиск", rail_err: "Не удалось загрузить",
@@ -79,7 +80,6 @@ const DICT = {
     genre_empty_t: "Пока пусто", genre_empty_s: "В этом жанре ещё нет фильмов", load_err: "Ошибка загрузки",
     want_empty_t: "Список пуст", want_empty_s: "Добавь фильмы через поиск",
     watched_empty_t: "Пока ничего не просмотрено", watched_empty_s: "Отмечай фильмы «Смотрел»",
-    top_empty_t: "Твой топ пуст", top_empty_s: "Оцени просмотренные фильмы",
     load_more: "Показать ещё", loading: "Загрузка…", retry: "Повторить",
     my_rating: "Моя оценка", rate_hint: " · тап = «Смотрел(а)»", dir: "Режиссёр ",
     act_want: "Хочу посмотреть", act_watched: "Отметить как просмотрено", act_to_want: "В «Хочу»", act_remove: "Убрать из списка",
@@ -135,7 +135,8 @@ const DICT = {
     search_ph: "Search movies, TV shows, actors…",
     chip_popular: "Popular", chip_top: "Community Top", chip_genres: "Genres", chip_collections: "Collections", chip_nav: "Catalog sections",
     see_all: "See all",
-    reco_title: "Rate films, get recommendations", reco_sub: "Personal picks based on your ratings", reco_cta: "Start",
+    reco_title: "Not sure what to watch?", reco_sub: "We'll find a film for your current mood", reco_cta: "Find a film",
+    pick_tab: "Pick", pick_title: "What should we watch?", pick_sub: "Choose a quick option or tell us what kind of film you want tonight.", pick_random_title: "A random quality film", pick_random_sub: "From films you have not watched yet", pick_quiz_title: "Pick by mood", pick_quiz_sub: "7–8 quick questions, then three options for tonight", pick_start: "Start", pick_loading: "Finding a film…", pick_another: "Another option", pick_not_suggest: "Don't suggest", pick_open: "Open film", pick_want: "Add to wishlist", pick_watched: "Already watched", pick_back: "Back", pick_restart: "Start over", pick_progress: (n, total) => `${n} of ${total}`, pick_best: "Best match", pick_reliable: "Reliable choice", pick_unexpected: "Unexpected choice", pick_best_sub: "The closest match for your request", pick_reliable_sub: "A highly rated, confident pick", pick_unexpected_sub: "A little more unusual, potentially rewarding", pick_empty: "There are not enough films to recommend yet", pick_empty_sub: "Add a few films through search — the catalog grows with the app.", pick_pair: "Watch with partner", pick_solo: "Watch alone", pick_pair_unavailable: "Your pair is not connected right now",
     notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "Important pair events will appear here", notif_mark_all: "Mark all read", notif_load_more: "Show more", notif_loading: "Loading notifications…", notif_error: "Couldn't load notifications", notif_retry: "Try again", notif_now: "just now", notif_min_ago: (n) => `${n}m ago`, notif_hour_ago: (n) => `${n}h ago`, notif_day_ago: (n) => `${n}d ago`, notif_inapp: "In app", notif_telegram: "In Telegram", notif_telegram_hint: "Pair events from the Addict Film bot", notif_telegram_unavailable: "The bot is unavailable right now", notif_browser: "In browser", notif_browser_hint: "Local reminders on this device",
     back: "Back", settings_title: "Settings", settings_loading: "Loading settings…",
     settings_notifications: "Notifications", settings_notifications_hint: "Important pair events are always shown in the app", settings_notifications_on: "On", settings_notifications_off: "Off", settings_notifications_permission: "Permission needed", settings_notifications_denied: "Notifications are blocked in Telegram or your browser", settings_notifications_unavailable: "Unavailable on this device", settings_notifications_error: "Couldn't request permission",
@@ -147,8 +148,8 @@ const DICT = {
     coll_remove_confirm: (t) => `Remove "${t}" from the collection?`, coll_add_film_btn: "+ Add film",
     coll_edit_hint: "Tap a film to remove it from the collection",
     coll_delete_btn: "Delete collection", coll_delete_confirm: (t) => `Delete collection "${t}"? Films stay in the catalog.`,
-    tab_home: "Home", tab_want: "Wishlist", tab_watched: "Watched", tab_top: "My Top", tab_stats: "Stats",
-    list_want: "Wishlist", list_watched: "Watched", list_top: "My Top",
+    tab_home: "Home", tab_want: "Wishlist", tab_watched: "Watched", tab_pick: "Pick", tab_stats: "Stats",
+    list_want: "Wishlist", list_watched: "Watched",
     sort_title: "Sort", sort_best: "Best rated", sort_new: "Newest first", sort_old: "Oldest first", sort_worst: "Worst rated",
     count_films: (n) => (n === 1 ? "film" : "films"),
     rail_empty: "Empty — add films via search", rail_err: "Couldn't load",
@@ -156,7 +157,6 @@ const DICT = {
     genre_empty_t: "Empty", genre_empty_s: "No films in this genre yet", load_err: "Loading error",
     want_empty_t: "List is empty", want_empty_s: "Add films via search",
     watched_empty_t: "Nothing watched yet", watched_empty_s: "Mark films as Watched",
-    top_empty_t: "Your top is empty", top_empty_s: "Rate the films you've watched",
     load_more: "Show more", loading: "Loading…", retry: "Retry",
     my_rating: "My rating", rate_hint: " · tap = Watched", dir: "Director ",
     act_want: "Want to watch", act_watched: "Mark as watched", act_to_want: "To wishlist", act_remove: "Remove from list",
@@ -221,7 +221,7 @@ function setLang(l, onApplied = null) {
   else showHome();
 }
 function applyTabLabels() {
-  const map = { home: "tab_home", want: "tab_want", watched: "tab_watched", top: "tab_top", stats: "tab_stats" };
+  const map = { home: "tab_home", want: "tab_want", watched: "tab_watched", pick: "tab_pick", stats: "tab_stats" };
   document.querySelectorAll("#tabbar .tab").forEach(b => { const s = b.querySelector("span"); if (s) s.textContent = t(map[b.dataset.tab]); });
 }
 
@@ -540,7 +540,7 @@ async function showHome() {
   document.getElementById("see-pop").onclick = () => showBrowseAll("popular", t("chip_popular"));
   document.getElementById("see-top").onclick = () => showBrowseAll("top", t("chip_top"));
   document.getElementById("see-gen").onclick = () => showAllGenres();
-  document.getElementById("reco-start").onclick = () => showSearch();
+  document.getElementById("reco-start").onclick = () => { setActiveTab("pick"); showPicker(); };
   screen.querySelectorAll(".chips .chip[data-to]").forEach(c => c.onclick = () => {
     screen.querySelectorAll(".chips .chip[data-to]").forEach(x => x.classList.toggle("active", x === c));
     document.getElementById(c.dataset.to)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -580,6 +580,169 @@ function fillRecoArts(items) {
   const arts = (items || []).filter(m => m.poster_url).slice(0, 3);
   if (!arts.length) { box.remove(); return; }
   box.innerHTML = arts.map(m => `<div class="reco-art"><img loading="lazy" src="${posterSrc(m.poster_url, true)}" alt="" data-img-retry></div>`).join("");
+}
+
+// ── Adaptive recommendations ────────────────────────────────────────────────
+// The quiz itself remains a thin client: the server owns the graph, branching,
+// scoring and validation.  That keeps an outdated Telegram cache from being
+// able to submit a hidden tag or change how a film is selected.
+function pickerMode(active) {
+  document.body.classList.toggle("picker-quiz-active", Boolean(active));
+  const bar = document.getElementById("tabbar");
+  if (bar) bar.setAttribute("aria-hidden", active ? "true" : "false");
+}
+
+function pickerHeader(back) {
+  return `<header class="sub-head picker-head">${backBtn()}<h1>${esc(t("pick_title"))}</h1></header>`;
+}
+
+function pickerError(message) {
+  return `<div class="picker-error" role="alert">${esc(message || t("load_err"))}</div>`;
+}
+
+async function showPicker() {
+  unwireDetailScroll();
+  pickerMode(false);
+  window.scrollTo(0, 0);
+  screen.innerHTML = `${pickerHeader()}<main class="picker-landing rise d1">
+    <p class="picker-lead">${esc(t("pick_sub"))}</p>
+    <button class="picker-mode-card" id="pick-random" type="button">
+      <span class="picker-mode-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m14.8 3.3-1 5.2 4.8-1.1-6.8 13.3 1-5.2L8 16.6z"/></svg></span>
+      <span><b>${esc(t("pick_random_title"))}</b><small>${esc(t("pick_random_sub"))}</small></span><i>›</i>
+    </button>
+    <button class="picker-mode-card" id="pick-quiz" type="button">
+      <span class="picker-mode-icon mood"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20s-7-4.4-9.2-8.6C1.3 8.3 2.6 5 5.8 5 8 5 9.3 6.5 12 9c2.7-2.5 4-4 6.2-4 3.2 0 4.5 3.3 3 6.4C19 15.6 12 20 12 20Z"/></svg></span>
+      <span><b>${esc(t("pick_quiz_title"))}</b><small>${esc(t("pick_quiz_sub"))}</small></span><i>›</i>
+    </button>
+  </main>`;
+  wireBack(() => { setActiveTab("home"); showHome(); });
+  document.getElementById("pick-random").onclick = () => showRandomRecommendation();
+  document.getElementById("pick-quiz").onclick = () => startRecommendationQuiz();
+}
+
+function recommendationMovieCard(item, { sessionId = null, onAnother = null } = {}) {
+  const poster = item.poster_url ? `<img src="${posterSrc(item.poster_url, true)}" alt="${esc(item.title)}" loading="eager" decoding="async" data-img-retry>` : `<span class="picker-poster-fallback">${esc((item.title || "?").slice(0, 1))}</span>`;
+  const years = [item.year, item.runtime].filter(Boolean).join(" · ");
+  const genres = String(item.genres || "").split(",").slice(0, 3).join(" · ");
+  return `<article class="recommendation-film" data-recommendation-film="${item.id}">
+    <button class="recommendation-poster" type="button" data-pick-open>${poster}</button>
+    <div class="recommendation-film-copy"><h2>${esc(item.title || "—")}</h2>
+      ${item.title_original ? `<p class="recommendation-original">${esc(item.title_original)}</p>` : ""}
+      ${years ? `<p class="recommendation-meta">${esc(years)}</p>` : ""}${genres ? `<p class="recommendation-meta">${esc(genres)}</p>` : ""}
+      ${item.rating ? `<span class="recommendation-rating">★ ${esc(item.rating)}</span>` : ""}
+      <p class="recommendation-explanation">${esc(item.explanation || "")}</p>
+    </div>
+    <div class="recommendation-actions"><button type="button" class="picker-primary" data-pick-open>${esc(t("pick_open"))}</button><button type="button" class="picker-secondary" data-pick-want>${esc(t("pick_want"))}</button><button type="button" class="picker-secondary" data-pick-watched>${esc(t("pick_watched"))}</button>${onAnother ? `<button type="button" class="picker-text" data-pick-another>${esc(t("pick_another"))}</button>` : ""}<button type="button" class="picker-text danger" data-pick-reject>${esc(t("pick_not_suggest"))}</button></div>
+  </article>`;
+}
+
+function wireRecommendationMovie(container, item, { mode, sessionId = null, role = null, onAnother = null, returnTo = showPicker } = {}) {
+  const feedback = action => api(`/api/recommendations/${item.id}/feedback`, { method: "POST", body: JSON.stringify({ action, mode, session_id: sessionId, role: role || item.role, score: item.score }) }).catch(() => {});
+  container.querySelectorAll("[data-pick-open]").forEach(button => button.onclick = () => {
+    feedback("opened");
+    openDetail(item.id, returnTo, item);
+  });
+  const want = container.querySelector("[data-pick-want]");
+  if (want) want.onclick = async () => {
+    want.disabled = true;
+    try {
+      await api(`/api/movie/${item.id}/status`, { method: "POST", body: JSON.stringify({ status: "want_to_watch" }) });
+      await feedback("want");
+      want.textContent = "✓";
+      tg?.HapticFeedback?.notificationOccurred?.("success");
+    } catch (error) { want.disabled = false; tg?.showAlert?.(String(error.message || t("load_err"))); }
+  };
+  const watched = container.querySelector("[data-pick-watched]");
+  if (watched) watched.onclick = async () => {
+    watched.disabled = true;
+    try {
+      await api(`/api/movie/${item.id}/status`, { method: "POST", body: JSON.stringify({ status: "watched" }) });
+      await feedback("watched");
+      // Reuse the existing detail screen so rating, comment and list state have
+      // exactly one implementation across the product.
+      openDetail(item.id, returnTo, item);
+    } catch (error) { watched.disabled = false; tg?.showAlert?.(String(error.message || t("load_err"))); }
+  };
+  const reject = container.querySelector("[data-pick-reject]");
+  if (reject) reject.onclick = async () => {
+    reject.disabled = true;
+    await feedback("rejected");
+    if (onAnother) onAnother(); else showPicker();
+  };
+  const another = container.querySelector("[data-pick-another]");
+  if (another) another.onclick = async () => { await feedback("another"); onAnother?.(); };
+}
+
+async function showRandomRecommendation() {
+  pickerMode(false);
+  screen.innerHTML = `${pickerHeader()}<main class="picker-result"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
+  wireBack(showPicker);
+  try {
+    const { item } = await api("/api/recommendations/random", { method: "POST", body: JSON.stringify({ language: lang, context: "solo" }) });
+    const box = screen.querySelector(".picker-result");
+    box.innerHTML = `<div class="picker-result-label">${esc(t("pick_random_title"))}</div>${recommendationMovieCard(item, { onAnother: showRandomRecommendation })}`;
+    wireRecommendationMovie(box, item, { mode: "random", onAnother: showRandomRecommendation, returnTo: showPicker });
+  } catch (error) {
+    screen.querySelector(".picker-result").innerHTML = `${pickerError(error.message === "404" ? t("pick_empty") : error.message)}<p class="picker-empty-copy">${esc(t("pick_empty_sub"))}</p>`;
+  }
+}
+
+async function startRecommendationQuiz() {
+  pickerMode(true);
+  screen.innerHTML = `<main class="picker-quiz"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
+  try {
+    const data = await api("/api/recommendations/quiz/start", { method: "POST", body: JSON.stringify({ language: lang }) });
+    showQuizQuestion(data);
+  } catch (error) { pickerMode(false); showPicker(); tg?.showAlert?.(String(error.message || t("load_err"))); }
+}
+
+function showQuizQuestion(data) {
+  if (data.state === "complete" || !data.question) { showQuizResults(data.id); return; }
+  const question = data.question;
+  const progress = Math.max(1, Number(data.progress) + 1);
+  screen.innerHTML = `<main class="picker-quiz rise d1"><header class="picker-quiz-head"><button class="back" id="picker-back" aria-label="${esc(t("pick_back"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button><span>${esc(t("pick_progress", progress, data.total || 8))}</span></header><div class="picker-progress"><i style="width:${Math.min(100, progress / (data.total || 8) * 100)}%"></i></div><section class="picker-question"><h1>${esc(question.text)}</h1><div class="picker-options">${question.options.map(option => `<button type="button" class="picker-option" data-answer="${esc(option.id)}">${esc(option.label)}<i>›</i></button>`).join("")}</div></section></main>`;
+  document.getElementById("picker-back").onclick = async () => {
+    if (!data.progress) { pickerMode(false); showPicker(); return; }
+    try {
+      const previous = await api(`/api/recommendations/quiz/${encodeURIComponent(data.id)}/back`, { method: "POST", body: JSON.stringify({ language: lang }) });
+      showQuizQuestion(previous);
+    } catch (error) { tg?.showAlert?.(String(error.message || t("load_err"))); }
+  };
+  screen.querySelectorAll(".picker-option").forEach(button => button.onclick = async () => {
+    if (button.disabled) return;
+    screen.querySelectorAll(".picker-option").forEach(option => { option.disabled = true; });
+    button.classList.add("selected");
+    try {
+      const next = await api(`/api/recommendations/quiz/${encodeURIComponent(data.id)}/answer`, { method: "POST", body: JSON.stringify({ language: lang, question_id: question.id, answer_id: button.dataset.answer }) });
+      if (next.state === "complete") showQuizResults(next.id); else showQuizQuestion(next);
+    } catch (error) {
+      screen.querySelectorAll(".picker-option").forEach(option => { option.disabled = false; option.classList.remove("selected"); });
+      tg?.showAlert?.(String(error.message || t("load_err")));
+    }
+  });
+}
+
+async function showQuizResults(sessionId) {
+  screen.innerHTML = `<main class="picker-quiz picker-results"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
+  try {
+    const { items } = await api(`/api/recommendations/quiz/${encodeURIComponent(sessionId)}/results?language=${encodeURIComponent(lang)}`);
+    pickerMode(false);
+    const labels = { best: ["pick_best", "pick_best_sub"], reliable: ["pick_reliable", "pick_reliable_sub"], unexpected: ["pick_unexpected", "pick_unexpected_sub"] };
+    screen.innerHTML = `${pickerHeader()}<main class="picker-results rise d1">${items.length ? items.map(item => { const [title, subtitle] = labels[item.role] || labels.best; return `<section class="picker-role"><header><span>${esc(t(title))}</span><small>${esc(t(subtitle))}</small></header>${recommendationMovieCard(item)}</section>`; }).join("") : `${pickerError(t("pick_empty"))}<p class="picker-empty-copy">${esc(t("pick_empty_sub"))}</p>`}<button class="picker-restart" id="picker-restart" type="button">${esc(t("pick_restart"))}</button></main>`;
+    wireBack(showPicker);
+    screen.querySelectorAll(".picker-role").forEach((section, index) => wireRecommendationMovie(section, items[index], { mode: "quiz", sessionId, role: items[index].role, returnTo: () => showQuizResults(sessionId) }));
+    document.getElementById("picker-restart").onclick = async () => {
+      try {
+        pickerMode(true);
+        const data = await api(`/api/recommendations/quiz/${encodeURIComponent(sessionId)}/restart`, { method: "POST", body: JSON.stringify({ language: lang }) });
+        showQuizQuestion(data);
+      } catch (_) { startRecommendationQuiz(); }
+    };
+  } catch (error) {
+    pickerMode(false);
+    showPicker();
+    tg?.showAlert?.(String(error.message || t("load_err")));
+  }
 }
 
 async function loadCollectionsRail() {
@@ -849,7 +1012,7 @@ async function showCollectionDetail(id) {
 }
 
 // ── Личные списки ─────────────────────────────────────────────────────────────
-const STATUS_MAP = { want: "want_to_watch", watched: "watched", top: "top" };
+const STATUS_MAP = { want: "want_to_watch", watched: "watched" };
 // Сортировка экрана «Смотрел». Ключи совпадают с бэкендом (get_user_films).
 // Значение хранится локально, чтобы выбор жил, пока пользователь в приложении.
 let _watchedSort = null;
@@ -897,7 +1060,7 @@ function openSortMenu() {
 async function showList(tab) {
   unwireDetailScroll();
   window.scrollTo(0, 0);
-  const title = tab === "want" ? t("list_want") : tab === "watched" ? t("list_watched") : t("list_top");
+  const title = tab === "want" ? t("list_want") : t("list_watched");
   const action = tab === "watched"
     ? `<button class="page-head-action" id="sort-btn" aria-label="${esc(t("sort_title"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M7 12h10M10 18h4"/></svg></button>`
     : "";
@@ -916,8 +1079,7 @@ async function loadList(tab) {
     const { items, total } = await api(`/api/movies?status=${STATUS_MAP[tab]}&limit=${pageSize}${sortQ}`);
     if (!items.length) {
       el.innerHTML = tab === "want" ? emptyState("🔖", t("want_empty_t"), t("want_empty_s"))
-        : tab === "watched" ? emptyState("✅", t("watched_empty_t"), t("watched_empty_s"))
-        : emptyState("⭐", t("top_empty_t"), t("top_empty_s"));
+        : emptyState("✅", t("watched_empty_t"), t("watched_empty_s"));
       return;
     }
     const back = () => showList(tab);
@@ -1895,7 +2057,7 @@ function setActiveTab(t) {
     b.setAttribute("aria-current", active ? "page" : "false");
   });
 }
-function route(tab) { if (tab === "home") showHome(); else if (tab === "stats") showStats(); else showList(tab); }
+function route(tab) { if (tab === "home") showHome(); else if (tab === "stats") showStats(); else if (tab === "pick") showPicker(); else showList(tab); }
 function wireTabbarAutoHide() {
   if (_tabbarScrollHandler) window.removeEventListener("scroll", _tabbarScrollHandler);
   let lastY = window.scrollY;
