@@ -35,6 +35,7 @@ _SCHEMA_MIGRATION_LEGACY_COLUMNS = "2026-07-25-legacy-columns"
 _SCHEMA_MIGRATION_DIRECTOR_PHOTOS = "2026-07-25-director-photos"
 _SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY = "2026-07-25-person-portrait-retry"
 _SCHEMA_MIGRATION_PERSON_PORTRAIT_COMPLETENESS = "2026-07-25-person-portrait-completeness"
+_SCHEMA_MIGRATION_SEARCH_TEXT_DIRECTORS = "2026-07-26-search-text-directors"
 
 
 def _now() -> str:
@@ -226,6 +227,22 @@ async def _apply_person_portrait_completeness_migration() -> None:
         await db.commit()
 
 
+async def _apply_search_text_directors_migration() -> None:
+    """Перестроить lookup-текст каталога, добавив режиссёров: поиск по режиссёрам
+    начинает работать наравне с актёрами/названиями. search_text — производная
+    колонка, полностью пересобираемая из полей фильма, так что перезапись безопасна."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(
+            "SELECT id, title, title_original, actors, directors, imdb_id, kp_id FROM films")).fetchall()
+        for row in rows:
+            await db.execute(
+                "UPDATE films SET search_text = ? WHERE id = ?",
+                (_catalog_search_text(row["title"], row["title_original"], row["actors"],
+                                      row["directors"], row["imdb_id"], row["kp_id"]), row["id"]))
+        await db.commit()
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -233,6 +250,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_DIRECTOR_PHOTOS, _apply_director_photo_migration),
         (_SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY, _apply_person_portrait_retry_migration),
         (_SCHEMA_MIGRATION_PERSON_PORTRAIT_COMPLETENESS, _apply_person_portrait_completeness_migration),
+        (_SCHEMA_MIGRATION_SEARCH_TEXT_DIRECTORS, _apply_search_text_directors_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -559,9 +577,11 @@ async def upsert_user(user: dict) -> None:
 
 # ── Каталог фильмов ──────────────────────────────────────────────────────────
 def _catalog_search_text(title: str | None, title_original: str | None,
-                         actors: str | None, imdb_id: str, kp_id: str | None) -> str:
-    """Unicode-safe lookup text stored once with a catalog record."""
-    values = (title, title_original, actors, imdb_id, kp_id)
+                         actors: str | None, directors: str | None,
+                         imdb_id: str, kp_id: str | None) -> str:
+    """Unicode-safe lookup text stored once with a catalog record. Включает
+    актёров и режиссёров — поиск по людям работает без внешних запросов."""
+    values = (title, title_original, actors, directors, imdb_id, kp_id)
     return " ".join(" ".join(str(value or "").split()).casefold() for value in values).strip()
 
 
@@ -570,13 +590,13 @@ async def _backfill_catalog_search_text() -> None:
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
-            "SELECT id, title, title_original, actors, imdb_id, kp_id FROM films "
+            "SELECT id, title, title_original, actors, directors, imdb_id, kp_id FROM films "
             "WHERE search_text IS NULL OR search_text = ''")).fetchall()
         for row in rows:
             await db.execute(
                 "UPDATE films SET search_text = ? WHERE id = ?",
                 (_catalog_search_text(row["title"], row["title_original"], row["actors"],
-                                      row["imdb_id"], row["kp_id"]), row["id"]))
+                                      row["directors"], row["imdb_id"], row["kp_id"]), row["id"]))
         await db.commit()
 
 
@@ -708,7 +728,7 @@ async def get_or_create_film(
     """Возвращает id фильма в общем каталоге, создавая запись при первом появлении
     (dedup по imdb_id/kp_id). Идемпотентно — один фильм на всех пользователей."""
     kp_id = str(kp_id).strip() if kp_id else None
-    search_text = _catalog_search_text(title, title_original, actors, imdb_id, kp_id)
+    search_text = _catalog_search_text(title, title_original, actors, directors, imdb_id, kp_id)
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(

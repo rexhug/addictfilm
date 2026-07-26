@@ -1589,7 +1589,11 @@ function wireTabbarAutoHide() {
     requestAnimationFrame(() => {
       const y = window.scrollY;
       if (bar) {
-        if (y > 96 && y > lastY + 8) bar.classList.add("tabbar-hidden");
+        // У самого низа страницы всегда показываем панель: иначе, докрутив вниз,
+        // её нельзя вернуть (наверх скроллить уже некуда) и по ней не нажать.
+        const atBottom = window.innerHeight + y >= document.documentElement.scrollHeight - 4;
+        if (atBottom) bar.classList.remove("tabbar-hidden");
+        else if (y > 96 && y > lastY + 8) bar.classList.add("tabbar-hidden");
         else if (y < 96 || y < lastY - 8) bar.classList.remove("tabbar-hidden");
       }
       lastY = y;
