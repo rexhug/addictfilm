@@ -459,7 +459,17 @@ const GENRE_GRAD = [
 ];
 function skeletonRail(n = 5) { return Array.from({ length: n }, () => `<div class="poster"><div class="art sk"></div><div class="sk sk-line"></div></div>`).join(""); }
 function skeletonGrid(n = 6) { return `<div class="grid">${Array.from({ length: n }, () => `<div class="poster"><div class="art sk"></div><div class="sk sk-line"></div></div>`).join("")}</div>`; }
-function emptyState(icon, text, sub = "") { return `<div class="empty"><div class="empty-icon">${icon}</div><div class="empty-text">${esc(text)}</div>${sub ? `<div class="empty-sub">${esc(sub)}</div>` : ""}</div>`; }
+// Эмодзи в пустых состояниях → нейтральные outline-иконки из общего реестра.
+// Call-site'ы оставляем как есть (они передают эмодзи-ключ) — маппинг живёт здесь.
+const EMPTY_STATE_ICONS = {
+  "⏳": "clock", "⚠️": "alert", "⛔": "ban", "✅": "checkCircle",
+  "🎬": "clapper", "🎭": "masks", "💙": "heart", "💬": "message",
+  "📊": "chart", "🔍": "search", "🔖": "bookmark", "🤷": "help",
+};
+function emptyState(icon, text, sub = "") {
+  const glyph = EMPTY_STATE_ICONS[icon] ? appIcon(EMPTY_STATE_ICONS[icon]) : icon;
+  return `<div class="empty"><div class="empty-icon">${glyph}</div><div class="empty-text">${esc(text)}</div>${sub ? `<div class="empty-sub">${esc(sub)}</div>` : ""}</div>`;
+}
 
 function posterTile(m, { onClick, badge } = {}) {
   const card = document.createElement("div");
@@ -549,19 +559,37 @@ function reconcileFilmCard(m) {
 // ── Главная ───────────────────────────────────────────────────────────────────
 // Единый набор line-иконок для категорийных чипов (в стиле нижней навигации),
 // вместо разнородных эмодзи. Жанр-пилюли — чистый текст (см. genrePill).
-const _svg = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
-const CHIP_ICONS = {
-  pop: _svg('<path d="M8.5 14.5A2.5 2.5 0 0 0 11 17a2.5 2.5 0 0 0 2.5-2.5c0-1.4-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5Z"/>'),
-  top: _svg('<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.7V17c0 .6-.5 1-1 1.2C7.9 18.8 7 20.2 7 22M14 14.7V17c0 .6.5 1 1 1.2 1.1.5 2 2 2 3.8M18 2H6v7a6 6 0 0 0 12 0Z"/>'),
-  gen: _svg('<rect width="7" height="7" x="3" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="14" rx="1.5"/><rect width="7" height="7" x="3" y="14" rx="1.5"/>'),
-  coll: _svg('<path d="m12.8 2.2a2 2 0 0 0-1.6 0L2.6 6.1a1 1 0 0 0 0 1.8l8.6 3.9a2 2 0 0 0 1.6 0l8.6-3.9a1 1 0 0 0 0-1.8Z"/><path d="m22 17.6-9.2 4.2a2 2 0 0 1-1.6 0L2 17.6M22 12.6l-9.2 4.2a2 2 0 0 1-1.6 0L2 12.6"/>'),
+// ── Единый реестр outline-иконок приложения ──────────────────────────────────
+// Один стиль на весь продукт: 24×24, fill:none, stroke:currentColor 1.7,
+// round caps/joins. Тела path'ов живут ТОЛЬКО здесь; рендер — appIcon().
+// Цвет задаёт контекст через currentColor (нейтральный по умолчанию,
+// фиолетовый — только активные состояния).
+const ICONS = {
+  flame: '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 17a2.5 2.5 0 0 0 2.5-2.5c0-1.4-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5Z"/>',
+  trophy: '<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.7V17c0 .6-.5 1-1 1.2C7.9 18.8 7 20.2 7 22M14 14.7V17c0 .6.5 1 1 1.2 1.1.5 2 2 2 3.8M18 2H6v7a6 6 0 0 0 12 0Z"/>',
+  grid: '<rect width="7" height="7" x="3" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="14" rx="1.5"/><rect width="7" height="7" x="3" y="14" rx="1.5"/>',
+  layers: '<path d="m12.8 2.2a2 2 0 0 0-1.6 0L2.6 6.1a1 1 0 0 0 0 1.8l8.6 3.9a2 2 0 0 0 1.6 0l8.6-3.9a1 1 0 0 0 0-1.8Z"/><path d="m22 17.6-9.2 4.2a2 2 0 0 1-1.6 0L2 17.6M22 12.6l-9.2 4.2a2 2 0 0 1-1.6 0L2 12.6"/>',
+  shuffle: '<path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="m4 4 5 5"/>',
+  sliders: '<line x1="4" x2="14" y1="6" y2="6"/><line x1="18" x2="20" y1="6" y2="6"/><line x1="4" x2="8" y1="12" y2="12"/><line x1="12" x2="20" y1="12" y2="12"/><line x1="4" x2="14" y1="18" y2="18"/><line x1="18" x2="20" y1="18" y2="18"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="16" cy="18" r="2"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  alert: '<path d="m10.3 3.9-8 13.8a2 2 0 0 0 1.7 3h16a2 2 0 0 0 1.7-3l-8-13.8a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/>',
+  ban: '<circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/>',
+  checkCircle: '<circle cx="12" cy="12" r="9"/><path d="m8.3 12.2 2.5 2.5 4.9-5.4"/>',
+  clapper: '<path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.4Z"/><path d="m6.2 5.3 3.1 3.9M12.4 3.4l3.1 4M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
+  masks: '<path d="M4.5 7.5 10 5l4 2.5v9L9.5 19 4.5 16.5zM14 7.5 19.5 5l.5 11.5-5 2.5z"/><path d="M7 11h.01M11 11h.01M7 14c1.1 1 2.9 1 4 0M16.5 11h.01M18.5 11h.01M16 14c.7.6 1.6.8 2.4.5"/>',
+  heart: '<path d="M12 20s-7-4.4-9.2-8.6C1.3 8.3 2.6 5 5.8 5 8 5 9.3 6.5 12 9c2.7-2.5 4-4 6.2-4 3.2 0 4.5 3.3 3 6.4C19 15.6 12 20 12 20Z"/>',
+  message: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+  chart: '<path d="M5 20v-6M12 20V4M19 20v-9"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/>',
+  bookmark: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2Z"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.3 9a2.8 2.8 0 0 1 5.4 1c0 1.8-2.7 2.2-2.7 3.5M12 17h.01"/>',
+  userStar: '<path d="M15 19v-1.4c0-2-1.8-3.6-4-3.6s-4 1.6-4 3.6V19"/><circle cx="11" cy="8" r="3"/><path d="m18 12 .9 1.8 2 .3-1.4 1.4.3 2-1.8-1-1.8 1 .4-2-1.5-1.4 2-.3z"/>',
 };
-// Иконки экрана «Подбор» — та же outline-система (_svg), что и чипы каталога.
-// shuffle → случайный фильм, sliders-horizontal → подбор по настроению и таб «Подбор».
-const PICK_ICONS = {
-  shuffle: _svg('<path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="m4 4 5 5"/>'),
-  sliders: _svg('<line x1="4" x2="14" y1="6" y2="6"/><line x1="18" x2="20" y1="6" y2="6"/><line x1="4" x2="8" y1="12" y2="12"/><line x1="12" x2="20" y1="12" y2="12"/><line x1="4" x2="14" y1="18" y2="18"/><line x1="18" x2="20" y1="18" y2="18"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="16" cy="18" r="2"/>'),
-};
+const appIcon = (name, { label = null } = {}) =>
+  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" ${label ? `role="img" aria-label="${esc(label)}"` : 'aria-hidden="true"'}>${ICONS[name] || ""}</svg>`;
+// Тонкие обёртки для существующих call-site'ов (чипы каталога и экран «Подбор»).
+const CHIP_ICONS = { pop: appIcon("flame"), top: appIcon("trophy"), gen: appIcon("grid"), coll: appIcon("layers") };
+const PICK_ICONS = { shuffle: appIcon("shuffle"), sliders: appIcon("sliders") };
 async function showHome() {
   unwireDetailScroll();
   window.scrollTo(0, 0);
@@ -1893,15 +1921,15 @@ function statsList(section, items, renderItem, expanded) {
 // spellings; unknown genres get a neutral film icon instead of a broken image.
 const GENRE_VISUALS = {
   drama: { color: "#3b82f6", glow: "rgba(59,130,246,.22)", icon: '<path d="M4.5 7.5 10 5l4 2.5v9L9.5 19 4.5 16.5zM14 7.5 19.5 5l.5 11.5-5 2.5z"/><path d="M7 11h.01M11 11h.01M7 14c1.1 1 2.9 1 4 0M16.5 11h.01M18.5 11h.01M16 14c.7.6 1.6.8 2.4.5"/>' },
-  thriller: { color: "#a855f7", glow: "rgba(168,85,247,.22)", icon: '<path d="m5 4 15 15M8 7l-3 8 8-3M16 14l3-8-8 3M4 20l3-3"/>' },
-  mystery: { color: "#14b8a6", glow: "rgba(20,184,166,.22)", icon: '<path d="M5 11c2.5-3 11.5-3 14 0M8 10l1-4h6l1 4M4 14h16M7 15a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm10 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z"/>' },
+  thriller: { color: "#a855f7", glow: "rgba(168,85,247,.22)", icon: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/><path d="M12 2.5V5M12 19v2.5M2.5 12H5M19 12h2.5"/>' },
+  mystery: { color: "#14b8a6", glow: "rgba(20,184,166,.22)", icon: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/>' },
   romance: { color: "#ec4899", glow: "rgba(236,72,153,.22)", icon: '<path d="M20 8.5C20 5.5 16.7 4 14.5 6.2L12 8.7 9.5 6.2C7.3 4 4 5.5 4 8.5c0 4.7 8 9.5 8 9.5s8-4.8 8-9.5Z"/>' },
   comedy: { color: "#fbbf24", glow: "rgba(251,191,36,.22)", icon: '<circle cx="12" cy="12" r="8"/><path d="M8 10h.01M16 10h.01M8.5 14c2 2 5 2 7 0"/>' },
   scifi: { color: "#38bdf8", glow: "rgba(56,189,248,.22)", icon: '<path d="M6 14c0-5 2.4-9 6-9s6 4 6 9c0 3-2.7 5-6 5s-6-2-6-5Z"/><path d="M8.5 12h.01M15.5 12h.01M9 16c1.8 1 4.2 1 6 0"/>' },
   fantasy: { color: "#4ade80", glow: "rgba(74,222,128,.22)", icon: '<path d="M5 17c1-6 3-9 7-9 3 0 4.5 1.6 5.5 4.5M7 11 5 7l4 1 1-4 2 4M10 17c2-1 4.5-1 7 .5M17 6l1.5-2M19 9l2-1"/>' },
   adventure: { color: "#fb923c", glow: "rgba(251,146,60,.22)", icon: '<path d="m5 19 14-14M8 16l-3 3 3-1M16 8l3-3-1 3M7 6l4 4M14 13l4 4"/>' },
   horror: { color: "#fb5a62", glow: "rgba(251,90,98,.22)", icon: '<path d="M7 19v-3l-2-2 2-2V8l2-3h6l2 3v4l2 2-2 2v3l-2 2H9z"/><path d="M9 11h.01M15 11h.01M10 15h4"/>' },
-  crime: { color: "#22c7be", glow: "rgba(34,199,190,.22)", icon: '<path d="M7 20v-5a5 5 0 0 1 10 0v5M5 9c0-3 14-3 14 0M8 9l1-5h6l1 5M4 20h16M9 15h.01M15 15h.01"/>' },
+  crime: { color: "#22c7be", glow: "rgba(34,199,190,.22)", icon: '<path d="M6 17v-3a6 6 0 0 1 12 0v3"/><rect x="4" y="17" width="16" height="3.5" rx="1"/><path d="M12 3.5V6M5.8 5.8 7.4 7.4M18.2 5.8 16.6 7.4"/>' },
   courtroom: { color: "#8b5cf6", glow: "rgba(139,92,246,.22)", icon: '<path d="m7 7 6 6M9 5l-4 4 5 5 4-4zM15 13l4 4M4 20h16"/>' },
   biography: { color: "#fbbf24", glow: "rgba(251,191,36,.22)", icon: '<path d="m12 4 2.2 4.5L19 9.2l-3.5 3.4.8 4.8-4.3-2.3-4.3 2.3.8-4.8L5 9.2l4.8-.7z"/>' },
   space: { color: "#38bdf8", glow: "rgba(56,189,248,.22)", icon: '<path d="M14 4c3 2 4 5 3 9l2 2-3 1-1 3-2-2c-4 1-7 0-9-3 1-4 5-8 10-10Z"/><path d="M12 9h.01M5 19l3-3"/>' },
@@ -1933,8 +1961,10 @@ function genreKey(genre) {
 
 function genreVisual(genre) { return GENRE_VISUALS[genreKey(genre)] || GENRE_VISUALS.default; }
 function genreIcon(genre, className = "") {
+  // Иконка — нейтральный outline без цветного бокса; цвет жанра остаётся
+  // только у процентов и прогресс-бара (переменные вешает genreRow на строку).
   const visual = genreVisual(genre);
-  return `<span class="${className}" style="--genre-color:${visual.color};--genre-glow:${visual.glow}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${visual.icon}</svg></span>`;
+  return `<span class="${className}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${visual.icon}</svg></span>`;
 }
 
 function genreRow([genre, pct, count]) {
@@ -1956,10 +1986,7 @@ function genreStatsCard(items, expanded) {
 }
 
 function peopleSectionIcon(type) {
-  const icon = type === "actors"
-    ? '<path d="M15 19v-1.4c0-2-1.8-3.6-4-3.6s-4 1.6-4 3.6V19"/><circle cx="11" cy="8" r="3"/><path d="m18 12 .9 1.8 2 .3-1.4 1.4.3 2-1.8-1-1.8 1 .4-2-1.5-1.4 2-.3z"/>'
-    : '<path d="M5 8h14M7 8V5h10v3M7 12h10v7H7zM4 12h16M9 16h.01M15 16h.01"/><path d="M4 20h16"/>';
-  return `<span class="people-section-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${icon}</svg></span>`;
+  return `<span class="people-section-icon" aria-hidden="true">${appIcon(type === "actors" ? "userStar" : "clapper")}</span>`;
 }
 
 function personStatCard(item, index, type) {
