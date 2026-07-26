@@ -70,3 +70,33 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await db.mark_film_visuals_checked("tt0133093", None, None))
         film = await db.get_film(film_id)
         self.assertIsNotNone(film["poster_checked_at"])
+
+    async def test_successful_notification_delivery_uses_a_postgres_boolean(self):
+        """A sent delivery must work through asyncpg, not only SQLite.
+
+        This catches accidental conversion of ``sent`` to ``0``/``1`` in the
+        ``CASE WHEN`` expression. PostgreSQL rejects that integer parameter
+        while SQLite silently accepts it.
+        """
+        await self._add_users(1)
+        notification_id, created = await db.create_notification(
+            event_type="pair.invite.accepted", recipient_id=1, actor_id=None,
+            entity_id="event", payload={"title": "x"}, deep_link="stats",
+            idempotency_key="postgres:delivery", event_id="postgres-event",
+        )
+        self.assertTrue(created)
+        self.assertTrue(await db.create_notification_delivery(
+            notification_id, channel="telegram", idempotency_key="postgres:telegram",
+        ))
+
+        await db.finish_notification_delivery(notification_id, channel="telegram", sent=True)
+
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            row = await (await conn.execute(
+                "SELECT status, attempts, sent_at FROM notification_deliveries "
+                "WHERE notification_id = ? AND channel = ?",
+                (notification_id, "telegram"),
+            )).fetchone()
+        self.assertEqual(row["status"], "sent")
+        self.assertEqual(row["attempts"], 1)
+        self.assertIsNotNone(row["sent_at"])

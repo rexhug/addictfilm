@@ -1,6 +1,7 @@
 import asyncio
 import tempfile
 import unittest
+from contextlib import asynccontextmanager
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -50,6 +51,26 @@ class PairNotificationStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await db.mark_notification_read(2, first_id))
         self.assertEqual((await db.list_notifications(2))["unread_count"], 0)
         self.assertFalse(await db.mark_notification_read(3, first_id))
+
+    async def test_delivery_completion_keeps_the_case_condition_boolean_typed(self):
+        """PostgreSQL rejects SQLite's permissive 0/1 boolean shorthand."""
+        captured: list[tuple[str, tuple]] = []
+
+        class _Connection:
+            async def execute(self, sql, parameters=()):
+                captured.append((sql, tuple(parameters)))
+
+            async def commit(self):
+                pass
+
+        @asynccontextmanager
+        async def fake_connect(*_args, **_kwargs):
+            yield _Connection()
+
+        with patch.object(db_runtime, "connect", fake_connect):
+            await db.finish_notification_delivery(42, channel="telegram", sent=True)
+
+        self.assertIs(captured[0][1][3], True)
 
     async def test_opening_direct_invite_never_creates_duplicate_notification(self):
         token = await db.create_invite(1)

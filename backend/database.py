@@ -2254,7 +2254,10 @@ async def finish_notification_delivery(notification_id: int, *, channel: str, se
             "updated_at = ?, sent_at = CASE WHEN ? THEN ? ELSE sent_at END "
             "WHERE notification_id = ? AND channel = ?",
             ("sent" if sent else "failed", (error or "")[:500] if error else None,
-             _now(), int(sent), _now(), notification_id, channel))
+             # PostgreSQL requires a real boolean for CASE WHEN; SQLite also
+             # accepts bools, so preserving the type prevents a production-
+             # only asyncpg failure after Telegram accepts a message.
+             _now(), bool(sent), _now(), notification_id, channel))
         await db.commit()
 
 
