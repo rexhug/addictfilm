@@ -61,8 +61,11 @@ body{
   font-size:13.5px;font-weight:550;background:var(--s2);color:#D7D9DE;border:1px solid var(--hair);cursor:pointer;
   transition:transform .15s,background .16s,color .16s;}
 .chip:active{transform:scale(.95);}
-.chip.active{background:linear-gradient(180deg,#7B61FF,#6A50EC);color:#fff;border-color:transparent;box-shadow:0 4px 12px -9px rgba(123,97,255,.5);}
-.chip .e{font-size:13.5px;line-height:1;}
+/* Активный чип: приглушённая фиолетовая заливка вместо яркой — ясное состояние
+   без визуального доминирования. */
+.chip.active{background:rgba(var(--accent-rgb),.16);color:var(--accent-2);border-color:rgba(var(--accent-rgb),.30);box-shadow:none;}
+.chip .e{display:grid;place-items:center;flex:none;}
+.chip .e svg{width:16px;height:16px;display:block;}
 
 /* ── section + rail ─────────────────────────── */
 section{margin-top:30px;}
@@ -355,11 +358,19 @@ section{margin-top:30px;}
 .accept-btn-primary{border-color:transparent;background:var(--accent);}
 @media(max-width:360px),(max-height:680px){.accept-screen{padding-left:16px;padding-right:16px;padding-bottom:88px;}.accept{min-height:0;padding:26px 20px 22px;border-radius:22px;}.accept-icon{width:62px;height:62px;border-radius:20px;font-size:34px;}.accept-title{margin-top:20px;font-size:24px;}.accept-sub{margin-top:13px;font-size:14px;}.accept-actions{padding-top:28px;}.accept-btn{min-height:48px;}}
 
+/* Верхний скрим: при скролле контент уходит под системную зону/шапку Telegram —
+   мягкий градиент сохраняет читабельность и не даёт постерам «упираться» в верх. */
+#top-scrim{position:fixed;top:0;left:0;right:0;z-index:25;pointer-events:none;
+  height:calc(var(--safe-top) + 26px);
+  background:linear-gradient(180deg,var(--bg) 38%,transparent);
+  opacity:0;transition:opacity .2s ease;}
+#top-scrim.show{opacity:1;}
+
 /* ── floating tab bar ───────────────────────── */
 #tabbar{position:fixed;left:0;right:0;bottom:calc(16px + env(safe-area-inset-bottom));z-index:30;
   margin:0 auto;width:min(400px,calc(100% - 32px));height:60px;border-radius:26px;
-  background:rgba(18,20,24,.72);-webkit-backdrop-filter:blur(24px) saturate(1.4);backdrop-filter:blur(24px) saturate(1.4);
-  border:1px solid var(--hair-2);box-shadow:0 24px 50px -20px rgba(0,0,0,.95), inset 0 1px 0 rgba(255,255,255,.08);
+  background:rgba(18,20,24,.62);-webkit-backdrop-filter:blur(22px) saturate(1.3);backdrop-filter:blur(22px) saturate(1.3);
+  border:1px solid var(--hair);box-shadow:0 14px 34px -22px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.05);
   display:flex;align-items:stretch;padding:0 6px;}
 #tabbar{transition:transform .22s ease,opacity .22s ease;}
 #tabbar.tabbar-hidden{transform:translateY(calc(100% + 28px));opacity:0;pointer-events:none;}

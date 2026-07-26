@@ -1457,7 +1457,7 @@ async def get_user_stats(user_id: int) -> dict:
         director_prominence = _person_credit_prominence(watched_rows, "directors")
         for r in watched_rows:
             for g in (r["genres"] or "").split(","):
-                g = g.strip()
+                g = _canon_genre(g)
                 if g and g != "N/A":
                     genre_counts[g] = genre_counts.get(g, 0) + 1
             for a in (r["actors"] or "").split(","):
@@ -1529,7 +1529,7 @@ async def get_year_stats(user_id: int, year: int) -> dict:
             if m:
                 total_min += int(m.group(0))
             for g in (r["genres"] or "").split(","):
-                g = g.strip()
+                g = _canon_genre(g)
                 if g and g != "N/A":
                     genre_counts[g] = genre_counts.get(g, 0) + 1
             for a in (r["actors"] or "").split(","):
@@ -1941,7 +1941,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         rt = int(m.group(0)) if m else 0
         total_min += rt
         for g in (r["genres"] or "").split(","):
-            g = g.strip()
+            g = _canon_genre(g)
             if g and g != "N/A":
                 genre_counts[g] = genre_counts.get(g, 0) + 1
         for a in (r["actors"] or "").split(","):
@@ -1956,7 +1956,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
             year_count += 1
             year_min += rt
             for g in (r["genres"] or "").split(","):
-                g = g.strip()
+                g = _canon_genre(g)
                 if g and g != "N/A":
                     year_genre[g] = year_genre.get(g, 0) + 1
             for a in (r["actors"] or "").split(","):

@@ -57,7 +57,7 @@ const DICT = {
     search_ph: "Поиск фильмов, сериалов, актёров…",
     chip_popular: "Популярное", chip_top: "Топ сообщества", chip_genres: "Жанры", chip_collections: "Подборки",
     see_all: "Смотреть все",
-    reco_title: "Оценивай и получай рекомендации", reco_sub: "Оценивай фильмы и получай персональные рекомендации на основе твоего вкуса", reco_cta: "Начать",
+    reco_title: "Оценивай и получай рекомендации", reco_sub: "Персональные подборки на основе твоих оценок", reco_cta: "Начать",
     notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся напоминания оценить просмотренное",
     back: "Назад", settings_title: "Настройки", settings_loading: "Загружаю настройки…",
     settings_notifications: "Уведомления", settings_notifications_hint: "Напоминания и обновления Addict Film", settings_notifications_on: "Включены", settings_notifications_off: "Выключены", settings_notifications_permission: "Нужно разрешение", settings_notifications_denied: "Разрешения отключены в Telegram или браузере", settings_notifications_unavailable: "Недоступны на этом устройстве", settings_notifications_error: "Не удалось запросить разрешение",
@@ -133,7 +133,7 @@ const DICT = {
     search_ph: "Search movies, TV shows, actors…",
     chip_popular: "Popular", chip_top: "Community Top", chip_genres: "Genres", chip_collections: "Collections",
     see_all: "See all",
-    reco_title: "Rate films, get recommendations", reco_sub: "Rate films and get personal recommendations based on your taste", reco_cta: "Start",
+    reco_title: "Rate films, get recommendations", reco_sub: "Personal picks based on your ratings", reco_cta: "Start",
     notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "Reminders to rate what you've watched will show up here",
     back: "Back", settings_title: "Settings", settings_loading: "Loading settings…",
     settings_notifications: "Notifications", settings_notifications_hint: "Addict Film reminders and updates", settings_notifications_on: "On", settings_notifications_off: "Off", settings_notifications_permission: "Permission needed", settings_notifications_denied: "Notifications are blocked in Telegram or your browser", settings_notifications_unavailable: "Unavailable on this device", settings_notifications_error: "Couldn't request permission",
@@ -515,6 +515,15 @@ function gridOf(items, toCard) { const g = document.createElement("div"); g.clas
 function openDetail(id, back, preview = null) { if (back) _returnTo = back; showDetail(id, preview); }
 
 // ── Главная ───────────────────────────────────────────────────────────────────
+// Единый набор line-иконок для категорийных чипов (в стиле нижней навигации),
+// вместо разнородных эмодзи. Жанр-пилюли — чистый текст (см. genrePill).
+const _svg = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+const CHIP_ICONS = {
+  pop: _svg('<path d="M8.5 14.5A2.5 2.5 0 0 0 11 17a2.5 2.5 0 0 0 2.5-2.5c0-1.4-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5Z"/>'),
+  top: _svg('<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.7V17c0 .6-.5 1-1 1.2C7.9 18.8 7 20.2 7 22M14 14.7V17c0 .6.5 1 1 1.2 1.1.5 2 2 2 3.8M18 2H6v7a6 6 0 0 0 12 0Z"/>'),
+  gen: _svg('<rect width="7" height="7" x="3" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="14" rx="1.5"/><rect width="7" height="7" x="3" y="14" rx="1.5"/>'),
+  coll: _svg('<path d="m12.8 2.2a2 2 0 0 0-1.6 0L2.6 6.1a1 1 0 0 0 0 1.8l8.6 3.9a2 2 0 0 0 1.6 0l8.6-3.9a1 1 0 0 0 0-1.8Z"/><path d="m22 17.6-9.2 4.2a2 2 0 0 1-1.6 0L2 17.6M22 12.6l-9.2 4.2a2 2 0 0 1-1.6 0L2 12.6"/>'),
+};
 async function showHome() {
   unwireDetailScroll();
   window.scrollTo(0, 0);
@@ -542,10 +551,10 @@ async function showHome() {
       </button>
     </div>
     <div class="chips rise d2">
-      <span class="chip active" data-to="sec-pop"><span class="e">🔥</span>${esc(t("chip_popular"))}</span>
-      <span class="chip" data-to="sec-top"><span class="e">🏆</span>${esc(t("chip_top"))}</span>
-      <span class="chip" data-to="sec-gen"><span class="e">🎭</span>${esc(t("chip_genres"))}</span>
-      <span class="chip" data-to="sec-coll"><span class="e">🎬</span>${esc(t("chip_collections"))}</span>
+      <span class="chip active" data-to="sec-pop"><span class="e">${CHIP_ICONS.pop}</span>${esc(t("chip_popular"))}</span>
+      <span class="chip" data-to="sec-top"><span class="e">${CHIP_ICONS.top}</span>${esc(t("chip_top"))}</span>
+      <span class="chip" data-to="sec-gen"><span class="e">${CHIP_ICONS.gen}</span>${esc(t("chip_genres"))}</span>
+      <span class="chip" data-to="sec-coll"><span class="e">${CHIP_ICONS.coll}</span>${esc(t("chip_collections"))}</span>
     </div>
     <section class="rise d3" id="sec-pop"><div class="head"><h2>${esc(t("chip_popular"))}</h2>${seeAll("see-pop")}</div><div class="rail" id="rail-pop">${skeletonRail(5)}</div></section>
     <section class="rise d4" id="sec-top"><div class="head"><h2>${esc(t("chip_top"))}</h2>${seeAll("see-top")}</div><div class="rail" id="rail-top">${skeletonRail(5)}</div></section>
@@ -613,21 +622,7 @@ async function loadRail(id, path, { onItems = null } = {}) {
   } catch (e) { if (el) el.innerHTML = `<div class="rail-empty">${esc(t("rail_err"))}</div>`; }
 }
 
-// Жанры на Главной — компактные пилюли (полный список — по «Смотреть все»).
-const GENRE_EMOJI = {
-  "боевик": "🎬", "комедия": "😂", "триллер": "🕵️", "фантастика": "👽", "драма": "🎭",
-  "ужасы": "👻", "мелодрама": "💗", "приключения": "🧭", "детектив": "🔎", "фэнтези": "🐉",
-  "криминал": "🔫", "мультфильм": "🧸", "аниме": "🌸", "документальный": "🎥", "военный": "🪖",
-  "история": "📜", "музыка": "🎵", "спорт": "🏆", "вестерн": "🤠", "биография": "👤",
-  "семейный": "👨‍👩‍👧", "мюзикл": "🎶", "фильм-нуар": "🌃",
-  // англоязычные названия (на случай каталога с EN-жанрами)
-  "action": "🎬", "comedy": "😂", "thriller": "🕵️", "sci-fi": "👽", "science fiction": "👽",
-  "drama": "🎭", "horror": "👻", "romance": "💗", "adventure": "🧭", "mystery": "🔎",
-  "fantasy": "🐉", "crime": "🔫", "animation": "🧸", "anime": "🌸", "documentary": "🎥",
-  "war": "🪖", "history": "📜", "music": "🎵", "sport": "🏆", "western": "🤠",
-  "biography": "👤", "family": "👨‍👩‍👧", "musical": "🎶", "film-noir": "🌃",
-};
-function genreEmoji(name) { return GENRE_EMOJI[(name || "").toLowerCase()] || "🎞️"; }
+// Жанры на Главной — компактные текстовые пилюли (полный список — «Смотреть все»).
 async function loadGenrePills() {
   const el = document.getElementById("gen-chips");
   try {
@@ -640,7 +635,7 @@ async function loadGenrePills() {
 function genrePill(g) {
   const pill = document.createElement("button");
   pill.className = "gchip";
-  pill.innerHTML = `<span class="e">${genreEmoji(g.name)}</span>${esc(cap(g.name))}`;
+  pill.textContent = cap(g.name);
   pill.onclick = () => showGenre(g.name);
   return pill;
 }
@@ -1502,7 +1497,7 @@ function statsProfileHTML(s) {
   const photo = telegramUser.photo_url;
   const hours = Math.floor((s.total_runtime_min || 0) / 60);
   const avatar = userAvatarHTML({ photo_url: photo }, name);
-  const topGenre = s.top_genres_pct?.[0]?.[0];
+  const topGenre = cap(s.top_genres_pct?.[0]?.[0] || "");
   const topRating = (s.rating_dist || []).reduce((best, count, index, values) => count > values[best] ? index : best, 0) + 1;
   const taste = s.rating_dist?.some(v => v > 0) ? t("stats_taste_hint", topGenre, topRating) : t("stats_profile_sub");
   return `<section class="profile-hero">
@@ -1574,7 +1569,7 @@ function genreRow([genre, pct, count]) {
   const countValue = Number.isFinite(Number(count)) ? Number(count) : null;
   const visual = genreVisual(genre);
   return `<div class="genre-stat-row" style="--genre-color:${visual.color};--genre-glow:${visual.glow}">
-    ${genreIcon(genre, "genre-stat-icon")}<div class="genre-stat-name">${esc(genre)}</div>
+    ${genreIcon(genre, "genre-stat-icon")}<div class="genre-stat-name">${esc(cap(genre))}</div>
     <div class="genre-stat-track"><i style="width:${Math.max(percentage ? 7 : 0, percentage)}%"></i></div>
     <div class="genre-stat-value"><b>${percentage}%</b>${countValue != null ? `<small>${esc(t("stats_films", countValue))}</small>` : ""}</div>
   </div>`;
@@ -1619,7 +1614,7 @@ function peopleStatsSection({ type, title, subtitle, items }) {
 function personalStatsHTML(s, scope = "me", expanded = { genres: false }) {
   const y = s.year;
   const hours = Math.floor(s.total_runtime_min / 60);
-  const topGenre = s.top_genres_pct?.[0]?.[0];
+  const topGenre = cap(s.top_genres_pct?.[0]?.[0] || "");
   const topRating = (s.rating_dist || []).reduce((best, count, index, values) => count > values[best] ? index : best, 0) + 1;
   const intro = "";
   const tiles = `<div class="stats-grid">
@@ -1657,7 +1652,7 @@ function partnerCardHTML(p, ps) {
         ${ps.matches ? `<div class="year-line">${esc(t("partner_matches"))}: <b>${ps.matches}</b></div>` : ""}
         ${ps.best ? `<div class="year-line">${esc(t("partner_best"))}: ${esc(ps.best.title)} <small>(${ps.best.avg})</small></div>` : ""}
         ${ps.controversial ? `<div class="year-line">${esc(t("partner_controversial"))}: ${esc(ps.controversial.title)} <small>(${ps.controversial.a} / ${ps.controversial.b})</small></div>` : ""}
-        ${ps.top_genres.length ? `<div class="year-line">${esc(t("partner_genres"))}: ${ps.top_genres.map(esc).join(", ")}</div>` : ""}`;
+        ${ps.top_genres.length ? `<div class="year-line">${esc(t("partner_genres"))}: ${ps.top_genres.map(g => esc(cap(g))).join(", ")}</div>` : ""}`;
     }
     return `<div class="chart-card partner"><div class="chart-title">${t("partner_with")} ${name}</div>${body}
       <button class="pbtn danger" id="p-unpair">${esc(t("partner_unpair_btn"))}</button></div>`;
@@ -1775,11 +1770,13 @@ function wireTabbarAutoHide() {
   let lastY = window.scrollY;
   let ticking = false;
   const bar = document.getElementById("tabbar");
+  const scrim = document.getElementById("top-scrim");
   const onScroll = () => {
     if (ticking) return;
     ticking = true;
     requestAnimationFrame(() => {
       const y = window.scrollY;
+      if (scrim) scrim.classList.toggle("show", y > 8);
       if (bar) {
         // У самого низа страницы всегда показываем панель: иначе, докрутив вниз,
         // её нельзя вернуть (наверх скроллить уже некуда) и по ней не нажать.

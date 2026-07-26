@@ -27,4 +27,5 @@ class GenreStatsTests(unittest.IsolatedAsyncioTestCase):
 
         stats = await db.get_user_stats(1)
 
-        self.assertEqual(stats["top_genres_pct"], [("Drama", 67, 2), ("Thriller", 33, 1)])
+        # Жанры статистики приводятся к единому русскому канону (как и /api/genres).
+        self.assertEqual(stats["top_genres_pct"], [("драма", 67, 2), ("триллер", 33, 1)])
