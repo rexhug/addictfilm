@@ -102,6 +102,12 @@ test("personal profile fits a 390px phone without a hidden final card", async ({
   expect(favoriteActorLayout.photoHeight).toBeGreaterThan(favoriteActorLayout.cardWidth * .7);
   expect(favoriteActorLayout.objectFit).toBe("contain");
   expect(favoriteActorLayout.badgeInCopy).toBeFalsy();
+  const actorCardLayout = await page.locator(".people-stats-actors .person-stat-card").evaluateAll((cards) => cards.map((card) => {
+    const count = card.querySelector(".person-stat-copy > small");
+    return { height: card.getBoundingClientRect().height, countColor: getComputedStyle(count).color };
+  }));
+  expect(new Set(actorCardLayout.map(({ height }) => Math.round(height))).size).toBe(1);
+  expect(new Set(actorCardLayout.map(({ countColor }) => countColor)).size).toBe(1);
   await page.locator(".people-stats-actors .person-stat-card").first().click();
   await expect(page.getByRole("heading", { name: "Фильмы с Jake Gyllenhaal" })).toBeVisible();
   await expect(page.locator(".poster .meta .t", { hasText: "Donnie Darko" })).toBeVisible();

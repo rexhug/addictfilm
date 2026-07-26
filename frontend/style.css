@@ -560,3 +560,11 @@ section{margin-top:30px;}
 .people-stats-section .person-stat-favorite{position:absolute;z-index:3;top:calc(var(--person-photo-height) - 31px);left:9px;align-self:auto;margin:0;padding:5px 7px;border-color:rgba(255,255,255,.18);border-radius:8px;background:rgba(13,15,20,.86);color:#d2ceff;}
 .people-stats-section .person-stat-rank{z-index:4;}
 @media(max-width:560px){.people-stats-section .person-stat-card{--person-photo-height:166px;min-height:252px;}.people-stats-section .person-stat-card.is-favorite{--person-photo-height:186px;min-height:272px;}.people-stats-section .person-stat-copy,.people-stats-section .person-stat-card.is-favorite .person-stat-copy{margin-top:calc(var(--person-photo-height) + 9px);}}
+
+/* Keep the enlarged portraits, but make every card end right after its
+   metadata. A fixed rail height prevents uneven baselines while swiping. */
+.people-stats-section .person-stat-card,.people-stats-section .person-stat-card.is-favorite{height:248px;min-height:248px;}
+.people-stats-section .person-stat-card.is-favorite{border-color:rgba(90,111,240,.44);}
+.people-stats-section .person-stat-card.is-favorite:hover{border-color:rgba(106,124,255,.62);}
+.people-stats-section .person-stat-copy>small,.people-stats-section .person-stat-card.is-favorite .person-stat-copy>small{color:var(--ink-2);}
+@media(max-width:560px){.people-stats-section .person-stat-card,.people-stats-section .person-stat-card.is-favorite{height:244px;min-height:244px;}}
