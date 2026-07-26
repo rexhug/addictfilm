@@ -585,3 +585,12 @@ section{margin-top:30px;}
 .people-stats-section .person-stat-favorite{top:calc(var(--person-photo-height) - 27px);left:7px;margin:0;padding:4px 6px;border-color:rgba(255,255,255,.16);border-radius:7px;background:rgba(13,15,20,.84);font-size:9px;}
 .people-stats-section .person-stat-rank{top:8px;left:8px;min-width:24px;height:24px;padding:0 5px;border-radius:7px;font-size:11px;}
 @media(max-width:560px){.people-stats-section .people-stats-rail{gap:10px;}.people-stats-section .person-stat-card,.people-stats-section .person-stat-card.is-favorite{--person-photo-height:clamp(178px,45.625vw,197px);flex-basis:clamp(142px,36.5vw,158px);height:calc(var(--person-photo-height) + 60px);min-height:calc(var(--person-photo-height) + 60px);padding-bottom:9px;}.people-stats-section .person-stat-copy,.people-stats-section .person-stat-card.is-favorite .person-stat-copy{margin-top:calc(var(--person-photo-height) + 6px);}}
+
+/* The people rail is content, not another dashboard card.  Let it breathe on
+   the page background, retaining only a quiet rhythm between the two groups. */
+.people-stats-section{margin:0;padding:0;overflow:visible;border:0;border-radius:0;background:transparent;}
+.people-stats-head{margin:0 20px 14px;}
+.people-stats-rail{margin:0;padding:0 20px 5px;scroll-padding-left:20px;}
+.people-stats-empty{margin:0 20px;}
+.people-stats-directors{margin-top:26px;padding-top:24px;border-top:1px solid rgba(255,255,255,.055);}
+@media(max-width:560px){.people-stats-head{margin:0 16px 13px;}.people-stats-rail{padding-left:16px;padding-right:16px;scroll-padding-left:16px;}.people-stats-empty{margin-left:16px;margin-right:16px;}.people-stats-directors{margin-top:24px;padding-top:22px;}}

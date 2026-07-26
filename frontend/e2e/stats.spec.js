@@ -84,6 +84,16 @@ test("personal profile fits a 390px phone without a hidden final card", async ({
   await expect(page.getByText("Чаще всего встречаются в просмотренных фильмах")).toBeVisible();
   await expect(page.getByText("Чаще всего среди просмотренных фильмов")).toBeVisible();
   expect(await page.locator(".people-stats-actors .people-stats-rail").evaluate((rail) => rail.scrollWidth > rail.clientWidth)).toBeTruthy();
+  const peopleSectionLayout = await page.locator(".people-stats-actors").evaluate((section) => {
+    const styles = getComputedStyle(section);
+    const rail = section.querySelector(".people-stats-rail");
+    const firstCard = rail.querySelector(".person-stat-card").getBoundingClientRect();
+    return { background: styles.backgroundColor, borderLeftWidth: styles.borderLeftWidth, firstCardLeft: firstCard.left };
+  });
+  expect(peopleSectionLayout.background).toBe("rgba(0, 0, 0, 0)");
+  expect(peopleSectionLayout.borderLeftWidth).toBe("0px");
+  expect(peopleSectionLayout.firstCardLeft).toBeGreaterThanOrEqual(15);
+  expect(peopleSectionLayout.firstCardLeft).toBeLessThanOrEqual(21);
   await page.locator(".people-stats-actors").scrollIntoViewIfNeeded();
   await expect(page.locator(".people-stats-actors img[data-person-photo]").first()).toHaveClass(/ready/);
   await page.locator(".people-stats-directors").scrollIntoViewIfNeeded();
@@ -115,8 +125,10 @@ test("personal profile fits a 390px phone without a hidden final card", async ({
     const first = rail.querySelector(".person-stat-card");
     return rail.clientWidth / first.getBoundingClientRect().width;
   });
-  expect(visibleCards).toBeGreaterThan(2);
-  expect(visibleCards).toBeLessThan(2.6);
+  // With the outer section shell gone, the rail deliberately uses the full
+  // viewport while retaining its comfortable side inset.
+  expect(visibleCards).toBeGreaterThan(2.6);
+  expect(visibleCards).toBeLessThan(3);
   const directorCardMetrics = await page.locator(".people-stats-directors .person-stat-card").evaluateAll((cards) => cards.map((card) => ({ scrollHeight: card.scrollHeight, clientHeight: card.clientHeight })));
   expect(directorCardMetrics.every(({ scrollHeight, clientHeight }) => scrollHeight <= clientHeight), JSON.stringify(directorCardMetrics)).toBeTruthy();
   await page.setViewportSize({ width: 430, height: 844 });
@@ -124,8 +136,8 @@ test("personal profile fits a 390px phone without a hidden final card", async ({
     const first = rail.querySelector(".person-stat-card");
     return rail.clientWidth / first.getBoundingClientRect().width;
   });
-  expect(wideVisibleCards).toBeGreaterThan(2);
-  expect(wideVisibleCards).toBeLessThan(2.6);
+  expect(wideVisibleCards).toBeGreaterThan(2.6);
+  expect(wideVisibleCards).toBeLessThan(3);
   const squarePhoto = page.locator(".people-stats-actors img[data-person-photo]").nth(2);
   await squarePhoto.scrollIntoViewIfNeeded();
   await expect(squarePhoto).toHaveClass(/ready/);
