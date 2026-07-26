@@ -1718,7 +1718,11 @@ async function showAcceptInvite(param) {
   unwireDetailScroll();
   window.scrollTo(0, 0);
   screen.innerHTML = `<main class="accept-screen"><section class="accept" aria-labelledby="accept-title">
-    <div class="accept-icon" aria-hidden="true">💞</div>
+    <div class="accept-illustration" aria-hidden="true">
+      <img class="accept-illustration-img" src="assets/pair-hearts.webp" width="560" height="422" alt="" decoding="async"
+        onerror="this.hidden=true;this.nextElementSibling.hidden=false">
+      <div class="accept-illustration-fallback" hidden></div>
+    </div>
     <h1 class="accept-title" id="accept-title">${esc(t("accept_title"))}</h1>
     <p class="accept-sub">${esc(t("accept_sub"))}</p>
     <div class="accept-actions">

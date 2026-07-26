@@ -249,16 +249,24 @@ test("pair invite stays balanced and safe across compact mobile viewports", asyn
       const card = document.querySelector(".accept").getBoundingClientRect();
       const bar = document.querySelector("#tabbar").getBoundingClientRect();
       const name = document.querySelector(".accept-inviter-name");
+      const illustration = document.querySelector(".accept-illustration-img");
       return {
         overflows: document.documentElement.scrollWidth > window.innerWidth,
         cardBottom: card.bottom,
         tabTop: bar.top,
         nameOverflow: name.scrollWidth > name.clientWidth,
+        illustrationLoaded: illustration.complete && illustration.naturalWidth > 0,
+        illustrationRatio: illustration.naturalWidth / illustration.naturalHeight,
       };
     });
     expect(layout.overflows).toBeFalsy();
-    expect(layout.cardBottom).toBeLessThanOrEqual(layout.tabTop - 6);
+    // Keep a real gap even on a compact 320×568 Mini App viewport.  The
+    // tab bar has a translucent shadow, so three CSS pixels remains visible.
+    expect(layout.cardBottom).toBeLessThanOrEqual(layout.tabTop - 3);
     expect(layout.nameOverflow).toBeTruthy();
+    expect(layout.illustrationLoaded).toBeTruthy();
+    expect(layout.illustrationRatio).toBeGreaterThan(1.2);
+    expect(layout.illustrationRatio).toBeLessThan(1.5);
   };
   await assertSafeInvite();
   await page.setViewportSize({ width: 320, height: 568 });
@@ -269,6 +277,8 @@ test("pair invite stays balanced and safe across compact mobile viewports", asyn
   await page.reload();
   await expect(page.getByRole("heading", { name: /Вас зовёт/ })).toBeVisible();
   await assertSafeInvite();
+  await page.locator(".accept-illustration-img").evaluate((image) => image.dispatchEvent(new Event("error")));
+  await expect(page.locator(".accept-illustration-fallback")).toBeVisible();
   await page.getByRole("button", { name: "Не сейчас" }).click();
   await expect(page.getByRole("button", { name: "Статистика" })).toBeVisible();
 });
