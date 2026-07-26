@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import logging
+import mimetypes
 import os
 import re
 import secrets
@@ -1391,6 +1392,12 @@ async def index():
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"),
                         headers={"Cache-Control": "no-store, max-age=0",
                                  "Content-Security-Policy": _HTML_CSP})
+
+# Python 3.12 не знает webp в mimetypes → StaticFiles отдавал бы
+# application/octet-stream. Браузеры картинку рендерят и так, но корректный
+# Content-Type нужен для честного кэширования и строгих WebView.
+mimetypes.add_type("image/webp", ".webp")
+
 
 class VersionedStaticFiles(StaticFiles):
     """Cache static assets without allowing JS/CSS version skew.
