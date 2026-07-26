@@ -223,41 +223,6 @@ function applyTabLabels() {
   document.querySelectorAll("#tabbar .tab").forEach(b => { const s = b.querySelector("span"); if (s) s.textContent = t(map[b.dataset.tab]); });
 }
 
-// A preference alone must never be presented as an active subscription.  The
-// browser (and, on iOS, Telegram's WebView) remains the source of truth for
-// permission.  This also keeps the setting useful on devices where the API is
-// unavailable: a user can turn the preference off, but cannot be misled into
-// thinking notifications are working when they are not.
-const NOTIFICATION_PREF_KEY = "addict-film:notifications-enabled";
-function notificationsPreference() {
-  try { return localStorage.getItem(NOTIFICATION_PREF_KEY) === "true"; } catch (_) { return false; }
-}
-function saveNotificationsPreference(value) {
-  try { localStorage.setItem(NOTIFICATION_PREF_KEY, value ? "true" : "false"); } catch (_) {}
-}
-function notificationsState() {
-  if (!("Notification" in window)) return { status: "unavailable", enabled: false, canEnable: false };
-  const permission = window.Notification.permission;
-  if (permission === "denied") return { status: "denied", enabled: false, canEnable: false };
-  if (permission !== "granted") return { status: "permission", enabled: false, canEnable: true };
-  return { status: notificationsPreference() ? "on" : "off", enabled: notificationsPreference(), canEnable: true };
-}
-async function updateNotifications(enabled) {
-  if (!enabled) { saveNotificationsPreference(false); return notificationsState(); }
-  let state = notificationsState();
-  if (!state.canEnable) return state;
-  try {
-    let permission = window.Notification.permission;
-    if (permission === "default") permission = await window.Notification.requestPermission();
-    saveNotificationsPreference(permission === "granted");
-    return notificationsState();
-  } catch (_) {
-    saveNotificationsPreference(false);
-    state = notificationsState();
-    return state.status === "permission" ? { ...state, status: "error" } : state;
-  }
-}
-
 async function api(path, opts = {}) {
   const method = (opts.method || "GET").toUpperCase();
   const canCache = cacheableRead(path, opts);
@@ -1380,14 +1345,6 @@ function settingsSvg() {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.12 2.12-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.04 1.56v.08h-3v-.08A1.7 1.7 0 0 0 10.66 18.7a1.7 1.7 0 0 0-1.88.34l-.06.06-2.12-2.12.06-.06A1.7 1.7 0 0 0 7 15.04a1.7 1.7 0 0 0-1.56-1.04h-.08v-3h.08A1.7 1.7 0 0 0 7 9.96a1.7 1.7 0 0 0-.34-1.88L6.6 8.02 8.72 5.9l.06.06A1.7 1.7 0 0 0 10.66 6.3a1.7 1.7 0 0 0 1.04-1.56v-.08h3v.08A1.7 1.7 0 0 0 15.74 6.3a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.12 2.12-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.56 1.04h.08v3h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg>`;
 }
 
-function settingsStatusLabel(state) {
-  const map = {
-    on: "settings_notifications_on", off: "settings_notifications_off",
-    permission: "settings_notifications_permission", denied: "settings_notifications_denied",
-    unavailable: "settings_notifications_unavailable", error: "settings_notifications_error",
-  };
-  return t(map[state.status] || "settings_notifications_off");
-}
 function telegramNotificationStatus(settings) {
   if (!settings?.telegram_available) return t("notif_telegram_unavailable");
   return settings.telegram_enabled ? t("settings_notifications_on") : t("settings_notifications_off");
@@ -1409,6 +1366,20 @@ function settingsPairHTML(partner, failed) {
   return settingsRow({ title: t("settings_pair_none"), action: `<button class="settings-primary-action" data-settings-pair-create type="button">${esc(t("settings_pair_create"))}</button>` });
 }
 
+function settingsPairManagementHTML(partner) {
+  const name = partner.partner?.name || t("partner_word");
+  const username = partner.partner?.username ? `@${partner.partner.username}` : "";
+  return `<div class="settings-pair-management">
+    <div class="settings-pair-management-head">
+      <button class="settings-pair-management-back" data-settings-pair-close type="button" aria-label="${esc(t("back"))}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg>
+      </button>
+      <span><b>${esc(t("settings_pair_current"))}</b><small>${esc(name)}${username ? ` · ${esc(username)}` : ""}</small></span>
+    </div>
+    <button class="settings-danger-action" data-settings-pair-unpair type="button">${esc(t("partner_unpair_btn"))}</button>
+  </div>`;
+}
+
 function settingsChevron() { return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>`; }
 
 async function showStatsSettings(returnMode = "me", managePair = false) {
@@ -1423,24 +1394,33 @@ async function showStatsSettings(returnMode = "me", managePair = false) {
   try { [partner, serverSettings] = await Promise.all([api("/api/partner"), api("/api/settings")]); } catch (_) { partnerFailed = true; }
   if (!page) return;
 
+  const openPairManagement = () => {
+    const card = page.querySelector(".settings-pair-card");
+    if (!card || partner.status !== "paired") return;
+    card.innerHTML = settingsPairManagementHTML(partner);
+    card.querySelector("[data-settings-pair-close]")?.addEventListener("click", () => {
+      card.innerHTML = settingsPairHTML(partner, false);
+      card.querySelector("[data-settings-pair-manage]")?.addEventListener("click", openPairManagement);
+    });
+    card.querySelector("[data-settings-pair-unpair]")?.addEventListener("click", () => confirmPairUnlink(async () => {
+      try { await api("/api/partner/unpair", { method: "POST" }); showStatsSettings(returnMode); }
+      catch (_) { tg?.showAlert?.(t("settings_pair_load_error")); }
+    }));
+  };
+
   const render = () => {
-    const notification = notificationsState();
-    const disabled = !notification.enabled && !notification.canEnable;
     page.innerHTML = `
       <section class="settings-section" aria-labelledby="settings-notifications-title"><h2 id="settings-notifications-title">${esc(t("settings_notifications"))}</h2><div class="settings-card">
         ${settingsRow({ title: t("notif_inapp"), subtitle: t("settings_notifications_hint"), action: `<span class="settings-fixed-status">${esc(t("settings_notifications_on"))}</span>` })}
-        ${settingsRow({ title: t("notif_telegram"), subtitle: `${t("notif_telegram_hint")} · ${telegramNotificationStatus(serverSettings)}`, action: `<button class="settings-toggle" data-settings-telegram type="button" role="switch" aria-checked="${!!serverSettings.telegram_enabled}" aria-label="${esc(t("notif_telegram"))}" ${serverSettings.telegram_available ? "" : "disabled"}></button>` })}
-        ${settingsRow({ title: t("settings_notifications"), subtitle: `${t("notif_browser_hint")} · ${settingsStatusLabel(notification)}`, action: `<button class="settings-toggle" data-settings-notifications type="button" role="switch" aria-checked="${notification.enabled}" aria-label="${esc(t("settings_notifications"))}" ${disabled ? "disabled" : ""}></button>` })}
+        ${settingsRow({ title: t("settings_notifications"), subtitle: `${t("notif_telegram_hint")} · ${telegramNotificationStatus(serverSettings)}`, action: `<button class="settings-toggle" data-settings-telegram type="button" role="switch" aria-checked="${!!serverSettings.telegram_enabled}" aria-label="${esc(t("settings_notifications"))}" ${serverSettings.telegram_available ? "" : "disabled"}></button>` })}
       </div></section>
       <section class="settings-section" aria-labelledby="settings-language-title"><h2 id="settings-language-title">${esc(t("settings_language"))}</h2><div class="settings-card settings-language-card">
         <p>${esc(t("settings_language_hint"))}</p><div class="settings-language-options" role="group" aria-label="${esc(t("settings_language"))}">
           <button data-settings-language="ru" type="button" class="${lang === "ru" ? "active" : ""}" aria-pressed="${lang === "ru"}">${esc(t("settings_language_ru"))}</button>
           <button data-settings-language="en" type="button" class="${lang === "en" ? "active" : ""}" aria-pressed="${lang === "en"}">${esc(t("settings_language_en"))}</button>
         </div></div></section>
-      <section class="settings-section" aria-labelledby="settings-pair-title"><h2 id="settings-pair-title">${esc(t("settings_pair"))}</h2><div class="settings-card settings-pair-card">${settingsPairHTML(partner, partnerFailed)}${managePair && partner.status === "paired" ? `<div class="settings-pair-actions"><button class="settings-danger-action" data-settings-pair-unpair type="button">${esc(t("partner_unpair_btn"))}</button></div>` : ""}</div></section>`;
+      <section class="settings-section" aria-labelledby="settings-pair-title"><h2 id="settings-pair-title">${esc(t("settings_pair"))}</h2><div class="settings-card settings-pair-card">${settingsPairHTML(partner, partnerFailed)}</div></section>`;
 
-    const toggle = page.querySelector("[data-settings-notifications]");
-    if (toggle) toggle.onclick = async () => { toggle.disabled = true; await updateNotifications(!notificationsState().enabled); render(); };
     const telegramToggle = page.querySelector("[data-settings-telegram]");
     if (telegramToggle) telegramToggle.onclick = async () => {
       telegramToggle.disabled = true;
@@ -1460,12 +1440,7 @@ async function showStatsSettings(returnMode = "me", managePair = false) {
     const invited = page.querySelector("[data-settings-pair-invited]");
     if (invited) invited.onclick = () => settingsInvitePanel(page, partner, returnMode);
     const manage = page.querySelector("[data-settings-pair-manage]");
-    if (manage) manage.onclick = () => showStatsSettings(returnMode, true);
-    const unpair = page.querySelector("[data-settings-pair-unpair]");
-    if (unpair) unpair.onclick = () => confirmPairUnlink(async () => {
-      try { await api("/api/partner/unpair", { method: "POST" }); showStatsSettings(returnMode); }
-      catch (_) { tg?.showAlert?.(t("settings_pair_load_error")); }
-    });
+    if (manage) manage.onclick = openPairManagement;
   };
   render();
 }

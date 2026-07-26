@@ -28,6 +28,12 @@ const pairStats = {
 };
 
 async function openStats(page, paired = false, options = {}) {
+  let settingsState = {
+    language: "ru",
+    telegram_enabled: true,
+    telegram_available: true,
+    ...(options.settings || {}),
+  };
   await page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
   await page.addInitScript(({ notification, startParam }) => {
     window.__verticalSwipeDisableCalls = 0;
@@ -65,7 +71,14 @@ async function openStats(page, paired = false, options = {}) {
     const json = path === "/api/me"
       ? { id: 1, label: "Denys", username: "denys", role: null }
       : path === "/api/settings"
-        ? { language: "ru", telegram_enabled: true, telegram_available: true }
+        ? (() => {
+          if (route.request().method() === "PATCH") {
+            const body = JSON.parse(route.request().postData() || "{}");
+            if (typeof body.telegram_notifications === "boolean") settingsState.telegram_enabled = body.telegram_notifications;
+            if (body.language) settingsState.language = body.language;
+          }
+          return settingsState;
+        })()
       : path === "/api/notifications"
         ? (options.notifications || { items: [], unread_count: 0, next_before_id: null })
       : path.startsWith("/api/notifications/")
@@ -213,36 +226,39 @@ test("notification inbox shows unread pair events and follows their deep link", 
   await expect(page.getByRole("heading", { name: /Вас зовёт/ })).toBeVisible();
 });
 
-test("settings switches language immediately and only enables real notification permission", async ({ page }) => {
-  await openStats(page, false, { notification: { permission: "default", requestResult: "granted" } });
+test("settings persists the single Telegram notification preference and language", async ({ page }) => {
+  await openStats(page, false);
   await page.getByRole("button", { name: "Настройки" }).click();
   await expect(page.getByRole("heading", { name: "Настройки" })).toBeVisible();
   const toggle = page.getByRole("switch", { name: "Уведомления" });
-  await expect(toggle).toHaveAttribute("aria-checked", "false");
-  await toggle.click();
   await expect(toggle).toHaveAttribute("aria-checked", "true");
-  await expect.poll(() => page.evaluate(() => ({ requests: window.__notificationRequests, enabled: localStorage.getItem("addict-film:notifications-enabled") }))).toEqual({ requests: 1, enabled: "true" });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  await expect(page.getByText("События пары от бота Addict Film · Выключены")).toBeVisible();
+  await expect(page.getByRole("switch")).toHaveCount(1);
+  await expect(page.getByText("Локальные напоминания на этом устройстве")).toHaveCount(0);
   await page.getByRole("button", { name: "English" }).click();
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
-  await expect(page.getByRole("switch", { name: "Notifications" })).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("switch", { name: "Notifications" })).toHaveAttribute("aria-checked", "false");
   await page.getByRole("button", { name: "Back" }).click();
   await expect(page.getByRole("heading", { name: "My movie profile" })).toBeVisible();
 });
 
-test("settings never fakes notification access when it is denied", async ({ page }) => {
-  await openStats(page, false, { notification: { permission: "denied", requestResult: "denied" } });
+test("settings disables the Telegram switch when the bot is unavailable", async ({ page }) => {
+  await openStats(page, false, { settings: { telegram_enabled: false, telegram_available: false } });
   await page.getByRole("button", { name: "Настройки" }).click();
   const toggle = page.getByRole("switch", { name: "Уведомления" });
   await expect(toggle).toBeDisabled();
-  await expect(page.getByText("Разрешения отключены в Telegram или браузере")).toBeVisible();
+  await expect(page.getByText("Бот сейчас недоступен")).toBeVisible();
   await expect(toggle).toHaveAttribute("aria-checked", "false");
 });
 
 test("settings uses the existing invite and paired management states", async ({ page }) => {
   let partnerState = { status: "none" };
+  let partnerReads = 0;
   await openStats(page, false, {
     partnerApi: {
-      current: () => partnerState,
+      current: () => { partnerReads += 1; return partnerState; },
       invite: () => {
         partnerState = { status: "invited", link: "https://t.me/addictfilmbot?startapp=inv_settings", code: "inv_settings" };
         return partnerState;
@@ -254,11 +270,15 @@ test("settings uses the existing invite and paired management states", async ({ 
   await expect(page.getByText("Приглашение ожидает принятия")).toBeVisible();
   await expect(page.getByText("inv_settings")).toBeVisible();
   partnerState = { status: "paired", partner: { name: "Kristina", username: "kristina" } };
-  await page.getByRole("button", { name: "Назад" }).click();
+  await page.locator(".sub-head .back").click();
   await page.getByRole("button", { name: "Настройки" }).click();
   await expect(page.getByText("Ваша пара")).toBeVisible();
+  const readsBeforeManage = partnerReads;
   await page.getByRole("button", { name: "Управление парой" }).click();
   await expect(page.getByRole("button", { name: "Разорвать пару" })).toBeVisible();
+  expect(partnerReads).toBe(readsBeforeManage);
+  await page.locator(".settings-pair-management-back").click();
+  await expect(page.getByRole("button", { name: "Управление парой" })).toBeVisible();
 });
 
 test("pair invite stays balanced and safe across compact mobile viewports", async ({ page }) => {

@@ -668,10 +668,16 @@ section{margin-top:30px;}
 .settings-language-options button.active{border-color:rgba(var(--accent-rgb),.52);background:rgba(var(--accent-rgb),.16);color:#fff;}
 .settings-primary-action,.settings-retry,.settings-chevron-button,.settings-text-action{flex:none;border:0;background:none;color:var(--accent-2);font:600 13px var(--font);cursor:pointer;}
 .settings-primary-action{min-height:34px;padding:0 11px;border-radius:10px;background:rgba(var(--accent-rgb),.16);}
-.settings-chevron-button{display:grid;place-items:center;width:28px;height:28px;padding:0;color:var(--ink-2);}
+.settings-chevron-button{display:grid;place-items:center;width:44px;height:44px;margin:-8px -8px -8px 0;padding:0;color:var(--ink-2);touch-action:manipulation;}
 .settings-chevron-button svg{width:18px;height:18px;}
-.settings-pair-actions{padding:0 15px 15px;}
 .settings-danger-action{width:100%;min-height:42px;border:1px solid rgba(242,92,103,.35);border-radius:12px;background:transparent;color:#f37e87;font:600 13px var(--font);cursor:pointer;}
+.settings-pair-management{padding:12px 15px 15px;}
+.settings-pair-management-head{display:flex;align-items:center;gap:9px;margin:0 0 14px;}
+.settings-pair-management-head>span{display:flex;flex:1;flex-direction:column;min-width:0;gap:2px;}
+.settings-pair-management-head b{font-size:15px;font-weight:620;}
+.settings-pair-management-head small{overflow:hidden;color:var(--ink-2);font-size:12px;text-overflow:ellipsis;white-space:nowrap;}
+.settings-pair-management-back{display:grid;place-items:center;flex:none;width:36px;height:36px;margin:0;padding:0;border:1px solid var(--hair);border-radius:10px;background:var(--s2);color:var(--ink);cursor:pointer;touch-action:manipulation;}
+.settings-pair-management-back svg{width:17px;height:17px;}
 .settings-invite{display:flex;flex-direction:column;gap:11px;padding:15px;}
 .settings-invite>b{font-size:15px;font-weight:620;}
 .settings-invite-code{padding:11px 12px;border:1px solid var(--hair);border-radius:11px;background:var(--s2);font-size:14px;font-variant-numeric:tabular-nums;letter-spacing:.04em;cursor:pointer;}
