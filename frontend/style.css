@@ -80,17 +80,28 @@ body{
 .search .filter svg{width:18px;height:18px;}
 
 /* ── chips ──────────────────────────────────── */
-.chips{display:flex;gap:8px;padding:18px 20px 4px;overflow-x:auto;scrollbar-width:none;}
+.chips{display:flex;gap:8px;padding:18px 20px 4px;overflow-x:auto;overscroll-behavior-x:contain;
+  scroll-snap-type:x proximity;scroll-padding-inline:20px;scrollbar-width:none;-webkit-overflow-scrolling:touch;}
 .chips::-webkit-scrollbar{display:none;}
-.chip{flex:none;display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;
-  font-size:13.5px;font-weight:550;background:var(--s2);color:#D7D9DE;border:1px solid var(--hair);cursor:pointer;
-  transition:transform .15s,background .16s,color .16s;}
+.chip{flex:none;display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 15px 0 12px;
+  border-radius:999px;border:1px solid var(--hair);background:var(--s2);color:#D7D9DE;cursor:pointer;
+  font:550 13.5px/1 var(--font);letter-spacing:-.01em;white-space:nowrap;scroll-snap-align:start;
+  transition:transform .15s,background .16s,color .16s,border-color .16s;}
 .chip:active{transform:scale(.95);}
-/* Активный чип: приглушённая фиолетовая заливка вместо яркой — ясное состояние
-   без визуального доминирования. */
-.chip.active{background:rgba(var(--accent-rgb),.16);color:var(--accent-2);border-color:rgba(var(--accent-rgb),.30);box-shadow:none;}
-.chip .e{display:grid;place-items:center;flex:none;}
-.chip .e svg{width:16px;height:16px;display:block;}
+/* Один и тот же вертикальный "оптический центр" у разных outline-иконок.
+   Их viewBox разный по заполненности, поэтому одного математического центра
+   недостаточно: огонь, кубок и сетка иначе выглядят на разных высотах. */
+.chip.active{background:rgba(var(--accent-rgb),.15);color:var(--accent-2);border-color:rgba(var(--accent-rgb),.38);box-shadow:inset 0 1px 0 rgba(255,255,255,.035);}
+.chip .e{display:grid;place-items:center;flex:0 0 18px;width:18px;height:18px;line-height:0;}
+.chip .e svg{display:block;width:17px;height:17px;overflow:visible;stroke:currentColor;}
+/* The flame path itself sits lower in its 24×24 viewBox than the other
+   icons, so it needs a stronger optical correction than the wrapper centre. */
+.chip .e[data-chip-icon="pop"]{transform:translateY(-1px);}.chip .e[data-chip-icon="top"]{transform:translateY(.15px);}.chip .e[data-chip-icon="gen"]{transform:translateY(-.1px);}.chip .e[data-chip-icon="coll"]{transform:translateY(.1px);}
+.chip .e[data-chip-icon="pop"] svg{width:16.5px;height:16.5px;}.chip .e[data-chip-icon="top"] svg{width:17.5px;height:17.5px;}.chip .e[data-chip-icon="gen"] svg{width:16.5px;height:16.5px;}
+.chip.active .e[data-chip-icon="pop"]{color:#FFAE57;filter:drop-shadow(0 1px 4px rgba(255,142,56,.26));}
+.chip-label{display:block;transform:translateY(-.15px);}
+.chip:focus-visible{outline:2px solid var(--accent-2);outline-offset:2px;}
+@media(max-width:370px){.chips{padding-left:16px;padding-right:16px;scroll-padding-inline:16px;}.chip{gap:7px;min-height:42px;padding-left:11px;padding-right:13px;font-size:13px;}}
 
 /* ── section + rail ─────────────────────────── */
 section{margin-top:30px;}

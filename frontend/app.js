@@ -56,7 +56,7 @@ const DICT = {
     tagline: "Кино, которое ты любишь",
     greeting: (n) => `Привет, ${n}`,
     search_ph: "Поиск фильмов, сериалов, актёров…",
-    chip_popular: "Популярное", chip_top: "Топ сообщества", chip_genres: "Жанры", chip_collections: "Подборки",
+    chip_popular: "Популярное", chip_top: "Топ сообщества", chip_genres: "Жанры", chip_collections: "Подборки", chip_nav: "Разделы каталога",
     see_all: "Смотреть все",
     reco_title: "Оценивай и получай рекомендации", reco_sub: "Персональные подборки на основе твоих оценок", reco_cta: "Начать",
     notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся важные события вашей пары", notif_mark_all: "Прочитать все", notif_load_more: "Показать ещё", notif_loading: "Загружаю уведомления…", notif_error: "Не удалось загрузить уведомления", notif_retry: "Повторить", notif_now: "только что", notif_min_ago: (n) => `${n} мин назад`, notif_hour_ago: (n) => `${n} ч назад`, notif_day_ago: (n) => `${n} дн назад`, notif_inapp: "В приложении", notif_telegram: "В Telegram", notif_telegram_hint: "События пары от бота Addict Film", notif_telegram_unavailable: "Бот сейчас недоступен", notif_browser: "В браузере", notif_browser_hint: "Локальные напоминания на этом устройстве",
@@ -132,7 +132,7 @@ const DICT = {
     tagline: "Movies you'll love",
     greeting: (n) => `Hi, ${n}`,
     search_ph: "Search movies, TV shows, actors…",
-    chip_popular: "Popular", chip_top: "Community Top", chip_genres: "Genres", chip_collections: "Collections",
+    chip_popular: "Popular", chip_top: "Community Top", chip_genres: "Genres", chip_collections: "Collections", chip_nav: "Catalog sections",
     see_all: "See all",
     reco_title: "Rate films, get recommendations", reco_sub: "Personal picks based on your ratings", reco_cta: "Start",
     notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "Important pair events will appear here", notif_mark_all: "Mark all read", notif_load_more: "Show more", notif_loading: "Loading notifications…", notif_error: "Couldn't load notifications", notif_retry: "Try again", notif_now: "just now", notif_min_ago: (n) => `${n}m ago`, notif_hour_ago: (n) => `${n}h ago`, notif_day_ago: (n) => `${n}d ago`, notif_inapp: "In app", notif_telegram: "In Telegram", notif_telegram_hint: "Pair events from the Addict Film bot", notif_telegram_unavailable: "The bot is unavailable right now", notif_browser: "In browser", notif_browser_hint: "Local reminders on this device",
@@ -519,11 +519,11 @@ async function showHome() {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
       </button>
     </div>
-    <div class="chips rise d2">
-      <span class="chip active" data-to="sec-pop"><span class="e">${CHIP_ICONS.pop}</span>${esc(t("chip_popular"))}</span>
-      <span class="chip" data-to="sec-top"><span class="e">${CHIP_ICONS.top}</span>${esc(t("chip_top"))}</span>
-      <span class="chip" data-to="sec-gen"><span class="e">${CHIP_ICONS.gen}</span>${esc(t("chip_genres"))}</span>
-      <span class="chip" data-to="sec-coll"><span class="e">${CHIP_ICONS.coll}</span>${esc(t("chip_collections"))}</span>
+    <div class="chips rise d2" aria-label="${esc(t("chip_nav"))}">
+      <button class="chip active" type="button" data-to="sec-pop"><span class="e" data-chip-icon="pop" aria-hidden="true">${CHIP_ICONS.pop}</span><span class="chip-label">${esc(t("chip_popular"))}</span></button>
+      <button class="chip" type="button" data-to="sec-top"><span class="e" data-chip-icon="top" aria-hidden="true">${CHIP_ICONS.top}</span><span class="chip-label">${esc(t("chip_top"))}</span></button>
+      <button class="chip" type="button" data-to="sec-gen"><span class="e" data-chip-icon="gen" aria-hidden="true">${CHIP_ICONS.gen}</span><span class="chip-label">${esc(t("chip_genres"))}</span></button>
+      <button class="chip" type="button" data-to="sec-coll"><span class="e" data-chip-icon="coll" aria-hidden="true">${CHIP_ICONS.coll}</span><span class="chip-label">${esc(t("chip_collections"))}</span></button>
     </div>
     <section class="rise d3" id="sec-pop"><div class="head"><h2>${esc(t("chip_popular"))}</h2>${seeAll("see-pop")}</div><div class="rail" id="rail-pop">${skeletonRail(5)}</div></section>
     <section class="rise d4" id="sec-top"><div class="head"><h2>${esc(t("chip_top"))}</h2>${seeAll("see-top")}</div><div class="rail" id="rail-top">${skeletonRail(5)}</div></section>

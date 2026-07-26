@@ -7,6 +7,7 @@ import database as db
 import kinopoisk
 import main
 import search
+from fastapi import HTTPException
 
 
 class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
@@ -110,6 +111,45 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["items"][0]["src"], "i")
         self.assertEqual(result["items"][0]["ref"], "tt0133093")
         self.assertIsNotNone(await db.get_film_id_by_source("i", "tt0133093"))
+
+    async def test_direct_add_throttles_only_a_catalog_miss(self):
+        old_allow, old_fetch = main.ratelimit.allow_user, main.search.fetch_details
+
+        def denied(_user_id):
+            return False
+
+        async def must_not_fetch(_src, _ref):
+            raise AssertionError("a throttled direct add must not contact providers")
+
+        main.ratelimit.allow_user = denied
+        main.search.fetch_details = must_not_fetch
+        try:
+            with self.assertRaises(HTTPException) as raised:
+                await main.add(main.AddBody(src="i", ref="tt0133093"), {"id": 42})
+        finally:
+            main.ratelimit.allow_user = old_allow
+            main.search.fetch_details = old_fetch
+        self.assertEqual(raised.exception.status_code, 429)
+
+    async def test_existing_catalog_row_is_enriched_without_overwriting_good_fields(self):
+        film_id = await db.get_or_create_film(
+            "tt0133093", "Матрица", actors="Киану Ривз", genres="Action", runtime="136 min",
+        )
+        same_id = await db.get_or_create_film(
+            "tt0133093", "The Matrix", title_original="The Matrix", year="1999",
+            genres="Action, Sci-Fi", directors="Лана Вачовски, Лилли Вачовски",
+            actors="Киану Ривз, Лоренс Фишберн, Кэрри-Энн Мосс", runtime="136 min",
+            plot="A hacker learns the truth.", kp_id="301",
+        )
+        stored = await db.get_film(film_id)
+        self.assertEqual(same_id, film_id)
+        self.assertEqual(stored["title"], "Матрица")
+        self.assertEqual(stored["year"], "1999")
+        self.assertEqual(stored["genres"], "Action, Sci-Fi")
+        self.assertEqual(stored["directors"], "Лана Вачовски, Лилли Вачовски")
+        self.assertIn("Лоренс Фишберн", stored["actors"])
+        self.assertIn("лоренс фишберн", stored["search_text"])
+        self.assertEqual((await db.browse_by_genre(42, "Sci-Fi"))[0]["id"], film_id)
 
     async def test_omdb_fallback_result_also_becomes_a_permanent_catalog_entry(self):
         record = {

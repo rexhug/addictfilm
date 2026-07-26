@@ -107,6 +107,41 @@ async function openStats(page, paired = false, options = {}) {
   await expect(page.getByRole("heading", { name: "Мой кинопрофиль" })).toBeVisible();
 }
 
+test("home category chips stay optically aligned in the mobile scroll rail", async ({ page }) => {
+  await openStats(page);
+  await page.getByRole("button", { name: "Главная" }).click();
+  const chips = page.locator(".chips .chip");
+  await expect(chips).toHaveCount(4);
+
+  const layout = await page.locator(".chips").evaluate((rail) => {
+    const chips = [...rail.querySelectorAll(".chip")];
+    return {
+      scrollable: rail.scrollWidth > rail.clientWidth,
+      chips: chips.map((chip) => {
+        const chipBox = chip.getBoundingClientRect();
+        const iconBox = chip.querySelector(".e").getBoundingClientRect();
+        const labelBox = chip.querySelector(".chip-label").getBoundingClientRect();
+        return {
+          height: chipBox.height,
+          // The icon and label may be moved by tiny optical offsets, but
+          // must still read as one baseline-aligned control.
+          centerDelta: Math.abs(
+            (iconBox.top + iconBox.height / 2) - (labelBox.top + labelBox.height / 2),
+          ),
+          iconWidth: iconBox.width,
+          labelGap: labelBox.left - iconBox.right,
+        };
+      }),
+    };
+  });
+  expect(layout.scrollable).toBeTruthy();
+  expect(new Set(layout.chips.map(({ height }) => Math.round(height))).size).toBe(1);
+  expect(layout.chips.every(({ height }) => height >= 42)).toBeTruthy();
+  expect(layout.chips.every(({ centerDelta }) => centerDelta <= 1.5)).toBeTruthy();
+  expect(layout.chips.every(({ iconWidth }) => Math.abs(iconWidth - 18) < 0.1)).toBeTruthy();
+  expect(layout.chips.every(({ labelGap }) => labelGap >= 7 && labelGap <= 9)).toBeTruthy();
+});
+
 test("personal profile fits a 390px phone without a hidden final card", async ({ page }) => {
   await openStats(page);
   await expect(page.getByText("Как ты оцениваешь фильмы")).toBeVisible();

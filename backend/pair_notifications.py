@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import json
 import logging
 import os
 
@@ -20,6 +22,7 @@ from config import BOT_TOKEN
 logger = logging.getLogger(__name__)
 BOT_USERNAME = os.getenv("BOT_USERNAME", "addictfilmbot").lstrip("@")
 _tasks: set[asyncio.Task] = set()
+_DELIVERY_STALE_AFTER_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -141,14 +144,45 @@ async def _send_telegram(*, recipient_id: int, text: dict) -> None:
                 raise RuntimeError(f"Telegram {response.status}: {(await response.text())[:300]}")
 
 
+def _retryable_telegram_error(error: str | None) -> bool:
+    """Only retry outages/rate limits; a blocked bot must stay quiet."""
+    message = str(error or "")
+    return (not message.startswith("Telegram ")
+            or message.startswith("Telegram 429")
+            or message.startswith("Telegram 5"))
+
+
+def _stale_delivery_cutoff() -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=_DELIVERY_STALE_AFTER_SECONDS)).isoformat()
+
+
+def _delivery_text(row: dict) -> dict | None:
+    """Restore a retry payload from the immutable inbox notification."""
+    try:
+        payload = json.loads(row.get("payload") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        logger.warning("Notification delivery %s has invalid payload", row.get("notification_id"))
+        return None
+    title = str(payload.get("title") or "").strip()
+    body = str(payload.get("body") or "").strip()
+    if not title or not body:
+        logger.warning("Notification delivery %s has no message copy", row.get("notification_id"))
+        return None
+    return {
+        "title": title,
+        "body": body,
+        "action_label": str(payload.get("action_label") or "Open"),
+        "deep_link": str(row.get("deep_link") or ""),
+    }
+
+
 async def _deliver(notification_id: int, recipient_id: int, text: dict) -> None:
     for attempt in range(2):
         try:
             await _send_telegram(recipient_id=recipient_id, text=text)
         except Exception as exc:  # Delivery must never roll back a pair action.
             message = str(exc)
-            retryable = not message.startswith("Telegram ") or message.startswith("Telegram 429") or message.startswith("Telegram 5")
-            if retryable and attempt == 0:
+            if _retryable_telegram_error(message) and attempt == 0:
                 await asyncio.sleep(1)
                 continue
             logger.info("Telegram notification %s for %s failed: %s", notification_id, recipient_id, exc)
@@ -233,7 +267,11 @@ async def dispatch_pair_event(*, event: dict) -> None:
                 payload=payload, deep_link=text["deep_link"],
                 idempotency_key=f"{event['id']}:{recipient_id}:telegram-source")
         if await db.create_notification_delivery(notification_id, channel="telegram", idempotency_key=f"{event['id']}:{recipient_id}:telegram"):
-            _schedule(_deliver(notification_id, recipient_id, text))
+            # Reserve before spawning: an hourly recovery sweep must never
+            # enqueue a second send while this request is already in flight.
+            if await db.claim_notification_delivery(notification_id, channel="telegram",
+                                                    stale_before=_stale_delivery_cutoff()):
+                _schedule(_deliver(notification_id, recipient_id, text))
         # A queued delivery is durable in notification_deliveries.  The outbox
         # event itself can now be acknowledged even if Telegram is temporarily
         # unavailable; _deliver records the retryable failure without rolling
@@ -247,6 +285,38 @@ async def replay_pending_pair_events(limit: int = 100) -> int:
     for event in events:
         await dispatch_pair_event(event=event)
     return len(events)
+
+
+async def retry_notification_deliveries(limit: int = 100) -> int:
+    """Resume Telegram sends after a transient outage or process restart.
+
+    Pair events themselves can be acknowledged immediately because their inbox
+    records and delivery rows are durable.  This worker is the matching second
+    half: it retries recoverable delivery rows, while permanent 4xx failures
+    such as a blocked bot remain terminal and never create spam.
+    """
+    stale_before = _stale_delivery_cutoff()
+    rows = await db.list_recoverable_notification_deliveries(stale_before=stale_before, limit=limit)
+    scheduled = 0
+    for row in rows:
+        if row["status"] == "failed" and not _retryable_telegram_error(row.get("last_error")):
+            continue
+        text = _delivery_text(row)
+        if text is None:
+            await db.finish_notification_delivery(
+                int(row["notification_id"]), channel="telegram", sent=False,
+                # This is a malformed local record, not a temporary outage.
+                # Mark it as a terminal Telegram 4xx-style failure so the
+                # recurring recovery worker cannot retry it forever.
+                error="Telegram 400: invalid durable notification payload",
+            )
+            continue
+        if await db.claim_notification_delivery(
+            int(row["notification_id"]), channel="telegram", stale_before=stale_before,
+        ):
+            _schedule(_deliver(int(row["notification_id"]), int(row["recipient_id"]), text))
+            scheduled += 1
+    return scheduled
 
 
 async def drain() -> None:

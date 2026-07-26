@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -177,6 +178,43 @@ class PairNotificationStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row[0], "failed")
         self.assertEqual(row[1], 1)
         self.assertIn("403", row[2])
+        # A blocked bot is terminal: the hourly recovery worker must not keep
+        # retrying a recipient who explicitly blocked the bot.
+        self.assertEqual(await pair_notifications.retry_notification_deliveries(), 0)
+
+    async def test_transient_telegram_failure_is_recovered_from_durable_delivery(self):
+        notification_id, _ = await db.create_notification(
+            event_type="pair.invite.declined", recipient_id=1, actor_id=2, entity_id="event",
+            payload={"title": "x", "body": "y", "action_label": "Open"}, deep_link="stats",
+            idempotency_key="transient:inapp", event_id="evt_transient")
+        self.assertTrue(await db.create_notification_delivery(
+            notification_id, channel="telegram", idempotency_key="transient:telegram"))
+
+        async def offline(**_kwargs):
+            raise RuntimeError("temporary network failure")
+
+        with patch.object(pair_notifications, "_send_telegram", side_effect=offline), \
+                patch("pair_notifications.asyncio.sleep", return_value=None):
+            await pair_notifications._deliver(notification_id, 1, {
+                "title": "x", "body": "y", "action_label": "Open", "deep_link": "stats",
+            })
+
+        delivered = asyncio.Event()
+
+        async def online(**_kwargs):
+            delivered.set()
+
+        with patch.object(pair_notifications, "_send_telegram", side_effect=online):
+            self.assertEqual(await pair_notifications.retry_notification_deliveries(), 1)
+            await asyncio.wait_for(delivered.wait(), timeout=0.5)
+            await asyncio.gather(*list(pair_notifications._tasks))
+
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            row = await (await conn.execute(
+                "SELECT status, attempts FROM notification_deliveries WHERE notification_id = ? AND channel = 'telegram'",
+                (notification_id,))).fetchone()
+        self.assertEqual(row[0], "sent")
+        self.assertEqual(row[1], 2)
 
     def _context(self, event, recipient_id):
         users = {

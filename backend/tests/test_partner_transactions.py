@@ -167,3 +167,55 @@ class PartnerTransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await db.accept_invite(third_partner_token, 3))["ok"])
         new_pair = await db.get_pair(1)
         self.assertEqual((await db.pair_period_stats(1, 3, new_pair["since"]))["watched"], 0)
+
+    async def test_pair_stats_include_a_preexisting_wish_watched_after_pairing(self):
+        """A shared watch date matters more than when the wish was first saved."""
+        await self._add_users(1, 2)
+        film_id = await db.get_or_create_film(
+            "tt9000010", "Saved before pairing", actors="Pair Actor", directors="Pair Director",
+        )
+        await db.add_to_list(1, film_id, "want_to_watch")
+        await db.add_to_list(2, film_id, "want_to_watch")
+
+        token = await db.create_invite(1)
+        self.assertTrue((await db.accept_invite(token, 2))["ok"])
+        await db.set_rating(1, film_id, 8)
+        await db.set_rating(2, film_id, 9)
+
+        pair = await db.get_pair(1)
+        stats = await db.pair_period_stats(1, 2, pair["since"])
+        self.assertEqual(stats["watched"], 1)
+        self.assertEqual(stats["rated_together"], 1)
+        people = await db.get_pair_person_watched_films(1, 2, pair["since"], "actor", "Pair Actor")
+        self.assertEqual([item["id"] for item in people], [film_id])
+
+    async def test_pair_person_drilldown_keeps_history_after_reunion(self):
+        await self._add_users(1, 2)
+        token = await db.create_invite(1)
+        self.assertTrue((await db.accept_invite(token, 2))["ok"])
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute("UPDATE pair_sessions SET started_at = ? WHERE ended_at IS NULL", ("2020-01-01T00:00:00+00:00",))
+            await conn.commit()
+        first = await db.get_or_create_film("tt9000011", "First session", actors="History Actor")
+        await db.set_status(1, first, "watched")
+        await db.set_status(2, first, "watched")
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute("UPDATE user_films SET added_at = ? WHERE film_id = ?", ("2021-01-01T00:00:00+00:00", first))
+            await conn.commit()
+        await db.unpair(1)
+
+        token = await db.create_invite(1)
+        self.assertTrue((await db.accept_invite(token, 2))["ok"])
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute("UPDATE pair_sessions SET started_at = ? WHERE ended_at IS NULL", ("2030-01-01T00:00:00+00:00",))
+            await conn.commit()
+        second = await db.get_or_create_film("tt9000012", "Second session", actors="History Actor")
+        await db.set_status(1, second, "watched")
+        await db.set_status(2, second, "watched")
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute("UPDATE user_films SET added_at = ? WHERE film_id = ?", ("2031-01-01T00:00:00+00:00", second))
+            await conn.commit()
+
+        pair = await db.get_pair(1)
+        items = await db.get_pair_person_watched_films(1, 2, pair["since"], "actor", "History Actor")
+        self.assertEqual({item["id"] for item in items}, {first, second})

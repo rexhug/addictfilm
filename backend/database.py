@@ -769,6 +769,21 @@ def _catalog_search_text(title: str | None, title_original: str | None,
     return " ".join(" ".join(str(value or "").split()).casefold() for value in values).strip()
 
 
+def _prefer_catalog_value(current: str | None, incoming: str | None) -> str | None:
+    """Fill a genuinely missing catalog field without overwriting good data."""
+    return current if str(current or "").strip() else incoming
+
+
+def _prefer_richer_catalog_list(current: str | None, incoming: str | None,
+                                splitter) -> str | None:
+    """Keep the richer credit/genre list while avoiding provider churn."""
+    current_items = splitter(current)
+    incoming_items = splitter(incoming)
+    if len(incoming_items) > len(current_items):
+        return incoming
+    return current if current_items else incoming
+
+
 async def _backfill_catalog_search_text() -> None:
     """Give legacy catalog entries the same local-search behaviour as new ones."""
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
@@ -916,21 +931,45 @@ async def get_or_create_film(
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "SELECT id FROM films WHERE imdb_id = ? OR (kp_id IS NOT NULL AND kp_id = ?) LIMIT 1",
+            "SELECT id, title, title_original, year, genres, directors, actors, runtime, "
+            "imdb_rating, kp_rating, imdb_votes, plot, kp_id FROM films "
+            "WHERE imdb_id = ? OR (kp_id IS NOT NULL AND kp_id = ?) LIMIT 1",
             (imdb_id, kp_id))
         row = await cur.fetchone()
         if row:
+            merged_title = _prefer_catalog_value(row["title"], title)
+            merged_original = _prefer_catalog_value(row["title_original"], title_original)
+            merged_year = _prefer_catalog_value(row["year"], year)
+            merged_genres = _prefer_richer_catalog_list(row["genres"], genres, _split_genres)
+            merged_directors = _prefer_richer_catalog_list(row["directors"], directors, _split_people)
+            merged_actors = _prefer_richer_catalog_list(row["actors"], actors, _split_people)
+            merged_runtime = _prefer_catalog_value(row["runtime"], runtime)
+            merged_imdb_rating = _prefer_catalog_value(row["imdb_rating"], imdb_rating)
+            merged_kp_rating = _prefer_catalog_value(row["kp_rating"], kp_rating)
+            merged_imdb_votes = _prefer_catalog_value(row["imdb_votes"], imdb_votes)
+            merged_plot = _prefer_catalog_value(row["plot"], plot)
+            merged_kp_id = _prefer_catalog_value(row["kp_id"], kp_id)
+            merged_search_text = _catalog_search_text(
+                merged_title, merged_original, merged_actors, merged_directors, imdb_id, merged_kp_id,
+            )
             await db.execute(
-                "UPDATE films SET kp_id = COALESCE(kp_id, ?), "
-                "search_text = CASE WHEN search_text IS NULL OR search_text = '' THEN ? ELSE search_text END, "
+                "UPDATE films SET title = ?, title_original = ?, year = ?, genres = ?, directors = ?, actors = ?, "
+                "runtime = ?, imdb_rating = ?, kp_rating = ?, imdb_votes = ?, plot = ?, kp_id = ?, search_text = ?, "
                 "poster_url = COALESCE(NULLIF(poster_url, ''), ?), "
                 "backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
                 "age_rating = COALESCE(age_rating, ?), "
                 "actors_photos = COALESCE(NULLIF(actors_photos, ''), ?), "
                 "directors_photos = COALESCE(NULLIF(directors_photos, ''), ?) "
                 "WHERE id = ?",
-                (kp_id, search_text, poster_url, backdrop_url, age_rating, actors_photos, directors_photos, row["id"]))
+                (merged_title, merged_original, merged_year, merged_genres, merged_directors, merged_actors,
+                 merged_runtime, merged_imdb_rating, merged_kp_rating, merged_imdb_votes, merged_plot,
+                 merged_kp_id, merged_search_text, poster_url, backdrop_url, age_rating, actors_photos,
+                 directors_photos, row["id"]))
+            if merged_genres != row["genres"]:
+                await _set_film_genres(db, row["id"], merged_genres)
             await db.commit()
+            if merged_genres != row["genres"]:
+                _invalidate_genres_cache()
             return row["id"]
         # RETURNING id вместо lastrowid — портируемо (SQLite 3.35+ и Postgres одинаково).
         cur = await db.execute(
@@ -1481,17 +1520,25 @@ async def get_person_watched_films(user_id: int, role: str, name: str, limit: in
 
 async def get_pair_person_watched_films(user_id: int, partner_id: int, since: str,
                                          role: str, name: str, limit: int = 200) -> list[dict]:
-    """Shared watched films in the current pair that contain a selected person."""
+    """Shared watched films for every saved session of this exact pair.
+
+    The profile aggregate deliberately survives a reunion of the same two
+    people.  The drill-down must use the identical membership rule; otherwise
+    a card can say that a director appears in four shared films while tapping
+    it opens only the films from the latest session.
+    """
     column = _person_column(role)
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
+        sessions = await _pair_sessions_for(db, user_id, partner_id, since)
+        period_sql, period_params = _pair_session_predicate(sessions)
         cur = await db.execute(
             "SELECT f.*, a.rating AS my_rating, b.rating AS partner_rating, "
             "a.watched_at AS watched_at FROM user_films a JOIN user_films b ON a.film_id = b.film_id "
             "JOIN films f ON f.id = a.film_id "
             "WHERE a.user_id = ? AND b.user_id = ? AND a.status = 'watched' AND b.status = 'watched' "
-            "AND a.added_at >= ? AND b.added_at >= ? ORDER BY a.watched_at DESC LIMIT ?",
-            (user_id, partner_id, since, since, max(1, min(limit, 200))),
+            f"AND ({period_sql}) ORDER BY a.watched_at DESC LIMIT ?",
+            (user_id, partner_id, *period_params, max(1, min(limit, 200))),
         )
         return _films_for_person(await cur.fetchall(), column, name)
 
@@ -1946,6 +1993,46 @@ async def finish_notification_delivery(notification_id: int, *, channel: str, se
             ("sent" if sent else "failed", (error or "")[:500] if error else None,
              _now(), int(sent), _now(), notification_id, channel))
         await db.commit()
+
+
+async def claim_notification_delivery(notification_id: int, *, channel: str,
+                                      stale_before: str | None = None) -> bool:
+    """Atomically reserve a durable delivery for one worker.
+
+    ``sending`` prevents a periodic recovery sweep from scheduling a duplicate
+    while the original request is still in flight.  A sufficiently old
+    ``sending`` row is also claimable: that is the only safe recovery path for
+    a process that died between reserving a delivery and receiving Telegram's
+    response.
+    """
+    stale_clause = " OR (status = 'sending' AND updated_at < ?)" if stale_before else ""
+    params: list = [_now(), notification_id, channel]
+    if stale_before:
+        params.append(stale_before)
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE notification_deliveries SET status = 'sending', updated_at = ? "
+            "WHERE notification_id = ? AND channel = ? "
+            "AND (status IN ('pending', 'failed')" + stale_clause + ") RETURNING notification_id",
+            params)
+        claimed = await cur.fetchone()
+        await db.commit()
+        return claimed is not None
+
+
+async def list_recoverable_notification_deliveries(*, stale_before: str, limit: int = 100) -> list[dict]:
+    """Read deliveries that still need a Telegram attempt after restart/outage."""
+    limit = max(1, min(int(limit), 500))
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(
+            "SELECT d.notification_id, d.status, d.last_error, n.recipient_id, n.payload, n.deep_link "
+            "FROM notification_deliveries d JOIN notifications n ON n.id = d.notification_id "
+            "WHERE d.channel = 'telegram' AND "
+            "(d.status IN ('pending', 'failed') OR (d.status = 'sending' AND d.updated_at < ?)) "
+            "ORDER BY d.updated_at ASC LIMIT ?",
+            (stale_before, limit))).fetchall()
+        return [dict(row) for row in rows]
 
 
 async def list_notifications(user_id: int, *, limit: int = 20, before_id: int | None = None) -> dict:
@@ -2453,6 +2540,51 @@ async def sync_film_to_partner(user_id: int, film_id: int) -> None:
         await db.commit()
 
 
+async def _pair_sessions_for(db, user_id: int, partner_id: int, since: str) -> list[tuple[str, str | None]]:
+    """Return all saved intervals for one exact pair, with a safe legacy fallback."""
+    rows = await (await db.execute(
+        "SELECT started_at, ended_at FROM pair_sessions WHERE pair_key = ? ORDER BY started_at ASC",
+        (_pair_key(user_id, partner_id),))).fetchall()
+    sessions = [(row["started_at"], row["ended_at"]) for row in rows]
+    return sessions or [(since, None)]
+
+
+def _pair_session_predicate(sessions: list[tuple[str, str | None]]) -> tuple[str, list]:
+    """Build portable membership SQL for pair history.
+
+    A pair film is one where each person had meaningful activity in the same
+    saved relationship interval.  ``added_at`` covers a new shared wish; the
+    watch/rating dates additionally cover a film that was already in "Want"
+    before the pair and was actually watched together later.  This is written
+    without ``? IS NULL`` so PostgreSQL can infer every parameter type.
+    """
+    clauses: list[str] = []
+    params: list = []
+    for started_at, ended_at in sessions:
+        if ended_at is None:
+            a_activity = "(a.added_at >= ? OR a.watched_at >= ? OR a.rated_at >= ?)"
+            b_activity = "(b.added_at >= ? OR b.watched_at >= ? OR b.rated_at >= ?)"
+            clauses.append(f"({a_activity} AND {b_activity})")
+            params.extend((started_at, started_at, started_at, started_at, started_at, started_at))
+            continue
+        a_activity = (
+            "((a.added_at >= ? AND a.added_at <= ?) OR "
+            "(a.watched_at >= ? AND a.watched_at <= ?) OR "
+            "(a.rated_at >= ? AND a.rated_at <= ?))"
+        )
+        b_activity = (
+            "((b.added_at >= ? AND b.added_at <= ?) OR "
+            "(b.watched_at >= ? AND b.watched_at <= ?) OR "
+            "(b.rated_at >= ? AND b.rated_at <= ?))"
+        )
+        clauses.append(f"({a_activity} AND {b_activity})")
+        params.extend((
+            started_at, ended_at, started_at, ended_at, started_at, ended_at,
+            started_at, ended_at, started_at, ended_at, started_at, ended_at,
+        ))
+    return " OR ".join(clauses), params
+
+
 async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
     """Statistics for all historical sessions of one exact pair.
 
@@ -2463,29 +2595,8 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
     year_now = datetime.now(timezone.utc).year
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
-        session_rows = await (await db.execute(
-            "SELECT started_at, ended_at FROM pair_sessions WHERE pair_key = ? ORDER BY started_at ASC",
-            (_pair_key(user_id, partner_id),))).fetchall()
-        sessions = [(row["started_at"], row["ended_at"]) for row in session_rows]
-        # Keeps direct DB callers and a partially upgraded local database safe.
-        if not sessions:
-            sessions = [(since, None)]
-
-        period_conditions: list[str] = []
-        params: list = [user_id, partner_id]
-        for started_at, ended_at in sessions:
-            # ``? IS NULL`` is acceptable to SQLite, but PostgreSQL cannot
-            # infer the type of that NULL parameter through asyncpg.  Build
-            # each valid interval explicitly instead.  A film is shared only
-            # when both users added it during the same pair session.
-            if ended_at is None:
-                period_conditions.append("(a.added_at >= ? AND b.added_at >= ?)")
-                params.extend((started_at, started_at))
-            else:
-                period_conditions.append(
-                    "(a.added_at >= ? AND b.added_at >= ? "
-                    "AND a.added_at <= ? AND b.added_at <= ?)")
-                params.extend((started_at, started_at, ended_at, ended_at))
+        sessions = await _pair_sessions_for(db, user_id, partner_id, since)
+        period_sql, period_params = _pair_session_predicate(sessions)
         rows = await (await db.execute(
             f"""
             SELECT f.id AS film_id, f.genres, f.actors, f.actors_photos, f.directors, f.directors_photos, f.runtime, f.title, f.poster_url,
@@ -2494,8 +2605,8 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
             FROM user_films a
             JOIN user_films b ON a.film_id = b.film_id
             JOIN films f ON f.id = a.film_id
-            WHERE a.user_id = ? AND b.user_id = ? AND ({' OR '.join(period_conditions)})
-            """, params)).fetchall()
+            WHERE a.user_id = ? AND b.user_id = ? AND ({period_sql})
+            """, (user_id, partner_id, *period_params))).fetchall()
 
     both_watched = [r for r in rows if r["sa"] == "watched" and r["sb"] == "watched"]
     watched = len(both_watched)

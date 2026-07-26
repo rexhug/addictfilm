@@ -114,6 +114,7 @@ async def _periodic_pair_expiry() -> None:
         await asyncio.sleep(3600)
         try:
             await pair_notifications.replay_pending_pair_events()
+            await pair_notifications.retry_notification_deliveries()
             await _emit_expired_pair_invites()
         except Exception:  # noqa: BLE001
             logger.warning("Pair invite expiry sweep failed", exc_info=True)
@@ -125,6 +126,9 @@ async def startup() -> None:
     # Events and their audience are committed together with the pair state.
     # Replaying unacknowledged rows makes an interrupted HTTP request safe.
     await pair_notifications.replay_pending_pair_events()
+    # Events may already be acknowledged while their Telegram delivery is
+    # waiting on a temporary outage.  Recover those durable rows separately.
+    await pair_notifications.retry_notification_deliveries()
     # Expiry is durable and idempotent; only newly transitioned rows are
     # returned.  Old links never remain actionable after a restart/deploy.
     await _emit_expired_pair_invites()
@@ -492,7 +496,7 @@ async def api_search(q: str, user: dict = Depends(current_user)):
     return {"items": res["items"], "limited": res["limited"]}
 
 
-async def _resolve_film_id(src: str, ref: str) -> int:
+async def _resolve_film_id(src: str, ref: str, *, user_id: int | None = None) -> int:
     """Дедуп до внешних API + fetch_details + get_or_create_film — общий путь для
     /api/add и /api/admin/collections/{id}/films. Для src="i" ref == imdb_id, и если
     фильм уже в общем каталоге — линкуем сразу, не тратя лимит kinopoisk/OMDb."""
@@ -504,6 +508,11 @@ async def _resolve_film_id(src: str, ref: str) -> int:
 
     film_id = await db.get_film_id_by_source(src, ref)
     if film_id is None:
+        # A direct /api/add can otherwise be used as an unthrottled movie-ID
+        # scanner.  Existing catalogue films stay instant and free; only the
+        # first external lookup consumes the same per-user allowance as search.
+        if user_id is not None and not ratelimit.allow_user(user_id):
+            raise HTTPException(status_code=429, detail="Слишком много запросов, подождите минуту")
         details = await search.fetch_details(src, ref)
         if not details or not details.get("imdb_id"):
             raise HTTPException(status_code=502, detail="Не удалось получить данные")
@@ -523,7 +532,7 @@ async def add(body: AddBody, user: dict = Depends(current_user)):
         raise HTTPException(status_code=422, detail="Неизвестный источник")
     if body.status not in ("want_to_watch", "watched"):
         raise HTTPException(status_code=422, detail="Неизвестный статус")
-    film_id = await _resolve_film_id(body.src, body.ref)
+    film_id = await _resolve_film_id(body.src, body.ref, user_id=user["id"])
     watched_at = datetime.now(timezone.utc).isoformat() if body.status == "watched" else None
     added = await db.add_to_list(user["id"], film_id, body.status, watched_at)
     await db.sync_film_to_partner(user["id"], film_id)  # пара: партнёру фильм в «Хочу»
