@@ -150,9 +150,16 @@ section{margin-top:30px;}
 .grail > .genre{flex:0 0 172px;scroll-snap-align:start;cursor:pointer;transition:transform .2s cubic-bezier(.2,.8,.2,1);}
 .genre:active{transform:scale(.955);}
 .gart{position:relative;width:100%;aspect-ratio:16/10;border-radius:18px;overflow:hidden;
-  box-shadow:var(--shadow);border:1px solid var(--hair);display:flex;align-items:flex-end;}
+  box-shadow:var(--shadow);border:1px solid var(--hair);display:flex;align-items:flex-end;
+  /* Детерминированный тинт жанра (--gtint из GENRE_VISUALS) поверх тёмной кинематографической базы. */
+  background:radial-gradient(130% 140% at 88% -12%,var(--gtint,rgba(111,136,170,.2)),transparent 56%),linear-gradient(160deg,#14171d,#08090c);}
 .gart::before{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 30%,rgba(0,0,0,.55));}
 .gart::after{content:"";position:absolute;inset:0;background-image:var(--grain);background-size:140px 140px;opacity:.05;mix-blend-mode:overlay;}
+/* Крупный полупрозрачный watermark иконки жанра — карточка не пустая, но сдержанная. */
+.gart-wm{position:absolute;right:-16px;bottom:-18px;z-index:0;color:#fff;opacity:.08;pointer-events:none;}
+.gart-wm svg{display:block;width:112px;height:112px;}
+.gart-ic{position:absolute;top:12px;left:13px;z-index:2;color:rgba(255,255,255,.78);}
+.gart-ic svg{display:block;width:20px;height:20px;}
 .gart .lbl{position:relative;z-index:2;padding:13px 14px;}
 .gart .lbl b{display:block;font-size:16px;font-weight:600;letter-spacing:-0.02em;}
 .gart .lbl span{display:block;margin-top:2px;font-size:12px;color:rgba(255,255,255,.62);font-variant-numeric:tabular-nums;}

@@ -248,7 +248,6 @@ async function api(path, opts = {}) {
 
 // ── Утилиты ───────────────────────────────────────────────────────────────────
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
-function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; }
 function cap(s) { s = String(s || ""); return s ? s[0].toUpperCase() + s.slice(1) : s; }
 // В Telegram-шапке уже есть «Addict Film» — на самом экране не дублируем название,
 // а здороваемся по имени (реальные данные), иначе мягкий фолбэк на бренд.
@@ -449,14 +448,6 @@ function ratingOf(m) {
   if (m.community && m.community.count) return m.community.avg;
   return null;
 }
-const GENRE_GRAD = [
-  "radial-gradient(90% 90% at 80% 12%,rgba(214,164,74,.32),transparent 60%),linear-gradient(150deg,#231a0d,#0a0805)",
-  "radial-gradient(90% 90% at 80% 12%,rgba(120,140,168,.28),transparent 60%),linear-gradient(150deg,#14171c,#070809)",
-  "radial-gradient(90% 90% at 80% 12%,rgba(84,132,178,.32),transparent 60%),linear-gradient(150deg,#0d1620,#05080c)",
-  "radial-gradient(90% 90% at 80% 12%,rgba(150,96,190,.28),transparent 60%),linear-gradient(150deg,#171122,#08060c)",
-  "radial-gradient(90% 90% at 80% 12%,rgba(196,80,64,.30),transparent 60%),linear-gradient(150deg,#1e1210,#0a0605)",
-  "radial-gradient(90% 90% at 80% 12%,rgba(80,150,110,.26),transparent 60%),linear-gradient(150deg,#0e1712,#050807)",
-];
 function skeletonRail(n = 5) { return Array.from({ length: n }, () => `<div class="poster"><div class="art sk"></div><div class="sk sk-line"></div></div>`).join(""); }
 function skeletonGrid(n = 6) { return `<div class="grid">${Array.from({ length: n }, () => `<div class="poster"><div class="art sk"></div><div class="sk sk-line"></div></div>`).join("")}</div>`; }
 // Эмодзи в пустых состояниях → нейтральные outline-иконки из общего реестра.
@@ -884,10 +875,19 @@ function genrePill(g) {
   return pill;
 }
 function genreCard(g) {
+  // Карточка жанра: детерминированный кинематографический фон из тинта жанра
+  // (GENRE_VISUALS — тот же реестр, что и статистика), маленькая outline-иконка
+  // сверху и крупный полупрозрачный watermark той же иконки. Никаких случайных
+  // градиентов и постеров — сдержанно, но не пусто.
   const card = document.createElement("div");
   card.className = "genre";
-  const grad = GENRE_GRAD[hash(g.name) % GENRE_GRAD.length];
-  card.innerHTML = `<div class="gart" style="background:${grad}"><span class="lbl"><b>${esc(cap(g.name))}</b><span>${g.count} ${esc(t("count_films", g.count))}</span></span></div>`;
+  const visual = genreVisual(g.name);
+  const glyph = (w) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${visual.icon}</svg>`;
+  card.innerHTML = `<div class="gart" style="--gtint:${visual.glow}">
+    <span class="gart-wm" aria-hidden="true">${glyph(1.1)}</span>
+    <span class="gart-ic" aria-hidden="true">${glyph(1.7)}</span>
+    <span class="lbl"><b>${esc(cap(g.name))}</b><span>${g.count} ${esc(t("count_films", g.count))}</span></span>
+  </div>`;
   card.onclick = () => showGenre(g.name);
   return card;
 }
@@ -1925,9 +1925,9 @@ const GENRE_VISUALS = {
   mystery: { color: "#14b8a6", glow: "rgba(20,184,166,.22)", icon: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/>' },
   romance: { color: "#ec4899", glow: "rgba(236,72,153,.22)", icon: '<path d="M20 8.5C20 5.5 16.7 4 14.5 6.2L12 8.7 9.5 6.2C7.3 4 4 5.5 4 8.5c0 4.7 8 9.5 8 9.5s8-4.8 8-9.5Z"/>' },
   comedy: { color: "#fbbf24", glow: "rgba(251,191,36,.22)", icon: '<circle cx="12" cy="12" r="8"/><path d="M8 10h.01M16 10h.01M8.5 14c2 2 5 2 7 0"/>' },
-  scifi: { color: "#38bdf8", glow: "rgba(56,189,248,.22)", icon: '<path d="M6 14c0-5 2.4-9 6-9s6 4 6 9c0 3-2.7 5-6 5s-6-2-6-5Z"/><path d="M8.5 12h.01M15.5 12h.01M9 16c1.8 1 4.2 1 6 0"/>' },
+  scifi: { color: "#38bdf8", glow: "rgba(56,189,248,.22)", icon: '<circle cx="12" cy="12" r="5.5"/><path d="M4.5 9.5C2.6 10.6 1.7 11.7 2 12.6c.5 1.5 4.9 1.6 10 .2 5-1.4 8.7-3.7 8.2-5.2-.3-.9-1.8-1.2-4-1"/>' },
   fantasy: { color: "#4ade80", glow: "rgba(74,222,128,.22)", icon: '<path d="M5 17c1-6 3-9 7-9 3 0 4.5 1.6 5.5 4.5M7 11 5 7l4 1 1-4 2 4M10 17c2-1 4.5-1 7 .5M17 6l1.5-2M19 9l2-1"/>' },
-  adventure: { color: "#fb923c", glow: "rgba(251,146,60,.22)", icon: '<path d="m5 19 14-14M8 16l-3 3 3-1M16 8l3-3-1 3M7 6l4 4M14 13l4 4"/>' },
+  adventure: { color: "#fb923c", glow: "rgba(251,146,60,.22)", icon: '<circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2.2 5-4.8 2 2.2-5z"/>' },
   horror: { color: "#fb5a62", glow: "rgba(251,90,98,.22)", icon: '<path d="M7 19v-3l-2-2 2-2V8l2-3h6l2 3v4l2 2-2 2v3l-2 2H9z"/><path d="M9 11h.01M15 11h.01M10 15h4"/>' },
   crime: { color: "#22c7be", glow: "rgba(34,199,190,.22)", icon: '<path d="M6 17v-3a6 6 0 0 1 12 0v3"/><rect x="4" y="17" width="16" height="3.5" rx="1"/><path d="M12 3.5V6M5.8 5.8 7.4 7.4M18.2 5.8 16.6 7.4"/>' },
   courtroom: { color: "#8b5cf6", glow: "rgba(139,92,246,.22)", icon: '<path d="m7 7 6 6M9 5l-4 4 5 5 4-4zM15 13l4 4M4 20h16"/>' },

@@ -60,9 +60,22 @@ _GENRE_CANON: dict[str, str] = {
     "adventure": "приключения", "biography": "биография", "history": "история",
     "romance": "мелодрама", "melodrama": "мелодрама", "sport": "спорт", "war": "военный",
     "documentary": "документальный", "family": "семейный", "animation": "мультфильм",
-    "cartoon": "мультфильм", "anime": "аниме", "western": "вестерн", "musical": "мюзикл",
-    "music": "музыка", "film-noir": "фильм-нуар", "short": "короткометражка",
+    "cartoon": "мультфильм", "anime": "мультфильм", "аниме": "мультфильм",
+    "детский": "семейный", "kids": "семейный", "children": "семейный",
+    "western": "приключения", "вестерн": "приключения", "musical": "мюзикл",
+    "music": "мюзикл", "музыка": "мюзикл", "film-noir": "криминал", "фильм-нуар": "криминал",
+    "short": "короткометражка",
 }
+
+# Продуктовая витрина жанров: только осмысленные top-level жанры каталога.
+# Форматы («короткометражка»), ТВ-мусор («реальное ТВ») и редкие хвосты
+# («спорт», «мюзикл») в витрину не попадают — фильмы при этом остаются
+# доступными через поиск и карточки. Сортировка по count делается в list_genres.
+_GENRE_SHOWCASE = frozenset((
+    "драма", "боевик", "комедия", "триллер", "приключения", "фантастика",
+    "криминал", "детектив", "фэнтези", "ужасы", "мультфильм", "мелодрама",
+    "семейный", "биография", "военный", "история", "документальный",
+))
 
 
 def _canon_genre(genre: str | None) -> str:
@@ -2167,12 +2180,14 @@ async def list_genres() -> list[dict]:
             "SELECT genre AS name, COUNT(*) AS count FROM film_genres GROUP BY genre"
         )
         rows = await cur.fetchall()
-    # Мёржим языковые дубли одного жанра под русский канон и суммируем счётчики.
+    # Мёржим языковые дубли одного жанра под русский канон, суммируем счётчики
+    # и показываем только кураторскую витрину (см. _GENRE_SHOWCASE).
     merged: dict[str, int] = {}
     for row in rows:
         merged[_canon_genre(row["name"])] = merged.get(_canon_genre(row["name"]), 0) + row["count"]
     items = [{"name": name, "count": count} for name, count in
-             sorted(merged.items(), key=lambda kv: (-kv[1], kv[0]))]
+             sorted(merged.items(), key=lambda kv: (-kv[1], kv[0]))
+             if name in _GENRE_SHOWCASE]
     _genres_cache = (now + _GENRES_CACHE_TTL_SECONDS, items)
     return [dict(item) for item in items]
 
