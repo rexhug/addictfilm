@@ -874,20 +874,46 @@ function genrePill(g) {
   pill.onclick = () => showGenre(g.name);
   return pill;
 }
+// ── Фоновые изображения жанров (подготовка) ──────────────────────────────────
+// Централизованный маппинг под кураторский пакет WebP: файлы лягут в
+// frontend/assets/genres/<key>.webp. Пока пакета нет — GENRE_BACKDROPS_READY
+// остаётся false, и карточка живёт на tint-фолбэке (фон .gart). Когда пакет
+// готов: положить файлы и переключить флаг — других правок не требуется.
+const GENRE_BACKDROPS_READY = false;
+const GENRE_BACKDROPS = {
+  drama: "assets/genres/drama.webp",
+  action: "assets/genres/action.webp",
+  comedy: "assets/genres/comedy.webp",
+  thriller: "assets/genres/thriller.webp",
+  adventure: "assets/genres/adventure.webp",
+  scifi: "assets/genres/scifi.webp",
+  crime: "assets/genres/crime.webp",
+  mystery: "assets/genres/mystery.webp",
+  fantasy: "assets/genres/fantasy.webp",
+  horror: "assets/genres/horror.webp",
+  animation: "assets/genres/animation.webp",
+  romance: "assets/genres/romance.webp",
+};
+function genreBackdropHTML(name) {
+  if (!GENRE_BACKDROPS_READY) return "";
+  const src = GENRE_BACKDROPS[genreKey(name)];
+  return src ? `<img class="gart-bg" src="${src}" alt="" loading="lazy" decoding="async">` : "";
+}
+
 function genreCard(g) {
-  // Карточка жанра: детерминированный кинематографический фон из тинта жанра
-  // (GENRE_VISUALS — тот же реестр, что и статистика), маленькая outline-иконка
-  // сверху и крупный полупрозрачный watermark той же иконки. Никаких случайных
-  // градиентов и постеров — сдержанно, но не пусто.
+  // Карточка жанра: детерминированный тинт жанра (GENRE_VISUALS — тот же реестр,
+  // что и статистика) поверх тёмной базы + маленькая outline-иконка. Фоновое
+  // изображение подключится через GENRE_BACKDROPS, тинт остаётся фолбэком.
   const card = document.createElement("div");
   card.className = "genre";
   const visual = genreVisual(g.name);
-  const glyph = (w) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${visual.icon}</svg>`;
   card.innerHTML = `<div class="gart" style="--gtint:${visual.glow}">
-    <span class="gart-wm" aria-hidden="true">${glyph(1.1)}</span>
-    <span class="gart-ic" aria-hidden="true">${glyph(1.7)}</span>
+    ${genreBackdropHTML(g.name)}
+    <span class="gart-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${visual.icon}</svg></span>
     <span class="lbl"><b>${esc(cap(g.name))}</b><span>${g.count} ${esc(t("count_films", g.count))}</span></span>
   </div>`;
+  // Битый/отсутствующий файл — тихо убираем картинку, остаётся tint-фолбэк.
+  card.querySelector(".gart-bg")?.addEventListener("error", (e) => e.target.remove());
   card.onclick = () => showGenre(g.name);
   return card;
 }
