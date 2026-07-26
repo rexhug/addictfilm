@@ -191,7 +191,7 @@ test("adaptive picker completes a mobile-safe eight-question flow without old to
   await expect(page.getByRole("heading", { name: "Что посмотреть?" })).toBeVisible();
   await expect(page.getByText("Мой топ")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Случайный хороший фильм" }).click();
+  await page.getByRole("button", { name: "Случайный фильм" }).click();
   await expect(page.getByText("Качественный вариант из фильмов, которых вы ещё не смотрели.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Уже смотрел" })).toBeVisible();
   await page.getByRole("button", { name: "Другой вариант" }).click();
