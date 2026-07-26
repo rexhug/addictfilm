@@ -1393,12 +1393,20 @@ async def index():
                                  "Content-Security-Policy": _HTML_CSP})
 
 class VersionedStaticFiles(StaticFiles):
-    """Довго кешує лише versioned JS/CSS; HTML завжди віддає endpoint вище."""
+    """Cache static assets without allowing JS/CSS version skew.
+
+    JavaScript is immutable once its explicit version changes. CSS is small but
+    defines the structure of freshly rendered screens, so it is revalidated on
+    each Mini App launch. That prevents a Telegram WebView from combining a
+    new app.js with an old immutable stylesheet after a deploy.
+    """
 
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
-        if path in {"app.js", "style.css"} and response.status_code == 200:
+        if path == "app.js" and response.status_code == 200:
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif path == "style.css" and response.status_code == 200:
+            response.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
         return response
 
 

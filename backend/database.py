@@ -2265,21 +2265,22 @@ async def claim_notification_delivery(notification_id: int, *, channel: str,
                                       stale_before: str | None = None) -> bool:
     """Atomically reserve a durable delivery for one worker.
 
-    ``sending`` prevents a periodic recovery sweep from scheduling a duplicate
-    while the original request is still in flight.  A sufficiently old
-    ``sending`` row is also claimable: that is the only safe recovery path for
-    a process that died between reserving a delivery and receiving Telegram's
-    response.
+    Telegram's sendMessage API does not provide an idempotency key. A process
+    can therefore die after Telegram accepted a message but before we record
+    the response. Such a ``sending`` row is deliberately *not* claimed again:
+    duplicate bot messages are worse than missing a secondary push because the
+    canonical in-app notification remains available.
+
+    ``stale_before`` stays in the signature for compatibility with existing
+    callers. Stale in-flight rows are archived separately by
+    :func:`abandon_stale_notification_deliveries`.
     """
-    stale_clause = " OR (status = 'sending' AND updated_at < ?)" if stale_before else ""
     params: list = [_now(), notification_id, channel]
-    if stale_before:
-        params.append(stale_before)
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute(
             "UPDATE notification_deliveries SET status = 'sending', updated_at = ? "
             "WHERE notification_id = ? AND channel = ? "
-            "AND (status IN ('pending', 'failed')" + stale_clause + ") RETURNING notification_id",
+            "AND status IN ('pending', 'failed') RETURNING notification_id",
             params)
         claimed = await cur.fetchone()
         await db.commit()
@@ -2287,18 +2288,41 @@ async def claim_notification_delivery(notification_id: int, *, channel: str,
 
 
 async def list_recoverable_notification_deliveries(*, stale_before: str, limit: int = 100) -> list[dict]:
-    """Read deliveries that still need a Telegram attempt after restart/outage."""
+    """Read only deliveries known not to have reached Telegram.
+
+    Rows left in ``sending`` have an unknown outcome and are intentionally
+    excluded. Replaying them after a deploy is how duplicate bot messages were
+    created in earlier releases.
+    """
     limit = max(1, min(int(limit), 500))
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT d.notification_id, d.status, d.last_error, n.recipient_id, n.payload, n.deep_link "
             "FROM notification_deliveries d JOIN notifications n ON n.id = d.notification_id "
-            "WHERE d.channel = 'telegram' AND "
-            "(d.status IN ('pending', 'failed') OR (d.status = 'sending' AND d.updated_at < ?)) "
+            "WHERE d.channel = 'telegram' AND d.status IN ('pending', 'failed') "
             "ORDER BY d.updated_at ASC LIMIT ?",
-            (stale_before, limit))).fetchall()
+            (limit,))).fetchall()
         return [dict(row) for row in rows]
+
+
+async def abandon_stale_notification_deliveries(*, stale_before: str) -> int:
+    """Archive uncertain in-flight Telegram sends without replaying them.
+
+    The state only occurs if the worker was interrupted between calling
+    Telegram and persisting the result. Keeping it visible for diagnostics but
+    not retrying it gives the user an at-most-once bot notification guarantee.
+    """
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE notification_deliveries SET status='abandoned', "
+            "last_error=COALESCE(last_error, ?), updated_at=? "
+            "WHERE channel='telegram' AND status='sending' AND updated_at < ?",
+            ("Delivery outcome was unknown after interruption; not retried to avoid a duplicate Telegram message.",
+             _now(), stale_before),
+        )
+        await db.commit()
+        return int(cur.rowcount)
 
 
 async def list_notifications(user_id: int, *, limit: int = 20, before_id: int | None = None) -> dict:

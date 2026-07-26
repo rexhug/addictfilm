@@ -212,7 +212,9 @@ class PairNotificationStoreTests(unittest.IsolatedAsyncioTestCase):
             notification_id, channel="telegram", idempotency_key="transient:telegram"))
 
         async def offline(**_kwargs):
-            raise RuntimeError("temporary network failure")
+            # A Telegram 5xx confirms that the provider did not accept the
+            # message, unlike an ambiguous local connection interruption.
+            raise RuntimeError("Telegram 500: temporary provider failure")
 
         with patch.object(pair_notifications, "_send_telegram", side_effect=offline), \
                 patch("pair_notifications.asyncio.sleep", return_value=None):
@@ -236,6 +238,35 @@ class PairNotificationStoreTests(unittest.IsolatedAsyncioTestCase):
                 (notification_id,))).fetchone()
         self.assertEqual(row[0], "sent")
         self.assertEqual(row[1], 2)
+
+    async def test_stale_inflight_delivery_is_archived_not_replayed_after_a_deploy(self):
+        notification_id, _ = await db.create_notification(
+            event_type="pair.invite.declined", recipient_id=1, actor_id=2, entity_id="event",
+            payload={"title": "x", "body": "y", "action_label": "Open"}, deep_link="stats",
+            idempotency_key="stale:inapp", event_id="evt_stale",
+        )
+        self.assertTrue(await db.create_notification_delivery(
+            notification_id, channel="telegram", idempotency_key="stale:telegram",
+        ))
+        self.assertTrue(await db.claim_notification_delivery(notification_id, channel="telegram"))
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute(
+                "UPDATE notification_deliveries SET updated_at=? WHERE notification_id=? AND channel=?",
+                ("2000-01-01T00:00:00+00:00", notification_id, "telegram"),
+            )
+            await conn.commit()
+
+        with patch.object(pair_notifications, "_send_telegram") as send:
+            self.assertEqual(await pair_notifications.retry_notification_deliveries(), 0)
+        send.assert_not_called()
+
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            row = await (await conn.execute(
+                "SELECT status, last_error FROM notification_deliveries WHERE notification_id=? AND channel=?",
+                (notification_id, "telegram"),
+            )).fetchone()
+        self.assertEqual(row[0], "abandoned")
+        self.assertIn("not retried", row[1])
 
     def _context(self, event, recipient_id):
         users = {

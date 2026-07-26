@@ -145,11 +145,9 @@ async def _send_telegram(*, recipient_id: int, text: dict) -> None:
 
 
 def _retryable_telegram_error(error: str | None) -> bool:
-    """Only retry outages/rate limits; a blocked bot must stay quiet."""
+    """Retry only errors Telegram explicitly confirms were not delivered."""
     message = str(error or "")
-    return (not message.startswith("Telegram ")
-            or message.startswith("Telegram 429")
-            or message.startswith("Telegram 5"))
+    return message.startswith("Telegram 429") or message.startswith("Telegram 5")
 
 
 def _stale_delivery_cutoff() -> str:
@@ -288,14 +286,16 @@ async def replay_pending_pair_events(limit: int = 100) -> int:
 
 
 async def retry_notification_deliveries(limit: int = 100) -> int:
-    """Resume Telegram sends after a transient outage or process restart.
+    """Resume only Telegram sends known not to have been delivered.
 
     Pair events themselves can be acknowledged immediately because their inbox
     records and delivery rows are durable.  This worker is the matching second
-    half: it retries recoverable delivery rows, while permanent 4xx failures
-    such as a blocked bot remain terminal and never create spam.
+    half: it retries explicit Telegram 429/5xx failures. In-flight sends with
+    an unknown outcome are archived, not replayed, so a deploy cannot spam a
+    person with old bot messages.
     """
     stale_before = _stale_delivery_cutoff()
+    await db.abandon_stale_notification_deliveries(stale_before=stale_before)
     rows = await db.list_recoverable_notification_deliveries(stale_before=stale_before, limit=limit)
     scheduled = 0
     for row in rows:
