@@ -656,15 +656,15 @@ async function showHome() {
     </div>
     <div class="chips rise d2" aria-label="${esc(t("chip_nav"))}">
       <button class="chip active" type="button" data-to="sec-pop"><span class="e" data-chip-icon="pop" aria-hidden="true">${CHIP_ICONS.pop}</span><span class="chip-label">${esc(t("chip_popular"))}</span></button>
-      <button class="chip" type="button" data-to="sec-top"><span class="e" data-chip-icon="top" aria-hidden="true">${CHIP_ICONS.top}</span><span class="chip-label">${esc(t("chip_top"))}</span></button>
-      <button class="chip" type="button" data-to="sec-gen"><span class="e" data-chip-icon="gen" aria-hidden="true">${CHIP_ICONS.gen}</span><span class="chip-label">${esc(t("chip_genres"))}</span></button>
       <button class="chip" type="button" data-to="sec-coll"><span class="e" data-chip-icon="coll" aria-hidden="true">${CHIP_ICONS.coll}</span><span class="chip-label">${esc(t("chip_collections"))}</span></button>
+      <button class="chip" type="button" data-to="sec-gen"><span class="e" data-chip-icon="gen" aria-hidden="true">${CHIP_ICONS.gen}</span><span class="chip-label">${esc(t("chip_genres"))}</span></button>
+      <button class="chip" type="button" data-to="sec-top"><span class="e" data-chip-icon="top" aria-hidden="true">${CHIP_ICONS.top}</span><span class="chip-label">${esc(t("chip_top"))}</span></button>
     </div>
     <section class="rise d3" id="sec-pop"><div class="head"><h2>${esc(t("chip_popular"))}</h2>${seeAll("see-pop")}</div><div class="rail" id="rail-pop">${skeletonRail(5)}</div></section>
-    <section class="rise d4" id="sec-top"><div class="head"><h2>${esc(t("chip_top"))}</h2>${seeAll("see-top")}</div><div class="rail" id="rail-top">${skeletonRail(5)}</div></section>
+    <section class="rise d4" id="sec-coll"><div class="head"><h2>${esc(t("chip_collections"))}</h2>${canEditCollections() ? `<button class="icon-add" id="coll-add-home" aria-label="+"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>` : ""}</div><div class="rail" id="rail-coll">${skeletonRail(5)}</div></section>
     <section class="rise d5" id="sec-gen"><div class="head"><h2>${esc(t("chip_genres"))}</h2>${seeAll("see-gen")}</div><div class="gchips" id="gen-chips"></div></section>
     ${recoCardHTML()}
-    <section class="rise d5" id="sec-coll"><div class="head"><h2>${esc(t("chip_collections"))}</h2>${canEditCollections() ? `<button class="icon-add" id="coll-add-home" aria-label="+"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>` : ""}</div><div class="rail" id="rail-coll">${skeletonRail(5)}</div></section>`;
+    <section class="rise d5" id="sec-top"><div class="head"><h2>${esc(t("chip_top"))}</h2>${seeAll("see-top")}</div><div class="rail" id="rail-top">${skeletonRail(5)}</div></section>`;
 
   document.getElementById("lang-btn").onclick = () => setLang(lang === "ru" ? "en" : "ru");
   document.getElementById("bell-btn").onclick = () => showNotifications();
