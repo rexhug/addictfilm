@@ -875,11 +875,10 @@ function genrePill(g) {
   return pill;
 }
 // ── Фоновые изображения жанров (подготовка) ──────────────────────────────────
-// Централизованный маппинг под кураторский пакет WebP: файлы лягут в
-// frontend/assets/genres/<key>.webp. Пока пакета нет — GENRE_BACKDROPS_READY
-// остаётся false, и карточка живёт на tint-фолбэке (фон .gart). Когда пакет
-// готов: положить файлы и переключить флаг — других правок не требуется.
-const GENRE_BACKDROPS_READY = false;
+// Централизованный маппинг кураторского пакета WebP (frontend/assets/genres/,
+// 1200×675, тёмные кинематографические кадры с уже вшитым нижним градиентом).
+// Битый/отсутствующий файл тихо падает на tint-фолбэк (фон .gart).
+const GENRE_BACKDROPS_READY = true;
 const GENRE_BACKDROPS = {
   drama: "assets/genres/drama.webp",
   action: "assets/genres/action.webp",

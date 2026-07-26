@@ -158,8 +158,10 @@ section{margin-top:30px;}
 /* Фоновое изображение жанра (пакет WebP, см. GENRE_BACKDROPS): приглушено и
    затемнено, лежит под виньеткой ::before — текст читаем всегда. Пока файла
    нет, слой отсутствует и работает tint-фолбэк из фона .gart. */
+/* В кадры пакета уже вшито затемнение + нижний градиент, поэтому CSS-фильтр
+   мягкий — иначе двойное затемнение делает карточки почти чёрными. */
 .gart-bg{position:absolute;inset:0;z-index:0;width:100%;height:100%;object-fit:cover;
-  filter:brightness(.55) saturate(.8);}
+  filter:brightness(.82) saturate(.88);}
 .gart-ic{position:absolute;top:12px;left:13px;z-index:2;color:rgba(255,255,255,.78);}
 .gart-ic svg{display:block;width:20px;height:20px;}
 .gart .lbl{position:relative;z-index:2;padding:13px 14px;}
