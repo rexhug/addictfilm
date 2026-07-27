@@ -383,10 +383,59 @@ def apply_mood_layer(ranked: list[dict], answers: dict, preferences_count: int) 
         combined = mood.combine_scores(base_score=base_normalized, mood_score=adjusted,
                                        profile_confidence=confidence)
         rescored.append({**movie, "_mood": round(adjusted, 4), "_mood_raw": round(raw, 4),
+                         "_mood_features": features,
                          "_mood_confidence": features.confidence,
                          "_base_score": movie["_score"],
                          "_score": round(combined * _MAX_BASE_SCORE, 3)})
     return sorted(rescored, key=lambda m: (-m["_score"], str(m.get("title") or ""), m["id"]))
+
+
+def mood_eligible(ranked: list[dict], intent, floors: dict, role: str,
+                  *, fallback_level: int = 0) -> list[dict]:
+    """Кто ВООБЩЕ уместен для этого запроса. Высокий базовый счёт здесь не
+    помогает: сначала уместность, потом уже качество и вкусы."""
+    threshold = mood.resolve_mood_threshold(role, intent, fallback_level=fallback_level)
+    primary_floor = mood.PRIMARY_INTENT_FLOORS.get(role, 0.65) + \
+        mood.FALLBACK_THRESHOLD_ADJUSTMENTS.get(fallback_level, 0.0)
+    eligible = []
+    for movie in ranked:
+        features = movie.get("_mood_features")
+        if features is None:
+            continue
+        if movie.get("_mood", 0.0) < threshold:
+            continue
+        # Уместность не отменяет качества: иначе выдача сползает в нишевое кино
+        # только потому, что сильные фильмы реже совпадают с узким запросом.
+        quality_floor = max(mood.MINIMUM_QUALITY_SAFETY_FLOOR,
+                            mood.MOOD_QUALITY_FLOORS.get(role, 6.5)
+                            + mood.FALLBACK_THRESHOLD_ADJUSTMENTS.get(fallback_level, 0.0) * 8)
+        if movie.get("_quality", 0.0) < quality_floor:
+            continue
+        if mood.primary_intent_match(intent, features) < primary_floor:
+            continue
+        # Явные требования («чёрный юмор» → юмор обязан быть) не ослабляются
+        # никогда: это то, что человек сказал прямым текстом.
+        if not mood.passes_dimension_floors(features, floors):
+            continue
+        contradictions = mood.find_critical_contradictions(intent, features)
+        if contradictions and role != "unexpected":
+            continue
+        if len(contradictions) > 1:
+            continue      # «неожиданный» терпит одно расхождение, но не два
+        eligible.append(movie)
+    return eligible
+
+
+def select_mood_role(ranked: list[dict], intent, floors: dict, role: str,
+                     selected: list[dict], key: str) -> tuple[dict | None, int]:
+    """Подбираем роль, постепенно ослабляя ТОЛЬКО второстепенное. Требования по
+    явным ответам и грубые противоречия не ослабляются на любом уровне."""
+    for level in sorted(mood.FALLBACK_THRESHOLD_ADJUSTMENTS):
+        pool = mood_eligible(ranked, intent, floors, role, fallback_level=level)
+        pick = _select_distinct(pool, selected, key)
+        if pick is not None:
+            return pick, level
+    return None, len(mood.FALLBACK_THRESHOLD_ADJUSTMENTS) - 1
 
 
 async def quiz_results(user_id: int, answers: dict[str, str], language: str, partner_id: int | None = None) -> list[dict]:
@@ -397,11 +446,27 @@ async def quiz_results(user_id: int, answers: dict[str, str], language: str, par
     if MOOD_LAYER_ENABLED:
         preferences = await db.get_recommendation_preferences(user_id)
         ranked = apply_mood_layer(ranked, answers, int(preferences.get("count", 0) or 0))
-    best = _select_distinct(ranked, [], "_score")
-    reliable_ranked = [{**movie, "_reliable": movie["_score"] + movie["_quality"] * 2.2 - movie["_novelty"]} for movie in ranked]
-    reliable = _select_distinct(reliable_ranked, [best] if best else [], "_reliable")
-    unexpected_ranked = [{**movie, "_unexpected": movie["_score"] * 0.72 + movie["_novelty"] * 5.2} for movie in ranked]
-    unexpected = _select_distinct(unexpected_ranked, [item for item in (best, reliable) if item], "_unexpected")
+    if MOOD_LAYER_ENABLED and ranked and "_mood" in ranked[0]:
+        # Двухэтапно: настроение решает, кто уместен; базовый движок — порядок.
+        intent = mood.build_mood_intent(answers)
+        floors = mood.collect_dimension_floors(answers)
+        # У «лучшего совпадения» настроение весит больше базового счёта.
+        best_ranked = [{**m, "_best": 0.58 * m["_mood"] + 0.42 * (m["_score"] / _MAX_BASE_SCORE)} for m in ranked]
+        best, _ = select_mood_role(best_ranked, intent, floors, "best", [], "_best")
+        # У «надёжного» — наоборот, но только среди уместных по настроению.
+        reliable_ranked = [{**m, "_reliable": 0.38 * m["_mood"] + 0.62 * (m["_score"] / _MAX_BASE_SCORE)} for m in ranked]
+        reliable, _ = select_mood_role(reliable_ranked, intent, floors, "reliable",
+                                       [best] if best else [], "_reliable")
+        unexpected_ranked = [{**m, "_unexpected": 0.50 * m["_mood"] + 0.28 * (m["_novelty"] / 5.0)
+                              + 0.22 * (m["_score"] / _MAX_BASE_SCORE)} for m in ranked]
+        unexpected, _ = select_mood_role(unexpected_ranked, intent, floors, "unexpected",
+                                         [i for i in (best, reliable) if i], "_unexpected")
+    else:
+        best = _select_distinct(ranked, [], "_score")
+        reliable_ranked = [{**movie, "_reliable": movie["_score"] + movie["_quality"] * 2.2 - movie["_novelty"]} for movie in ranked]
+        reliable = _select_distinct(reliable_ranked, [best] if best else [], "_reliable")
+        unexpected_ranked = [{**movie, "_unexpected": movie["_score"] * 0.72 + movie["_novelty"] * 5.2} for movie in ranked]
+        unexpected = _select_distinct(unexpected_ranked, [item for item in (best, reliable) if item], "_unexpected")
     labelled = (("best", best), ("reliable", reliable), ("unexpected", unexpected))
     results = [public_movie(movie, role=role, explanation=_explanation(answers, movie, language)) for role, movie in labelled if movie]
     for movie in (best, reliable, unexpected):

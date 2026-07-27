@@ -398,3 +398,136 @@ def build_mood_intent(answers: dict) -> MoodIntent:
     intent = MoodIntent(targets=targets, importance=importance, hard_constraints=hard)
     intent.validate()
     return intent
+
+
+# ── Двухэтапный отбор: сначала уместность, потом ранжирование ────────────────
+# Корень прежней проблемы: сильный базовый счёт (популярность + качество) мог
+# перекрыть плохое совпадение с запросом. Блокбастер с humor=0.43 выигрывал
+# запрос «чёрный юмор», потому что агрегат настроения (0.71) прятал провал в
+# главном измерении. Теперь настроение решает, КТО вообще уместен, и лишь потом
+# базовый движок расставляет уместных по качеству и вкусам.
+MOOD_ROLE_THRESHOLDS: dict[str, float] = {
+    "best": 0.72,
+    "reliable": 0.62,
+    "unexpected": 0.68,
+}
+PRIMARY_INTENT_FLOORS: dict[str, float] = {
+    "best": 0.72,
+    "reliable": 0.62,
+    "unexpected": 0.67,
+}
+MINIMUM_MOOD_SAFETY_FLOOR = 0.55
+# Уместность по настроению — не повод рекомендовать слабое кино. Пороги взяты
+# по реальному распределению каталога (медиана 7.18, p25 6.83): без них отбор
+# вытаскивал нишевые фильмы с качеством около 5, потому что «подходящих по
+# настроению» среди сильных оказывалось меньше.
+MOOD_QUALITY_FLOORS: dict[str, float] = {
+    "best": 6.6,
+    "reliable": 6.8,      # «надёжный» обязан быть крепким
+    "unexpected": 6.2,    # «неожиданный» — мягче, но не мусор
+}
+MINIMUM_QUALITY_SAFETY_FLOOR = 5.5
+FALLBACK_THRESHOLD_ADJUSTMENTS = {0: 0.0, 1: -0.03, 2: -0.03, 3: -0.07, 4: -0.10}
+
+# Явные ответы с однозначным смыслом получают прямые требования к измерению.
+# Только там, где ответ действительно этого требует: у «сбалансированно» или
+# «неважно» никаких полов быть не должно.
+DIMENSION_FLOORS: dict[tuple[str, str], dict[str, float]] = {
+    ("h1", "dark"):        {"humor_min": 0.55, "darkness_min": 0.45},
+    ("h1", "situational"): {"humor_min": 0.55},
+    ("h1", "absurd"):      {"humor_min": 0.55},
+    ("h1", "sarcastic"):   {"humor_min": 0.50},
+    ("h1", "warm"):        {"humor_min": 0.45, "darkness_max": 0.55},
+    ("q1", "humor"):       {"humor_min": 0.50},
+    ("u2", "high"):        {"complexity_min": 0.70},
+    ("u1", "idea"):        {"complexity_min": 0.62},
+    ("u3", "puzzle"):      {"complexity_min": 0.65},
+    ("t1", "horror"):      {"tension_min": 0.72},
+    ("t1", "psychological"): {"tension_min": 0.60, "complexity_min": 0.55},
+    ("r3", "comfort"):     {"tension_max": 0.50, "darkness_max": 0.50},
+    ("r1", "warm"):        {"darkness_max": 0.55},
+    ("e2", "tragic"):      {"emotionality_min": 0.60},
+    ("u1", "reality"):     {"realism_max": 0.55},
+    ("u3", "dream"):       {"realism_max": 0.60},
+}
+
+
+def collect_dimension_floors(answers: dict) -> dict[str, float]:
+    floors: dict[str, float] = {}
+    for question_id, answer in (answers or {}).items():
+        values = answer if isinstance(answer, list) else [answer]
+        for answer_id in values:
+            for key, value in DIMENSION_FLOORS.get((str(question_id), str(answer_id)), {}).items():
+                # Из нескольких требований берём самое строгое.
+                if key.endswith("_min"):
+                    floors[key] = max(floors.get(key, 0.0), value)
+                else:
+                    floors[key] = min(floors.get(key, 1.0), value)
+    return floors
+
+
+def passes_dimension_floors(features: "MovieMoodFeatures", floors: dict[str, float]) -> bool:
+    for key, limit in floors.items():
+        dimension, _, bound = key.rpartition("_")
+        value = features.get(dimension)
+        if bound == "min" and value < limit:
+            return False
+        if bound == "max" and value > limit:
+            return False
+    return True
+
+
+def calculate_intent_specificity(intent: MoodIntent) -> float:
+    """Насколько конкретен запрос: у «максимальное напряжение» строгость выше,
+    чем у «сбалансированно, неважно»."""
+    meaningful = [value for value in intent.importance.values() if value > 0]
+    if not meaningful:
+        return 0.0
+    average = sum(meaningful) / len(meaningful)
+    coverage = min(len(meaningful) / 5.0, 1.0)
+    return clamp01(0.65 * average + 0.35 * coverage)
+
+
+def resolve_mood_threshold(role: str, intent: MoodIntent, *, fallback_level: int = 0) -> float:
+    base = MOOD_ROLE_THRESHOLDS.get(role, 0.68)
+    adjustment = (calculate_intent_specificity(intent) - 0.5) * 0.08
+    relaxed = FALLBACK_THRESHOLD_ADJUSTMENTS.get(fallback_level, 0.0)
+    return max(MINIMUM_MOOD_SAFETY_FLOOR, min(0.82, base + adjustment + relaxed))
+
+
+def primary_intent_dimensions(intent: MoodIntent, *, limit: int = 3) -> list[str]:
+    return [dim for dim, _ in sorted(intent.importance.items(), key=lambda kv: -kv[1])[:limit]]
+
+
+def primary_intent_match(intent: MoodIntent, features: "MovieMoodFeatures") -> float:
+    """Отдельная проверка ГЛАВНЫХ измерений: агрегат может спрятать провал в
+    том единственном, ради чего человек и пришёл."""
+    dimensions = primary_intent_dimensions(intent)
+    if not dimensions:
+        return 0.5
+    total = 0.0
+    weighted = 0.0
+    for dimension in dimensions:
+        importance = float(intent.importance.get(dimension, 0.0))
+        if importance <= 0:
+            continue
+        similarity = 1.0 - abs(float(intent.targets[dimension]) - features.get(dimension))
+        weighted += similarity * importance
+        total += importance
+    return clamp01(weighted / total) if total > 0 else 0.5
+
+
+def find_critical_contradictions(intent: MoodIntent, features: "MovieMoodFeatures",
+                                 *, importance_floor: float = 0.75,
+                                 distance_floor: float = 0.55) -> list[tuple[str, float]]:
+    """Грубое расхождение в важном измерении: «максимум напряжения» не должен
+    возвращать спокойную семейную комедию, даже если среднее приемлемо."""
+    found = []
+    for dimension, target in intent.targets.items():
+        importance = float(intent.importance.get(dimension, 0.0))
+        if importance < importance_floor:
+            continue
+        distance = abs(float(target) - features.get(dimension))
+        if distance >= distance_floor:
+            found.append((dimension, round(distance, 3)))
+    return found
