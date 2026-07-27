@@ -56,12 +56,14 @@ async function openStats(page, paired = false, options = {}) {
     ["c4", "Ты будешь смотреть один?", "solo", "Один"],
   ];
   let recommendationStep = 0;
+  const engineMeta = options.engineMeta || null;
   const recommendationPayload = () => {
     const item = recommendationQuestions[recommendationStep];
     return item
       ? { id: "quiz_test", version: "v1", state: "active", progress: recommendationStep, total: 8,
-        pair_available: paired, question: { id: item[0], text: item[1], options: [{ id: item[2], label: item[3] }] } }
-      : { id: "quiz_test", version: "v1", state: "complete", progress: 8, total: 8, pair_available: paired, question: null };
+        pair_available: paired, question: { id: item[0], text: item[1], options: [{ id: item[2], label: item[3] }] },
+        ...(engineMeta || {}) }
+      : { id: "quiz_test", version: "v1", state: "complete", progress: 8, total: 8, pair_available: paired, question: null, ...(engineMeta || {}) };
   };
   await page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
   await page.addInitScript(({ notification, startParam }) => {
@@ -115,7 +117,7 @@ async function openStats(page, paired = false, options = {}) {
       : path.endsWith("/restart") && path.startsWith("/api/recommendations/quiz/")
         ? (() => { recommendationStep = 0; return recommendationPayload(); })()
       : path.endsWith("/results") && path.startsWith("/api/recommendations/quiz/")
-        ? { id: "quiz_test", items: quizItems, context: "solo" }
+        ? { id: "quiz_test", items: quizItems, context: "solo", ...(engineMeta || {}) }
       : path.endsWith("/replace") && path.startsWith("/api/recommendations/quiz/") && options.replaceStatus === 409
         ? (() => {
           route.fulfill({ status: 409, contentType: "application/json",
@@ -939,4 +941,56 @@ test("session from an older engine asks to restart instead of mixing semantics",
   await page.getByRole("button", { name: "Не предлагать" }).first().click();
   // Досчитывать старую подборку новой логикой нельзя — предлагаем пройти заново.
   await expect(page.locator(".picker-question h1")).toBeVisible();
+});
+
+
+const V2_META = { engine_version: "recommendation-v2", engine_preview: true };
+
+async function runQuiz(page) {
+  await page.getByRole("button", { name: "Подбор" }).click();
+  await page.getByRole("button", { name: "Подбор по настроению" }).click();
+  for (let index = 0; index < 8; index += 1) await page.locator(".picker-option").first().click();
+}
+
+test("admin V2 preview badge is shown during the quiz and on the results", async ({ page }) => {
+  await openStats(page, false, { engineMeta: V2_META });
+  await page.getByRole("button", { name: "Подбор" }).click();
+  await page.getByRole("button", { name: "Подбор по настроению" }).click();
+  await expect(page.locator(".picker-preview-badge")).toHaveText("V2 PREVIEW");
+  for (let index = 0; index < 8; index += 1) await page.locator(".picker-option").first().click();
+  await expect(page.locator(".recommendation-film")).toHaveCount(3);
+  await expect(page.locator(".picker-preview-badge")).toBeVisible();
+});
+
+test("ordinary V1 response shows no preview badge", async ({ page }) => {
+  await openStats(page);
+  await runQuiz(page);
+  await expect(page.locator(".recommendation-film")).toHaveCount(3);
+  await expect(page.locator(".picker-preview-badge")).toHaveCount(0);
+});
+
+test("engine version alone does not enable the badge", async ({ page }) => {
+  // Значок зависит ТОЛЬКО от engine_preview === true: версия сама по себе не
+  // делает пользователя администратором.
+  await openStats(page, false, { engineMeta: { engine_version: "recommendation-v2" } });
+  await runQuiz(page);
+  await expect(page.locator(".picker-preview-badge")).toHaveCount(0);
+});
+
+test("leaving the quiz clears a stale preview badge", async ({ page }) => {
+  await openStats(page, false, { engineMeta: V2_META });
+  await runQuiz(page);
+  await expect(page.locator(".picker-preview-badge")).toBeVisible();
+  await page.locator(".sub-head .back").click();
+  await expect(page.getByRole("heading", { name: "Что посмотреть?" })).toBeVisible();
+  await expect(page.locator(".picker-preview-badge")).toHaveCount(0);
+});
+
+test("preview badge does not overflow a narrow viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await openStats(page, false, { engineMeta: V2_META });
+  await page.getByRole("button", { name: "Подбор" }).click();
+  await page.getByRole("button", { name: "Подбор по настроению" }).click();
+  await expect(page.locator(".picker-preview-badge")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 });

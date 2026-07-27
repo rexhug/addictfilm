@@ -754,6 +754,22 @@ async def _active_partner_for_recommendation(user_id: int, context: str) -> int 
     return int(pair["partner_id"])
 
 
+async def _admin_quiz_engine_meta(session: dict, user_id: int) -> dict:
+    """Информация о движке — только проверенному на СЕРВЕРЕ редактору/админу.
+
+    Это операционные данные обкатки, а не часть семантики подбора. Обычному
+    пользователю знать внутреннюю версию движка незачем, и он не должен
+    получать признак предпросмотра, который можно подделать или принять за
+    возможность клиента.
+    """
+    role = await _effective_role(user_id)
+    if role not in ("editor", "admin"):
+        return {}
+    engine = _require_supported_engine(session)
+    return {"engine_version": engine.engine_version,
+            "engine_preview": engine.engine_version == engines.ENGINE_V2}
+
+
 async def _quiz_payload(session: dict, language: str, user_id: int) -> dict:
     current = session.get("current_question")
     partner_available = bool(await db.get_pair(user_id))
@@ -762,9 +778,10 @@ async def _quiz_payload(session: dict, language: str, user_id: int) -> dict:
     # relationship. The server independently validates it on answer/results.
     if question and question["id"] == "c4" and not partner_available:
         question["options"] = [option for option in question["options"] if option["id"] != "pair"]
+    engine_meta = await _admin_quiz_engine_meta(session, user_id)
     return {"id": session["id"], "version": session["version"], "state": session["state"],
             "question": question, "progress": len(session.get("answers") or {}),
-            "total": 8, "pair_available": partner_available}
+            "total": 8, "pair_available": partner_available, **engine_meta}
 
 
 @app.post("/api/recommendations/random")
@@ -911,8 +928,13 @@ async def recommendation_quiz_results(session_id: str, language: str = "ru", use
     engine = _require_supported_engine(session)
     answers = session.get("answers") or {}
     partner_id = await _active_partner_for_recommendation(user["id"], "pair") if answers.get("c4") == "pair" else None
+    # Метаданные движка одинаковы на обоих путях: и для сохранённой подборки,
+    # и для только что посчитанной. Иначе значок появлялся бы лишь при первом
+    # открытии результатов.
+    engine_meta = await _admin_quiz_engine_meta(session, user["id"])
     if session.get("results") is not None:
-        return {"id": session_id, "items": session["results"], "context": "pair" if partner_id else "solo"}
+        return {"id": session_id, "items": session["results"],
+                "context": "pair" if partner_id else "solo", **engine_meta}
     # Роль резолвится на сервере: подделать её с клиента нельзя.
     is_admin = (await _effective_role(user["id"])) in ("editor", "admin")
     items = await recommendations.quiz_results(user["id"], answers, locale, partner_id,
@@ -924,7 +946,8 @@ async def recommendation_quiz_results(session_id: str, language: str = "ru", use
     for item in items:
         await db.record_recommendation_history(user["id"], item["id"], "quiz", session_id=session_id,
                                                role=item["role"], score=item["score"])
-    return {"id": session_id, "items": items, "context": "pair" if partner_id else "solo"}
+    return {"id": session_id, "items": items,
+            "context": "pair" if partner_id else "solo", **engine_meta}
 
 
 @app.post("/api/recommendations/quiz/{session_id}/replace")
@@ -983,8 +1006,9 @@ async def recommendation_quiz_replace(session_id: str, body: RecommendationRepla
     if replacement is not None:
         await db.record_recommendation_history(user["id"], replacement["id"], "quiz", session_id=session_id,
                                                role=server_role, score=replacement["score"])
+    engine_meta = await _admin_quiz_engine_meta(session, user["id"])
     return {"id": session_id, "items": updated, "replacement": replacement,
-            "context": "pair" if partner_id else "solo"}
+            "context": "pair" if partner_id else "solo", **engine_meta}
 
 
 @app.post("/api/recommendations/{film_id}/feedback")

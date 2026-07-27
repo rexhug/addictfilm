@@ -73,6 +73,8 @@ const DICT = {
     pick_partial: "Под такой запрос в каталоге нашлось меньше вариантов, чем обычно — показываем только то, что действительно подходит.",
     pick_rejected: "Больше не предложим",
     pick_version_changed: "Подбор обновился — начнём опрос заново",
+    pick_v2_preview: "V2 PREVIEW",
+    pick_v2_preview_hint: "Тестовая версия нового подбора, доступная только администратору",
     reason_DARK_COMEDY_TONE: "Чёрный юмор и мрачный тон", reason_SATIRICAL_HUMOR: "Сатира на серьёзные темы",
     reason_ABSURD_DARK_HUMOR: "Абсурдная комедия с мрачной подачей", reason_HIGH_TENSION: "Держит в напряжении",
     reason_INTELLECTUAL: "Требует внимания и размышления", reason_COZY_TONE: "Спокойный и светлый тон",
@@ -205,6 +207,8 @@ const DICT = {
     pick_partial: "This request has fewer good matches in the catalog than usual — we only show what genuinely fits.",
     pick_rejected: "We won't suggest it again",
     pick_version_changed: "The picker was updated — let's start the quiz again",
+    pick_v2_preview: "V2 PREVIEW",
+    pick_v2_preview_hint: "Preview of the new recommendation engine, available only to administrators",
     reason_DARK_COMEDY_TONE: "Dark humour with a grim tone", reason_SATIRICAL_HUMOR: "Satire about serious things",
     reason_ABSURD_DARK_HUMOR: "Absurd comedy, grim delivery", reason_HIGH_TENSION: "Keeps the tension up",
     reason_INTELLECTUAL: "Asks for attention and thought", reason_COZY_TONE: "Calm, light tone",
@@ -813,11 +817,38 @@ function pickerHeader(back) {
   return `<header class="sub-head picker-head">${backBtn()}<h1>${esc(t("pick_title"))}</h1></header>`;
 }
 
+// Версия движка приходит ТОЛЬКО от сервера и только проверенному администратору.
+// Выводить её из роли, Telegram-id или локального состояния нельзя: тогда значок
+// стал бы подделываемым признаком, а не отражением того, чем реально считается
+// подбор.
+let _quizEngineMeta = null;
+
+function rememberQuizEngine(data) {
+  if (!data || typeof data !== "object") return;
+  _quizEngineMeta = {
+    version: typeof data.engine_version === "string" ? data.engine_version : null,
+    preview: data.engine_preview === true,
+  };
+}
+
+function quizPreviewBadge(data = null) {
+  if (data) rememberQuizEngine(data);
+  if (!_quizEngineMeta?.preview) return "";
+  return `<span class="picker-preview-badge" aria-label="${esc(t("pick_v2_preview_hint"))}">${esc(t("pick_v2_preview"))}</span>`;
+}
+
+function pickerResultsHeader() {
+  return `<header class="sub-head picker-head">${backBtn()}<div class="picker-title-meta"><h1>${esc(t("pick_title"))}</h1>${quizPreviewBadge()}</div></header>`;
+}
+
 function pickerError(message) {
   return `<div class="picker-error" role="alert">${esc(message || t("load_err"))}</div>`;
 }
 
 async function showPicker() {
+  // Уходя из опроса совсем, забываем версию: иначе значок предпросмотра мог бы
+  // остаться на следующем, уже обычном проходе.
+  _quizEngineMeta = null;
   unwireDetailScroll();
   pickerMode(false);
   window.scrollTo(0, 0);
@@ -949,15 +980,17 @@ async function startRecommendationQuiz() {
   screen.innerHTML = `<main class="picker-quiz"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
   try {
     const data = await api("/api/recommendations/quiz/start", { method: "POST", body: JSON.stringify({ language: lang }) });
+    rememberQuizEngine(data);
     showQuizQuestion(data);
   } catch (error) { pickerMode(false); showPicker(); tg?.showAlert?.(String(error.message || t("load_err"))); }
 }
 
 function showQuizQuestion(data) {
+  rememberQuizEngine(data);
   if (data.state === "complete" || !data.question) { showQuizResults(data.id); return; }
   const question = data.question;
   const progress = Math.max(1, Number(data.progress) + 1);
-  screen.innerHTML = `<main class="picker-quiz rise d1"><header class="picker-quiz-head"><button class="back" id="picker-back" aria-label="${esc(t("pick_back"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button><span>${esc(t("pick_progress", progress, data.total || 8))}</span></header><div class="picker-progress"><i style="width:${Math.min(100, progress / (data.total || 8) * 100)}%"></i></div><section class="picker-question"><h1>${esc(question.text)}</h1><div class="picker-options">${question.options.map(option => `<button type="button" class="picker-option" data-answer="${esc(option.id)}">${esc(option.label)}<i>›</i></button>`).join("")}</div></section></main>`;
+  screen.innerHTML = `<main class="picker-quiz rise d1"><header class="picker-quiz-head"><button class="back" id="picker-back" aria-label="${esc(t("pick_back"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button><div class="picker-quiz-head-meta"><span>${esc(t("pick_progress", progress, data.total || 8))}</span>${quizPreviewBadge(data)}</div></header><div class="picker-progress"><i style="width:${Math.min(100, progress / (data.total || 8) * 100)}%"></i></div><section class="picker-question"><h1>${esc(question.text)}</h1><div class="picker-options">${question.options.map(option => `<button type="button" class="picker-option" data-answer="${esc(option.id)}">${esc(option.label)}<i>›</i></button>`).join("")}</div></section></main>`;
   document.getElementById("picker-back").onclick = async () => {
     if (!data.progress) { pickerMode(false); showPicker(); return; }
     try {
@@ -995,9 +1028,10 @@ function quizResultsHTML(items) {
 async function showQuizResults(sessionId) {
   screen.innerHTML = `<main class="picker-quiz picker-results"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
   try {
-    const { items } = await api(`/api/recommendations/quiz/${encodeURIComponent(sessionId)}/results?language=${encodeURIComponent(lang)}`);
+    const data = await api(`/api/recommendations/quiz/${encodeURIComponent(sessionId)}/results?language=${encodeURIComponent(lang)}`);
+    rememberQuizEngine(data);
     pickerMode(false);
-    let current = items;
+    let current = data.items || [];
     const renderResults = () => {
       const box = screen.querySelector(".picker-results-list");
       box.innerHTML = quizResultsHTML(current);
@@ -1007,14 +1041,15 @@ async function showQuizResults(sessionId) {
         onReject: () => replaceQuizPick(sessionId, current[index], updated => { current = updated; renderResults(); }),
       }));
     };
-    screen.innerHTML = `${pickerHeader()}<main class="picker-results rise d1"><div class="picker-results-list"></div><button class="picker-restart" id="picker-restart" type="button">${esc(t("pick_restart"))}</button></main>`;
+    screen.innerHTML = `${pickerResultsHeader()}<main class="picker-results rise d1"><div class="picker-results-list"></div><button class="picker-restart" id="picker-restart" type="button">${esc(t("pick_restart"))}</button></main>`;
     renderResults();
     wireBack(showPicker);
     document.getElementById("picker-restart").onclick = async () => {
       try {
         pickerMode(true);
-        const data = await api(`/api/recommendations/quiz/${encodeURIComponent(sessionId)}/restart`, { method: "POST", body: JSON.stringify({ language: lang }) });
-        showQuizQuestion(data);
+        // Перезапуск — новая сессия: версию берём из свежего ответа сервера.
+        const restarted = await api(`/api/recommendations/quiz/${encodeURIComponent(sessionId)}/restart`, { method: "POST", body: JSON.stringify({ language: lang }) });
+        showQuizQuestion(restarted);
       } catch (_) { startRecommendationQuiz(); }
     };
   } catch (error) {
@@ -1030,6 +1065,7 @@ async function replaceQuizPick(sessionId, item, apply) {
     const data = await api(`/api/recommendations/quiz/${encodeURIComponent(sessionId)}/replace`, {
       method: "POST", body: JSON.stringify({ language: lang, film_id: item.id, role: item.role }),
     });
+    rememberQuizEngine(data);
     apply(data.items || []);
     if (!data.replacement) tg?.showAlert?.(String(t("pick_rejected")));
   } catch (error) {
