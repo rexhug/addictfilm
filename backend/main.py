@@ -817,7 +817,10 @@ async def recommendation_quiz_results(session_id: str, language: str = "ru", use
     partner_id = await _active_partner_for_recommendation(user["id"], "pair") if answers.get("c4") == "pair" else None
     if session.get("results") is not None:
         return {"id": session_id, "items": session["results"], "context": "pair" if partner_id else "solo"}
-    items = await recommendations.quiz_results(user["id"], answers, locale, partner_id)
+    # Роль резолвится на сервере: подделать её с клиента нельзя.
+    is_admin = (await _effective_role(user["id"])) in ("editor", "admin")
+    items = await recommendations.quiz_results(user["id"], answers, locale, partner_id,
+                                               is_admin=is_admin)
     saved = await db.save_recommendation_session_results(user["id"], session_id, items)
     if not saved:
         raise HTTPException(status_code=404, detail="Опрос не найден")

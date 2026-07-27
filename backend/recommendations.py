@@ -353,6 +353,13 @@ async def ranked_candidates(user_id: int, *, partner_id: int | None, weights: di
 # счётом всё ещё вытесняют более подходящие по настроению фильмы. Включаем
 # только после подтверждения на живых сценариях: MOOD_LAYER_ENABLED=1.
 MOOD_LAYER_ENABLED = os.getenv("MOOD_LAYER_ENABLED", "").strip().lower() in ("1", "true", "yes")
+# Обкатка на админах до глобального включения. Признак админа приходит ТОЛЬКО с
+# сервера (см. main._effective_role) — клиент на это влиять не может.
+MOOD_LAYER_ADMIN_PREVIEW = os.getenv("MOOD_LAYER_ADMIN_PREVIEW", "").strip().lower() in ("1", "true", "yes")
+
+
+def mood_layer_active(*, is_admin: bool = False) -> bool:
+    return MOOD_LAYER_ENABLED or (MOOD_LAYER_ADMIN_PREVIEW and is_admin)
 
 # Потолок базового счёта: match(38) + quality(25) + affinity(17) + wishlist(5)
 # + novelty(5). Используется только для перевода в 0…1 и обратно.
@@ -438,15 +445,17 @@ def select_mood_role(ranked: list[dict], intent, floors: dict, role: str,
     return None, len(mood.FALLBACK_THRESHOLD_ADJUSTMENTS) - 1
 
 
-async def quiz_results(user_id: int, answers: dict[str, str], language: str, partner_id: int | None = None) -> list[dict]:
+async def quiz_results(user_id: int, answers: dict[str, str], language: str,
+                       partner_id: int | None = None, *, is_admin: bool = False) -> list[dict]:
     weights, filters, context = answer_state(answers)
     ranked = await ranked_candidates(user_id, partner_id=partner_id, weights=weights, filters=filters, context=context)
     if not ranked:
         return []
-    if MOOD_LAYER_ENABLED:
+    mood_on = mood_layer_active(is_admin=is_admin)
+    if mood_on:
         preferences = await db.get_recommendation_preferences(user_id)
         ranked = apply_mood_layer(ranked, answers, int(preferences.get("count", 0) or 0))
-    if MOOD_LAYER_ENABLED and ranked and "_mood" in ranked[0]:
+    if mood_on and ranked and "_mood" in ranked[0]:
         # Двухэтапно: настроение решает, кто уместен; базовый движок — порядок.
         intent = mood.build_mood_intent(answers)
         floors = mood.collect_dimension_floors(answers)
