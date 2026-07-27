@@ -714,3 +714,34 @@ test("ordinary user sees no collection creation action", async ({ page }) => {
   await expect(page.locator("#coll-add-home")).toHaveCount(0);
   await expect(page.locator("#featured-add")).toHaveCount(0);
 });
+
+test("pair sections are open: outer frame removed, inner cards intact", async ({ page }) => {
+  await openStats(page, true);
+  await page.getByRole("tab", { name: "Мы вместе" }).click();
+  await expect(page.locator(".pair-favorites-showcase")).toBeVisible();
+
+  const style = (selector, prop) => page.locator(selector).first()
+    .evaluate((el, p) => getComputedStyle(el)[p], prop);
+
+  // Внешняя рамка секций убрана — они лежат на фоне страницы, как «Актёры».
+  for (const section of [".pair-favorites-showcase", ".pair-differences-showcase"]) {
+    expect(await style(section, "backgroundColor")).toBe("rgba(0, 0, 0, 0)");
+    expect(await style(section, "borderTopLeftRadius")).toBe("0px");
+    expect(await style(section, "borderLeftWidth")).toBe("0px");
+  }
+  // А внутренние карточки свои фон и границу сохранили.
+  expect(await style(".pair-favorite-card", "backgroundColor")).not.toBe("rgba(0, 0, 0, 0)");
+  expect(await style(".pair-difference-card", "backgroundColor")).not.toBe("rgba(0, 0, 0, 0)");
+  expect(await style(".pair-difference-card", "borderLeftWidth")).not.toBe("0px");
+
+  // Заголовки выровнены с «Актёрами» по левому краю.
+  const left = (selector) => page.locator(selector).first()
+    .evaluate(el => Math.round(el.getBoundingClientRect().left));
+  const actors = await left(".people-stats-head h2");
+  expect(await left(".pair-favorites-showcase .pair-showcase-head h2")).toBe(actors);
+  expect(await left(".pair-differences-showcase .pair-showcase-head h2")).toBe(actors);
+
+  // Горизонтальная прокрутка и отсутствие переполнения страницы.
+  expect(await page.locator(".pair-favorites-rail").evaluate(el => el.scrollWidth > el.clientWidth)).toBeTruthy();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+});

@@ -2907,8 +2907,8 @@ function pairHighlightsHTML(ps) {
     </button>`;
   }).join("");
   return `<div class="pair-discovery">
-    ${favoriteCards ? `<section class="pair-showcase pair-favorites-showcase"><header class="pair-showcase-head"><span class="pair-showcase-icon pair-showcase-icon-favorite" aria-hidden="true">♡</span><div><h2>${esc(t("pair_common_favorites"))}</h2><p>${esc(t("pair_common_favorites_hint"))}</p></div></header><div class="pair-favorites-rail" aria-label="${esc(t("pair_common_favorites"))}">${favoriteCards}</div></section>` : ""}
-    ${differenceCards ? `<section class="pair-showcase pair-differences-showcase"><header class="pair-showcase-head"><span class="pair-showcase-icon pair-showcase-icon-difference" aria-hidden="true">↔</span><div><h2>${esc(t("pair_disagreements"))}</h2><p>${esc(t("pair_disagreements_hint"))}</p></div></header><div class="pair-differences-rail" aria-label="${esc(t("pair_disagreements"))}">${differenceCards}</div></section>` : ""}
+    ${favoriteCards ? `<section class="pair-showcase pair-favorites-showcase"><header class="pair-showcase-head"><div><h2>${esc(t("pair_common_favorites"))}</h2><p>${esc(t("pair_common_favorites_hint"))}</p></div></header><div class="pair-favorites-rail" aria-label="${esc(t("pair_common_favorites"))}">${favoriteCards}</div></section>` : ""}
+    ${differenceCards ? `<section class="pair-showcase pair-differences-showcase"><header class="pair-showcase-head"><div><h2>${esc(t("pair_disagreements"))}</h2><p>${esc(t("pair_disagreements_hint"))}</p></div></header><div class="pair-differences-rail" aria-label="${esc(t("pair_disagreements"))}">${differenceCards}</div></section>` : ""}
   </div>`;
 }
 

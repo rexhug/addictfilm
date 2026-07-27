@@ -845,3 +845,21 @@ body.collection-editor-open .admin-indicator{display:none;}
 .collection-editor .admin-backdrop{min-height:60px;}
 .collection-editor .admin-segment{min-height:64px;}
 @media(max-width:360px){.editor-head,.collection-editor{padding-left:16px;padding-right:16px;}}
+
+/* Парные секции — такой же открытый макет, как «Актёры»/«Режиссёры»: внешняя
+   рамка-контейнер убрана, содержимое лежит на фоне страницы. Внутренние
+   карточки (фильмы, сравнения оценок) свои границы и фон сохраняют. */
+.pair-discovery{display:block;margin:0;}
+.pair-showcase{margin:0;padding:0;overflow:visible;border:0;border-radius:0;background:transparent;}
+.pair-showcase-head{padding:0;margin:0 20px 14px;}
+.pair-favorites-rail,.pair-differences-rail{margin:0;padding:0 20px 5px;scroll-padding-left:20px;}
+/* Тот же тихий разделитель между группами, что и у режиссёров. */
+.pair-differences-showcase{margin-top:26px;padding-top:24px;border-top:1px solid rgba(255,255,255,.055);}
+@media(max-width:560px){
+  .pair-showcase-head{margin:0 16px 13px;}
+  .pair-favorites-rail,.pair-differences-rail{padding-left:16px;padding-right:16px;scroll-padding-left:16px;}
+  .pair-differences-showcase{margin-top:24px;padding-top:22px;}
+}
+/* Заголовок парной секции — ровно тот же паттерн, что у «Актёров»: без
+   иконки-бокса, чтобы левый край и вес совпадали (третьего стиля не заводим). */
+.pair-showcase-head h2{font-size:18px;line-height:1.1;letter-spacing:-.025em;}
