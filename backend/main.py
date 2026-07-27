@@ -521,6 +521,14 @@ async def _resolve_film_id(src: str, ref: str, *, user_id: int | None = None) ->
     /api/add и /api/admin/collections/{id}/films. Для src="i" ref == imdb_id, и если
     фильм уже в общем каталоге — линкуем сразу, не тратя лимит kinopoisk/OMDb."""
     ref = ref.strip()
+    if src == "id":
+        # Фильм уже в каталоге (редактор подборки шлёт внутренний ID) — внешние
+        # провайдеры и их лимиты здесь не нужны.
+        if not re.fullmatch(r"\d{1,12}", ref):
+            raise HTTPException(status_code=422, detail="Некорректный идентификатор фильма")
+        if not await db.get_film(int(ref)):
+            raise HTTPException(status_code=404, detail="Фильм не найден")
+        return int(ref)
     if src == "k" and not re.fullmatch(r"\d{1,12}", ref):
         raise HTTPException(status_code=422, detail="Некорректный идентификатор фильма")
     if src == "i" and not re.fullmatch(r"tt\d{5,12}", ref):
@@ -900,6 +908,21 @@ async def _audit(user: dict, action: str, entity_id, details: dict | None = None
     await db.write_audit(user["id"], role, action, "collection", entity_id, details)
 
 
+# Короткая память ключей идемпотентности создания. Держим в процессе намеренно:
+# защита нужна от двойного тапа в пределах секунд, ради этого заводить таблицу и
+# миграцию избыточно. Худший случай при рестарте/другом инстансе — поведение как
+# раньше (возможен дубль), безопасности это не касается.
+_CREATE_IDEMPOTENCY: dict[tuple[int, str], int] = {}
+_CREATE_IDEMPOTENCY_LIMIT = 512
+
+
+def _remember_create_key(user_id: int, key: str, collection_id: int) -> None:
+    if len(_CREATE_IDEMPOTENCY) >= _CREATE_IDEMPOTENCY_LIMIT:
+        for stale in list(_CREATE_IDEMPOTENCY)[:_CREATE_IDEMPOTENCY_LIMIT // 2]:
+            _CREATE_IDEMPOTENCY.pop(stale, None)
+    _CREATE_IDEMPOTENCY[(user_id, key)] = collection_id
+
+
 def _safe_image_url(value: str) -> bool:
     """Только https и никаких javascript:/data:. Сервер по этим URL сам не ходит
     (никакого SSRF) — картинка грузится браузером через существующий прокси."""
@@ -918,6 +941,12 @@ def _conflict() -> HTTPException:
 class CollectionBody(BaseModel):
     title: str = Field(max_length=500)
     description: str | None = Field(default=None, max_length=1000)
+    # Редактор копит формат, фон и состав локально и присылает их первым
+    # сохранением. Поля опциональные — старые клиенты остаются совместимыми.
+    display_type: str | None = None
+    cover_url: str | None = Field(default=None, max_length=2048)
+    backdrop_url: str | None = Field(default=None, max_length=2048)
+    ordered_film_ids: list[int] = Field(default_factory=list, max_length=200)
 
 
 class CollectionPatchBody(BaseModel):
@@ -953,12 +982,40 @@ async def admin_collection_detail(collection_id: int, user: dict = Depends(curre
 
 
 @app.post("/api/admin/collections", dependencies=[Depends(require_editor)])
-async def collection_create(body: CollectionBody, user: dict = Depends(current_user)):
+async def collection_create(body: CollectionBody, user: dict = Depends(current_user),
+                            idempotency_key: str = Header(default="", alias="Idempotency-Key")):
     title = " ".join(body.title.split())
     if not title:
         raise HTTPException(status_code=422, detail="Пустое название")
-    collection_id = await db.create_collection(title[:80], user["id"], body.description)
-    await _audit(user, "collection.created", collection_id, {"title": title[:80]})
+    display_type = body.display_type or "standard"
+    if display_type not in db.COLLECTION_DISPLAY_TYPES:
+        raise HTTPException(status_code=422, detail={
+            "code": "INVALID_DISPLAY_TYPE", "message": "Неизвестный формат отображения"})
+    for url_field, value in (("cover_url", body.cover_url), ("backdrop_url", body.backdrop_url)):
+        if value and not _safe_image_url(value):
+            raise HTTPException(status_code=422, detail={
+                "code": "IMAGE_URL_NOT_ALLOWED", "message": "Изображение: разрешён только https"})
+    if len(set(body.ordered_film_ids)) != len(body.ordered_film_ids):
+        raise HTTPException(status_code=422, detail={
+            "code": "DUPLICATE_FILM_IDS", "message": "Дубли фильмов не допускаются"})
+    # Повторный тап «Сохранить» с тем же ключом возвращает уже созданную
+    # подборку вместо второй копии.
+    if idempotency_key:
+        cached = _CREATE_IDEMPOTENCY.get((user["id"], idempotency_key))
+        if cached:
+            return {"id": cached}
+    collection_id = await db.create_collection(
+        title[:80], user["id"], body.description, display_type=display_type,
+        cover_url=body.cover_url, backdrop_url=body.backdrop_url,
+        ordered_film_ids=body.ordered_film_ids)
+    if collection_id is None:
+        raise HTTPException(status_code=422, detail={
+            "code": "UNKNOWN_FILM", "message": "Один из фильмов не найден"})
+    if idempotency_key:
+        _remember_create_key(user["id"], idempotency_key, collection_id)
+    await _audit(user, "collection.created", collection_id, {
+        "title": title[:80], "display_type": display_type,
+        "film_ids": body.ordered_film_ids})
     return {"id": collection_id}
 
 
@@ -1076,6 +1133,26 @@ async def collection_reorder(collection_id: int, body: CollectionOrderBody,
     return updated
 
 
+class ResolveFilmBody(BaseModel):
+    src: str
+    ref: str = Field(max_length=128)
+
+
+@app.post("/api/admin/films/resolve", dependencies=[Depends(require_editor)])
+async def admin_resolve_film(body: ResolveFilmBody, user: dict = Depends(current_user)):
+    """Затянуть фильм в общий каталог и вернуть его ID — без добавления в личный
+    список редактора. Нужен редактору подборки: он копит состав локально, а в
+    свои «Хочу»/«Смотрел» куратор фильмы при этом не набирает."""
+    if body.src not in ("k", "i", "id"):
+        raise HTTPException(status_code=422, detail="Неизвестный источник")
+    film_id = await _resolve_film_id(body.src, body.ref, user_id=user["id"])
+    film = await db.get_film(film_id)
+    return {"id": film_id, "title": film.get("title") if film else None,
+            "year": film.get("year") if film else None,
+            "poster_url": film.get("poster_url") if film else None,
+            "backdrop_url": film.get("backdrop_url") if film else None}
+
+
 class FeaturedOrderBody(BaseModel):
     ordered_ids: list[int] = Field(min_length=1, max_length=50)
 
@@ -1099,7 +1176,8 @@ class CollectionAddBody(BaseModel):
 @app.post("/api/admin/collections/{collection_id}/films", dependencies=[Depends(require_editor)])
 async def collection_add_film(collection_id: int, body: CollectionAddBody,
                               user: dict = Depends(current_user)):
-    if body.src not in ("k", "i"):
+    # "id" — фильм уже в каталоге (его шлёт редактор подборки); "k"/"i" — импорт извне.
+    if body.src not in ("k", "i", "id"):
         raise HTTPException(status_code=422, detail="Неизвестный источник")
     if not await db.get_collection(collection_id):
         raise HTTPException(status_code=404, detail="Подборка не найдена")

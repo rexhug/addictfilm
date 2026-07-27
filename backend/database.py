@@ -3177,18 +3177,41 @@ async def list_collections(statuses: tuple[str, ...] = ("published",)) -> list[d
         return [dict(r) for r in await cur.fetchall()]
 
 
-async def create_collection(title: str, created_by: int, description: str | None = None) -> int:
-    """Новая подборка всегда рождается черновиком: публикация — явное действие."""
+async def create_collection(title: str, created_by: int, description: str | None = None,
+                            display_type: str = "standard", cover_url: str | None = None,
+                            backdrop_url: str | None = None,
+                            ordered_film_ids: list[int] | None = None) -> int | None:
+    """Новая подборка всегда рождается черновиком: публикация — явное действие.
+
+    Подборка и её первые фильмы создаются ОДНОЙ транзакцией: редактор копит
+    состав локально и отправляет его первым сохранением, поэтому наполовину
+    созданная подборка (есть строка, нет фильмов) недопустима. Неизвестный
+    film_id откатывает всё создание и возвращает None.
+    """
     now = _now()
+    film_ids = list(ordered_film_ids or [])
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
+        if film_ids:
+            placeholders = ",".join("?" for _ in film_ids)
+            cur = await db.execute(
+                f"SELECT id FROM films WHERE id IN ({placeholders})", film_ids)
+            known = {r["id"] for r in await cur.fetchall()}
+            if known != set(film_ids):
+                return None  # ссылка на несуществующий фильм — не создаём ничего
         cur = await db.execute(
-            "INSERT INTO collections (title, description, created_by, created_at, updated_by, "
-            "updated_at, status, version) VALUES (?,?,?,?,?,?, 'draft', 1) RETURNING id",
-            (title, description, created_by, now, created_by, now))
-        row = await cur.fetchone()
+            "INSERT INTO collections (title, description, display_type, cover_url, backdrop_url, "
+            "created_by, created_at, updated_by, updated_at, status, version) "
+            "VALUES (?,?,?,?,?,?,?,?,?, 'draft', 1) RETURNING id",
+            (title, description, display_type, cover_url, backdrop_url,
+             created_by, now, created_by, now))
+        collection_id = (await cur.fetchone())["id"]
+        for position, film_id in enumerate(film_ids, start=1):
+            await db.execute(
+                "INSERT INTO collection_films (collection_id, film_id, added_at, position, added_by) "
+                "VALUES (?,?,?,?,?)", (collection_id, film_id, now, position, created_by))
         await db.commit()
-        return row["id"]
+        return collection_id
 
 
 async def delete_collection(collection_id: int) -> None:

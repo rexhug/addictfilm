@@ -180,3 +180,36 @@ class MigrationBackfillTests(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CreateWithItemsTests(_Base):
+    """Первое сохранение редактора создаёт подборку вместе с фильмами одной
+    транзакцией: наполовину созданной подборки быть не должно."""
+
+    async def test_create_with_ordered_films_keeps_order(self):
+        third = await db.get_or_create_film("tt7100003", "Third")
+        cid = await db.create_collection(
+            "С фильмами", 1, ordered_film_ids=[self.other, self.film, third])
+        items = await db.get_collection_films(cid, 1)
+        self.assertEqual([i["id"] for i in items], [self.other, self.film, third])
+        self.assertEqual((await db.get_collection(cid))["status"], "draft")
+
+    async def test_unknown_film_rolls_back_whole_creation(self):
+        before = len(await db.list_collections(db.COLLECTION_STATUSES))
+        result = await db.create_collection("Плохая", 1, ordered_film_ids=[self.film, 999999])
+        self.assertIsNone(result)
+        # Ни подборки, ни осиротевших связей.
+        self.assertEqual(len(await db.list_collections(db.COLLECTION_STATUSES)), before)
+
+    async def test_create_without_films_still_works(self):
+        cid = await db.create_collection("Пустая", 1)
+        self.assertIsNotNone(cid)
+        self.assertEqual(await db.get_collection_films(cid, 1), [])
+
+    async def test_create_stores_display_type_and_backdrop(self):
+        cid = await db.create_collection(
+            "Крупная", 1, display_type="featured",
+            backdrop_url="https://img/b.jpg", ordered_film_ids=[self.film])
+        collection = await db.get_collection(cid)
+        self.assertEqual(collection["display_type"], "featured")
+        self.assertEqual(collection["backdrop_url"], "https://img/b.jpg")

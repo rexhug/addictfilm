@@ -104,6 +104,14 @@ const DICT = {
     admin_featured_image_required: "Для большой подборки нужно изображение",
     admin_url_not_allowed: "Разрешены только https-ссылки",
     coll_eyebrow: "Подборка",
+    admin_save_draft: "Сохранить черновик",
+    admin_new_collection: "Новая подборка", admin_new_featured: "Новая большая подборка",
+    admin_unsaved: "Не сохранено", admin_new_badge: "Новая",
+    admin_preview_title_ph: "Название подборки",
+    admin_no_films: "Фильмов пока нет — добавьте первый",
+    admin_err_title: "Введите название подборки",
+    admin_err_films: "Добавьте хотя бы один фильм",
+    admin_unsaved_changes: "Изменения не сохранены. Выйти без сохранения?",
     coll_confirm_add: (t) => `Добавить «${t}» в подборку?`, coll_already_in: "Уже в этой подборке",
     coll_remove_confirm: (t) => `Убрать «${t}» из подборки?`, coll_add_film_btn: "+ Добавить фильм",
     coll_edit_hint: "Тап на фильм — убрать из подборки",
@@ -210,6 +218,14 @@ const DICT = {
     admin_featured_image_required: "A large collection needs an image",
     admin_url_not_allowed: "Only https links are allowed",
     coll_eyebrow: "Collection",
+    admin_save_draft: "Save draft",
+    admin_new_collection: "New collection", admin_new_featured: "New large collection",
+    admin_unsaved: "Not saved", admin_new_badge: "New",
+    admin_preview_title_ph: "Collection title",
+    admin_no_films: "No films yet — add the first one",
+    admin_err_title: "Enter a collection title",
+    admin_err_films: "Add at least one film",
+    admin_unsaved_changes: "Changes are not saved. Leave without saving?",
     coll_confirm_add: (t) => `Add "${t}" to the collection?`, coll_already_in: "Already in this collection",
     coll_remove_confirm: (t) => `Remove "${t}" from the collection?`, coll_add_film_btn: "+ Add film",
     coll_edit_hint: "Tap a film to remove it from the collection",
@@ -705,7 +721,12 @@ async function showHome() {
     screen.querySelectorAll(".chips .chip[data-to]").forEach(x => x.classList.toggle("active", x === c));
     document.getElementById(c.dataset.to)?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
-  if (canEditCollections()) document.getElementById("coll-add-home").onclick = () => createCollectionFlow();
+  if (canEditCollections()) document.getElementById("coll-add-home").onclick = () => {
+    // Никакой промежуточной формы и никакой пустой записи в БД: сразу открываем
+    // полный редактор с локальной черновой сессией.
+    CollectionEditor.createNew("standard");
+    showCollectionEditor();
+  };
 
   loadRail("rail-pop", "/api/browse?sort=popular&limit=20", { onItems: fillRecoArts });
   loadRail("rail-top", "/api/browse?sort=top&limit=20");
@@ -936,6 +957,17 @@ function renderFeaturedCollections(items) {
   const section = document.createElement("section");
   section.className = "rise d4";
   section.id = "sec-featured";
+  if (canEditCollections()) {
+    const head = document.createElement("div");
+    head.className = "head";
+    head.innerHTML = `<h2>${esc(t("admin_display_featured"))}</h2>
+      <button class="icon-add" id="featured-add" aria-label="${esc(t("admin_create_featured"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>`;
+    head.querySelector("#featured-add").onclick = () => {
+      CollectionEditor.createNew("featured");
+      showCollectionEditor();
+    };
+    section.appendChild(head);
+  }
   const track = document.createElement("div");
   track.className = "featured-track";
   items.forEach(item => {
@@ -962,7 +994,7 @@ function featuredAdminControls(item, siblings) {
       <button class="admin-icon-btn" data-right ${index === siblings.length - 1 ? "disabled" : ""} aria-label="${esc(t("admin_move_right"))}">${appIcon("arrowRight")}</button>
       <button class="admin-icon-btn" data-edit aria-label="${esc(t("admin_edit"))}">${appIcon("pencil")}</button>
     </div>`;
-  bar.querySelector("[data-edit]").onclick = () => showCollectionDetail(item.id);
+  bar.querySelector("[data-edit]").onclick = () => openCollectionEditorFor(item.id);
   bar.querySelector("[data-left]").onclick = () => reorderFeatured(siblings, index, -1);
   bar.querySelector("[data-right]").onclick = () => reorderFeatured(siblings, index, 1);
   return bar;
@@ -1197,9 +1229,14 @@ const AdminMode = {
     } catch (_) {
       this.capability = { is_admin: false, admin_role: null, capabilities: [] };
     }
+    const wasEditing = this.enabled;
     if (!this.capability.is_admin) this.enabled = false;  // права отозвали — режим гаснет
     else this.enabled = this.preference();
     this.renderIndicator();
+    // Возможности приходят асинхронно, а главная уже могла отрисоваться без
+    // админских действий — перерисовываем её, когда состояние изменилось.
+    if (this.enabled !== wasEditing && activeTabName() === "home"
+        && document.getElementById("sec-coll")) showHome();
     return this.capability;
   },
   preference() {
@@ -1237,6 +1274,158 @@ const AdminMode = {
   },
 };
 function activeTabName() { return document.querySelector("#tabbar .tab.active")?.dataset.tab || "home"; }
+
+// ── Сессия редактора подборки ────────────────────────────────────────────────
+// Единственный источник правды для редактора. Раньше значения жили в DOM-инпутах,
+// и любой уход на экран поиска фильмов перерисовывал редактор с сервера — из-за
+// этого терялось введённое название. Теперь состояние переживает навигацию, а
+// запись в БД создаётся только по явному «Сохранить»/«Опубликовать».
+const EDITOR_STORAGE_VERSION = 1;
+const EDITOR_STORAGE_PREFIX = "addictfilm.collectionEditor.v1";
+
+const CollectionEditor = {
+  session: null,
+  _persistTimer: null,
+
+  createNew(displayType = "standard") {
+    this.session = {
+      schemaVersion: EDITOR_STORAGE_VERSION,
+      sessionId: uuid(),
+      createRequestId: uuid(),   // не меняется между повторами — защита от дублей
+      mode: "create",
+      collectionId: null,
+      version: null,
+      serverStatus: null,
+      fields: { title: "", description: "", displayType, coverUrl: "", backdropUrl: "" },
+      films: [],
+      dirty: false,
+    };
+    this.persistNow();
+    return this.session;
+  },
+
+  fromCollection(collection) {
+    this.session = {
+      schemaVersion: EDITOR_STORAGE_VERSION,
+      sessionId: uuid(),
+      createRequestId: uuid(),
+      mode: "edit",
+      collectionId: collection.id,
+      version: collection.version,
+      serverStatus: collection.status,
+      fields: {
+        title: collection.title || "",
+        description: collection.description || "",
+        displayType: collection.display_type || "standard",
+        coverUrl: collection.cover_url || "",
+        backdropUrl: collection.backdrop_url || "",
+      },
+      films: (collection.items || []).map(normalizeEditorFilm),
+      dirty: false,
+    };
+    this.persistNow();
+    return this.session;
+  },
+
+  get() { return this.session; },
+
+  updateField(field, value) {
+    if (!this.session || this.session.fields[field] === value) return;
+    this.session.fields[field] = value;
+    this.session.dirty = true;
+    this.schedulePersist();
+  },
+
+  setFilms(films) {
+    if (!this.session) return;
+    this.session.films = films;
+    this.session.dirty = true;
+    this.schedulePersist();
+  },
+
+  // Первое сохранение превращает локальную черновую сессию в серверную запись —
+  // без перемонтирования экрана и без потери введённого.
+  becomeExisting({ id, version, status }) {
+    if (!this.session) return;
+    Object.assign(this.session, {
+      mode: "edit", collectionId: id, version, serverStatus: status, dirty: false,
+    });
+    this.persistNow();
+  },
+
+  applyServer(collection) {
+    if (!this.session || !collection) return;
+    this.session.version = collection.version;
+    this.session.serverStatus = collection.status;
+    this.session.dirty = false;
+    this.persistNow();
+  },
+
+  schedulePersist() {
+    clearTimeout(this._persistTimer);
+    this._persistTimer = setTimeout(() => this.persistNow(), 150);
+  },
+
+  persistNow() {
+    if (!this.session) return;
+    try {
+      sessionStorage.setItem(`${EDITOR_STORAGE_PREFIX}:${this.session.sessionId}`,
+        JSON.stringify(this.session));
+    } catch (_) { /* приватный режим/переполнение — в памяти состояние всё равно есть */ }
+  },
+
+  restore(sessionId) {
+    if (this.session?.sessionId === sessionId) return this.session;
+    try {
+      const raw = sessionStorage.getItem(`${EDITOR_STORAGE_PREFIX}:${sessionId}`);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (parsed?.schemaVersion !== EDITOR_STORAGE_VERSION) return null;
+      this.session = parsed;
+      return parsed;
+    } catch (_) { return null; }
+  },
+
+  discard() {
+    if (!this.session) return;
+    try { sessionStorage.removeItem(`${EDITOR_STORAGE_PREFIX}:${this.session.sessionId}`); }
+    catch (_) { /* нечего чистить */ }
+    this.session = null;
+  },
+};
+
+function uuid() {
+  try { return crypto.randomUUID(); }
+  catch (_) { return `s${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+}
+
+// В сессии держим только то, что рисует редактор: без сырых ответов API и картинок.
+function normalizeEditorFilm(film) {
+  return {
+    id: film.id,
+    title: film.title,
+    year: film.year ?? null,
+    poster_url: film.poster_url ?? null,
+    backdrop_url: film.backdrop_url ?? null,
+  };
+}
+
+function mergeUniqueFilms(current, added) {
+  const result = current.slice();
+  const seen = new Set(current.map(f => f.id));
+  for (const film of added) {
+    if (seen.has(film.id)) continue;
+    result.push(normalizeEditorFilm(film));
+    seen.add(film.id);
+  }
+  return result;
+}
+
+// Состояние успевает записаться, даже если WebView сворачивают или перезагружают.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") CollectionEditor.persistNow();
+});
+window.addEventListener("pagehide", () => CollectionEditor.persistNow());
 
 // ── Подборки (публичный просмотр + in-app редактирование в режиме админа) ─────
 function canEditCollections() { return AdminMode.active("collections.write"); }
@@ -1290,37 +1479,6 @@ function collectionCard(c) {
   return card;
 }
 
-function createCollectionFlow(displayType = "standard") {
-  // Вызывается с Главной («+» в заголовке секции «Подборки») — временно подменяет
-  // содержимое секции формой; после создания уходим в showCollectionDetail, а сама
-  // секция пересоберётся из API при следующем возврате на Главную (showHome).
-  const el = document.getElementById("sec-coll");
-  if (!el) return;
-  el.innerHTML = `<div class="chart-card" style="margin:0 20px;">
-    <input class="code-input" id="coll-title-input" placeholder="${esc(t("collections_title_ph"))}" autocomplete="off">
-    <button class="pbtn primary" id="coll-create-btn">${esc(t("collections_create_btn"))}</button>
-    ${displayType === "standard" ? `<button class="pbtn" id="coll-create-featured">${esc(t("admin_create_featured"))}</button>` : ""}
-  </div>`;
-  const input = document.getElementById("coll-title-input");
-  input.focus();
-  const create = async (type) => {
-    const title = input.value.trim();
-    if (!title) return;
-    const created = await adminCall("/api/admin/collections",
-      { method: "POST", body: JSON.stringify({ title }) });
-    if (!created) return;
-    // Формат ставим сразу после создания — редактор откроется уже в нужном виде.
-    if (type === "featured") {
-      await adminCall(`/api/admin/collections/${created.id}`, {
-        method: "PATCH", body: JSON.stringify({ version: 1, display_type: "featured" }) });
-    }
-    tg.HapticFeedback?.notificationOccurred("success");
-    showCollectionDetail(created.id);  // сразу открываем — удобно накидать фильмов
-  };
-  document.getElementById("coll-create-btn").onclick = () => create(displayType);
-  document.getElementById("coll-create-featured")?.addEventListener("click", () => create("featured"));
-}
-
 const COLLECTION_STATUS_LABEL = {
   draft: "admin_status_draft", published: "admin_status_published", archived: "admin_status_archived",
 };
@@ -1331,6 +1489,373 @@ function collectionStatusActions(status) {
   if (status === "draft") return [["publish", "admin_publish", "primary"], ["archive", "admin_archive", ""]];
   if (status === "published") return [["unpublish", "admin_unpublish", ""], ["archive", "admin_archive", ""]];
   return [["restore", "admin_restore", "primary"]];
+}
+
+// ── Единый полноэкранный редактор подборки ───────────────────────────────────
+// Один экран для создания и редактирования, обычной и крупной подборки.
+// Структура строится один раз; при вводе обновляются только затронутые узлы —
+// поэтому фокус и позиция курсора не прыгают.
+function showCollectionEditor({ sessionId = null } = {}) {
+  unwireDetailScroll();
+  const session = sessionId ? CollectionEditor.restore(sessionId) : CollectionEditor.get();
+  if (!session) { setActiveTab("home"); showHome(); return; }
+  document.body.classList.add("collection-editor-open");
+  window.scrollTo(0, 0);
+
+  const isNew = session.collectionId == null;
+  screen.innerHTML = `
+    <div class="editor-head">
+      <button class="back" id="ed-back" aria-label="${esc(t("back"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
+      <h1 id="ed-head-title"></h1>
+      <span class="admin-badge" id="ed-badge"></span>
+    </div>
+    <main class="collection-editor">
+      <label class="admin-field"><span>${esc(t("admin_title_label"))}</span>
+        <input id="ed-title" class="code-input" maxlength="80" autocomplete="off"
+               placeholder="${esc(t("collections_title_ph"))}">
+        <em class="editor-error" id="ed-err-title" hidden></em></label>
+      <label class="admin-field"><span>${esc(t("admin_description_label"))}</span>
+        <textarea id="ed-desc" class="admin-textarea" rows="2" maxlength="1000"
+                  placeholder="${esc(t("admin_description_ph"))}"></textarea></label>
+      <div class="admin-field"><span>${esc(t("admin_display_label"))}</span>
+        <div class="admin-segments" role="radiogroup" aria-label="${esc(t("admin_display_label"))}" id="ed-segments">
+          ${["standard", "featured"].map(type => `
+            <button type="button" class="admin-segment" data-display="${type}" role="radio">
+              <b>${esc(t(type === "standard" ? "admin_display_standard" : "admin_display_featured"))}</b>
+              <small>${esc(t(type === "standard" ? "admin_display_standard_hint" : "admin_display_featured_hint"))}</small>
+            </button>`).join("")}
+        </div></div>
+      <div class="admin-field" id="ed-backdrop-field" hidden>
+        <span>${esc(t("admin_backdrop_label"))}</span>
+        <div id="ed-backdrops"></div>
+        <button type="button" class="editor-link" id="ed-url-toggle">${esc(t("admin_backdrop_url"))}</button>
+        <input id="ed-backdrop-url" class="code-input" maxlength="2048" autocomplete="off"
+               placeholder="https://…" hidden>
+      </div>
+      <div class="admin-field" id="ed-preview-field" hidden>
+        <span>${esc(t("admin_preview_label"))}</span><div id="ed-preview"></div></div>
+      <div class="admin-field">
+        <div class="editor-films-head"><span>${esc(t("chip_collections"))}</span>
+          <button type="button" class="editor-link" id="ed-add-film">${esc(t("coll_add_film_btn"))}</button></div>
+        <em class="editor-error" id="ed-err-films" hidden></em>
+        <div id="ed-films"></div></div>
+      <div class="editor-actions">
+        <button class="pbtn" id="ed-save">${esc(t("admin_save_draft"))}</button>
+        <button class="pbtn primary" id="ed-publish">${esc(t("admin_publish"))}</button>
+      </div>
+      ${isNew ? "" : `<div class="editor-actions secondary" id="ed-lifecycle"></div>`}
+    </main>`;
+
+  const titleInput = document.getElementById("ed-title");
+  const descInput = document.getElementById("ed-desc");
+  const urlInput = document.getElementById("ed-backdrop-url");
+  titleInput.value = session.fields.title;
+  descInput.value = session.fields.description;
+  urlInput.value = session.fields.backdropUrl;
+
+  // Точечные апдейты: перерисовываем только то, что зависит от изменившегося поля.
+  const paintHeader = () => {
+    const state = CollectionEditor.get();
+    document.getElementById("ed-head-title").textContent =
+      state.fields.title.trim() ||
+      t(state.fields.displayType === "featured" ? "admin_new_featured" : "admin_new_collection");
+    const badge = document.getElementById("ed-badge");
+    const status = state.collectionId == null ? "unsaved" : (state.serverStatus || "draft");
+    badge.className = `admin-badge admin-badge-${status === "unsaved" ? "draft" : status}`;
+    badge.textContent = status === "unsaved"
+      ? t(state.dirty ? "admin_unsaved" : "admin_new_badge")
+      : t(COLLECTION_STATUS_LABEL[status] || "admin_status_draft");
+  };
+
+  const paintPreview = () => {
+    const state = CollectionEditor.get();
+    const featured = state.fields.displayType === "featured";
+    document.getElementById("ed-preview-field").hidden = !featured;
+    document.getElementById("ed-backdrop-field").hidden = !featured;
+    if (!featured) return;
+    const host = document.getElementById("ed-preview");
+    host.replaceChildren(featuredCollectionCard({
+      id: state.collectionId,
+      title: state.fields.title.trim() || t("admin_preview_title_ph"),
+      description: state.fields.description,
+      backdrop: resolveEditorBackdrop(state),
+      film_count: state.films.length,
+    }, { preview: true }));
+  };
+
+  const paintBackdrops = () => {
+    const state = CollectionEditor.get();
+    const host = document.getElementById("ed-backdrops");
+    const options = state.films.map(f => ({ url: f.backdrop_url || f.poster_url, title: f.title }))
+      .filter(art => art.url).slice(0, 12);
+    if (!options.length) {
+      host.className = "";
+      host.innerHTML = `<p class="admin-hint" style="margin:0 0 8px;">${esc(t("admin_backdrop_none"))}</p>`;
+      return;
+    }
+    host.className = "admin-backdrops";
+    host.replaceChildren(...options.map(art => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `admin-backdrop${state.fields.backdropUrl === art.url ? " on" : ""}`;
+      button.setAttribute("aria-label", art.title);
+      button.innerHTML = `<img src="${posterSrc(art.url, true)}" alt="" loading="lazy" data-img-retry>`;
+      button.onclick = () => {
+        CollectionEditor.updateField("backdropUrl", art.url);
+        urlInput.value = art.url;
+        paintBackdrops(); paintPreview(); paintHeader();
+      };
+      return button;
+    }));
+  };
+
+  const paintSegments = () => {
+    const state = CollectionEditor.get();
+    document.querySelectorAll("#ed-segments [data-display]").forEach(button => {
+      const on = button.dataset.display === state.fields.displayType;
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-checked", String(on));
+    });
+  };
+
+  const paintFilms = () => {
+    const state = CollectionEditor.get();
+    const host = document.getElementById("ed-films");
+    if (!state.films.length) {
+      host.className = "";
+      host.innerHTML = `<p class="admin-hint" style="margin:6px 0 0;">${esc(t("admin_no_films"))}</p>`;
+      return;
+    }
+    host.className = "admin-item-list";
+    host.replaceChildren(...state.films.map((movie, index) => {
+      const row = document.createElement("div");
+      row.className = "admin-item";
+      row.innerHTML = `
+        <span class="admin-item-art">${movie.poster_url ? `<img loading="lazy" src="${posterSrc(movie.poster_url, true)}" alt="" data-img-retry>` : ""}</span>
+        <span class="admin-item-copy"><b>${esc(movie.title)}</b><small>${esc(movie.year || "")}</small></span>
+        <div class="admin-item-controls">
+          <button class="admin-icon-btn" data-up ${index === 0 ? "disabled" : ""} aria-label="${esc(t("admin_move_up"))}">${appIcon("arrowUp")}</button>
+          <button class="admin-icon-btn" data-down ${index === state.films.length - 1 ? "disabled" : ""} aria-label="${esc(t("admin_move_down"))}">${appIcon("arrowDown")}</button>
+          <button class="admin-icon-btn danger" data-remove aria-label="${esc(t("admin_remove"))}">${appIcon("trash")}</button>
+        </div>`;
+      const move = (delta) => {
+        const films = CollectionEditor.get().films.slice();
+        const target = index + delta;
+        if (target < 0 || target >= films.length) return;
+        [films[index], films[target]] = [films[target], films[index]];
+        CollectionEditor.setFilms(films);
+        paintFilms(); paintPreview(); paintHeader();
+      };
+      row.querySelector("[data-up]").onclick = () => move(-1);
+      row.querySelector("[data-down]").onclick = () => move(1);
+      row.querySelector("[data-remove]").onclick = () => {
+        CollectionEditor.setFilms(CollectionEditor.get().films.filter(f => f.id !== movie.id));
+        paintFilms(); paintBackdrops(); paintPreview(); paintHeader();
+      };
+      return row;
+    }));
+  };
+
+  const paintLifecycle = () => {
+    const host = document.getElementById("ed-lifecycle");
+    if (!host) return;
+    const state = CollectionEditor.get();
+    // Архив и «удалить навсегда» появляются только у существующей записи.
+    if (state.collectionId == null) { host.innerHTML = ""; return; }
+    const status = state.serverStatus || "draft";
+    host.innerHTML = collectionStatusActions(status)
+      .filter(([action]) => action !== "publish")
+      .map(([action, key]) => `<button class="pbtn" data-life="${action}">${esc(t(key))}</button>`).join("")
+      + `<button class="pbtn danger" data-life="delete">${esc(t("admin_delete_forever"))}</button>`;
+    host.querySelectorAll("[data-life]").forEach(button => button.onclick = async () => {
+      const action = button.dataset.life;
+      button.disabled = true;
+      if (action === "delete") {
+        tg.showConfirm(t("coll_delete_confirm", state.fields.title), async ok => {
+          if (!ok) { button.disabled = false; return; }
+          if (await adminCall(`/api/admin/collections/${state.collectionId}`, { method: "DELETE" })) {
+            CollectionEditor.discard(); closeCollectionEditor();
+          } else button.disabled = false;
+        });
+        return;
+      }
+      const updated = await adminCall(
+        `/api/admin/collections/${state.collectionId}/${action}`,
+        { method: "POST", body: JSON.stringify({ version: state.version }) });
+      button.disabled = false;
+      if (!updated) return;
+      CollectionEditor.applyServer(updated);
+      paintHeader(); paintLifecycle();
+    });
+  };
+
+  const repaintAll = () => { paintHeader(); paintSegments(); paintBackdrops(); paintPreview(); paintFilms(); paintLifecycle(); };
+
+  // Каждое нажатие клавиши уходит в состояние, но НЕ перестраивает поле ввода.
+  titleInput.addEventListener("input", () => {
+    CollectionEditor.updateField("title", titleInput.value);
+    document.getElementById("ed-err-title").hidden = true;
+    paintHeader(); paintPreview();
+  });
+  descInput.addEventListener("input", () => {
+    CollectionEditor.updateField("description", descInput.value);
+    paintPreview();
+  });
+  urlInput.addEventListener("input", () => {
+    CollectionEditor.updateField("backdropUrl", urlInput.value.trim());
+    paintBackdrops(); paintPreview();
+  });
+  document.getElementById("ed-url-toggle").onclick = () => {
+    urlInput.hidden = !urlInput.hidden;
+    if (!urlInput.hidden) urlInput.focus();
+  };
+  document.querySelectorAll("#ed-segments [data-display]").forEach(button => button.onclick = () => {
+    CollectionEditor.updateField("displayType", button.dataset.display);
+    tg?.HapticFeedback?.selectionChanged?.();
+    paintSegments(); paintBackdrops(); paintPreview(); paintHeader();
+  });
+  document.getElementById("ed-add-film").onclick = () => {
+    CollectionEditor.persistNow();     // уходим на пикер — состояние уже сохранено
+    showSearch({ type: "collection-editor", sessionId: CollectionEditor.get().sessionId });
+  };
+  document.getElementById("ed-save").onclick = () => saveCollectionEditor({ publish: false });
+  document.getElementById("ed-publish").onclick = () => saveCollectionEditor({ publish: true });
+  document.getElementById("ed-back").onclick = () => confirmLeaveEditor();
+
+  repaintAll();
+}
+
+// Открыть редактор для существующей подборки: тянем актуальные данные и версию,
+// заводим из них сессию — дальше экран не ходит на сервер за состоянием.
+async function openCollectionEditorFor(collectionId) {
+  const collection = await adminCall(`/api/admin/collections/${collectionId}`);
+  if (!collection) return;
+  CollectionEditor.fromCollection(collection);
+  showCollectionEditor();
+}
+
+function resolveEditorBackdrop(state) {
+  // Тот же порядок падения, что и на сервере, — превью не расходится с итогом.
+  if (state.fields.backdropUrl) return state.fields.backdropUrl;
+  const withBackdrop = state.films.find(f => f.backdrop_url);
+  if (withBackdrop) return withBackdrop.backdrop_url;
+  if (state.fields.coverUrl) return state.fields.coverUrl;
+  return state.films.find(f => f.poster_url)?.poster_url || null;
+}
+
+function closeCollectionEditor() {
+  document.body.classList.remove("collection-editor-open");
+  setActiveTab("home");
+  showHome();
+}
+
+function confirmLeaveEditor() {
+  const state = CollectionEditor.get();
+  if (!state || !state.dirty) { CollectionEditor.discard(); closeCollectionEditor(); return; }
+  tg.showConfirm(t("admin_unsaved_changes"), ok => {
+    if (!ok) return;                       // «Отмена» — остаёмся в редакторе
+    CollectionEditor.discard();            // выход без сохранения: записи в БД не появится
+    closeCollectionEditor();
+  });
+}
+
+// Один контроллер сохранения: знает, создаём мы подборку или обновляем.
+async function saveCollectionEditor({ publish = false } = {}) {
+  const state = CollectionEditor.get();
+  if (!state) return;
+  const saveButton = document.getElementById("ed-save");
+  const publishButton = document.getElementById("ed-publish");
+  if (saveButton.disabled || publishButton.disabled) return;   // защита от двойного тапа
+  const title = state.fields.title.trim();
+  if (!title) {
+    const error = document.getElementById("ed-err-title");
+    error.textContent = t("admin_err_title"); error.hidden = false;
+    const input = document.getElementById("ed-title");
+    input.scrollIntoView({ block: "center" });
+    input.focus();
+    return;
+  }
+  if (publish && !state.films.length) {
+    const error = document.getElementById("ed-err-films");
+    error.textContent = t("admin_err_films"); error.hidden = false;
+    error.scrollIntoView({ block: "center" });
+    return;
+  }
+  saveButton.disabled = true; publishButton.disabled = true;
+  try {
+    let collectionId = state.collectionId;
+    if (collectionId == null) {
+      // Ключ идемпотентности живёт в сессии: повтор после ошибки не создаст дубль.
+      const created = await adminCall("/api/admin/collections", {
+        method: "POST",
+        headers: { "Idempotency-Key": state.createRequestId },
+        body: JSON.stringify({
+          title, description: state.fields.description || null,
+          display_type: state.fields.displayType,
+          backdrop_url: state.fields.backdropUrl || null,
+          ordered_film_ids: state.films.map(f => f.id),
+        }),
+      });
+      if (!created) return;
+      collectionId = created.id;
+      const fresh = await adminCall(`/api/admin/collections/${collectionId}`);
+      CollectionEditor.becomeExisting({
+        id: collectionId, version: fresh?.version || 1, status: fresh?.status || "draft" });
+    } else {
+      const updated = await adminCall(`/api/admin/collections/${collectionId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          version: state.version, title,
+          description: state.fields.description || null,
+          display_type: state.fields.displayType,
+          backdrop_url: state.fields.backdropUrl || null,
+        }),
+      });
+      if (!updated) return;
+      CollectionEditor.applyServer(updated);
+      await syncEditorFilms(collectionId);
+    }
+    if (publish) {
+      const current = CollectionEditor.get();
+      const published = await adminCall(`/api/admin/collections/${collectionId}/publish`, {
+        method: "POST", body: JSON.stringify({ version: current.version }) });
+      // Черновик уже создан: даже если публикация не прошла, введённое не теряется.
+      if (published) CollectionEditor.applyServer(published);
+    }
+    tg?.HapticFeedback?.notificationOccurred?.("success");
+    showCollectionEditor({ sessionId: CollectionEditor.get().sessionId });  // остаёмся в редакторе
+  } finally {
+    const save = document.getElementById("ed-save");
+    const pub = document.getElementById("ed-publish");
+    if (save) save.disabled = false;
+    if (pub) pub.disabled = false;
+  }
+}
+
+// Для существующей подборки состав правим точечно: добавляем новое, убираем
+// снятое и один раз фиксируем порядок.
+async function syncEditorFilms(collectionId) {
+  const state = CollectionEditor.get();
+  const server = await adminCall(`/api/admin/collections/${collectionId}`);
+  if (!server) return;
+  const serverIds = (server.items || []).map(f => f.id);
+  const localIds = state.films.map(f => f.id);
+  for (const id of serverIds.filter(existing => !localIds.includes(existing))) {
+    await adminCall(`/api/admin/collections/${collectionId}/films/${id}`, { method: "DELETE" });
+  }
+  for (const id of localIds.filter(local => !serverIds.includes(local))) {
+    await adminCall(`/api/admin/collections/${collectionId}/films`,
+      { method: "POST", body: JSON.stringify({ src: "id", ref: String(id) }) });
+  }
+  if (localIds.length > 1) {
+    const fresh = await adminCall(`/api/admin/collections/${collectionId}`);
+    if (fresh) {
+      const reordered = await adminCall(`/api/admin/collections/${collectionId}/items/order`, {
+        method: "PUT",
+        body: JSON.stringify({ version: fresh.version, ordered_film_ids: localIds }) });
+      if (reordered) CollectionEditor.applyServer(reordered);
+    }
+  }
 }
 
 async function showCollectionDetail(id) {
@@ -2000,7 +2525,13 @@ function showSearch(mode = null) {
   window.scrollTo(0, 0);
   const start = emptyState("🔍", t("search_start_t"), t("search_start_s"));
   screen.innerHTML = `<div class="search-bar">${backBtn()}<input id="si" placeholder="${esc(t("search_ph"))}" autofocus></div><div id="sr">${start}</div>`;
-  wireBack(mode ? () => showCollectionDetail(mode.id) : () => { setActiveTab("home"); showHome(); });
+  // Возврат зависит от того, откуда пришли: редактор восстанавливаем по сессии
+  // (введённое название и остальные поля переживают этот переход).
+  wireBack(() => {
+    if (mode?.type === "collection-editor") showCollectionEditor({ sessionId: mode.sessionId });
+    else if (mode) showCollectionDetail(mode.id);
+    else { setActiveTab("home"); showHome(); }
+  });
   const input = document.getElementById("si");
   const results = document.getElementById("sr");
   let timer;
@@ -2035,7 +2566,30 @@ function showSearch(mode = null) {
             mode ? t("coll_confirm_add", it.title) : t("confirm_add", it.title),
             async ok => {
               if (!ok) return;
-              if (mode) {
+              if (mode?.type === "collection-editor") {
+                // Возвращаем фильм В СЕССИЮ редактора, а не в базу: подборка
+                // может ещё не существовать, а введённые поля должны уцелеть.
+                const restored = CollectionEditor.restore(mode.sessionId);
+                if (!restored) { tg.showAlert(t("load_err")); return; }
+                // Резолвим фильм в общий каталог, НЕ добавляя его в личный
+                // список куратора.
+                const film = await adminCall("/api/admin/films/resolve", { method: "POST",
+                  body: JSON.stringify({ src: it.src, ref: it.ref }) });
+                if (!film?.id) return;
+                const merged = mergeUniqueFilms(restored.films, [{
+                  id: film.id, title: film.title || it.title, year: film.year || it.year,
+                  poster_url: film.poster_url || it.poster || it.poster_url,
+                  backdrop_url: film.backdrop_url || null,
+                }]);
+                if (merged.length === restored.films.length) {
+                  tg.showAlert(t("coll_already_in"), () => showCollectionEditor({ sessionId: mode.sessionId }));
+                  return;
+                }
+                CollectionEditor.setFilms(merged);
+                CollectionEditor.persistNow();
+                tg.HapticFeedback?.notificationOccurred("success");
+                showCollectionEditor({ sessionId: mode.sessionId });
+              } else if (mode) {
                 const r = await api(`/api/admin/collections/${mode.id}/films`,
                   { method: "POST", body: JSON.stringify({ src: it.src, ref: it.ref }) });
                 tg.HapticFeedback?.notificationOccurred("success");

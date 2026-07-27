@@ -818,3 +818,30 @@ section{margin-top:30px;}
 .admin-backdrop img{width:100%;height:100%;object-fit:cover;display:block;}
 .admin-backdrop.on{border-color:var(--accent);}
 .admin-preview{margin-top:2px;}
+
+/* ── Полноэкранный редактор подборки ─────────────────────────────────────────
+   Пока он открыт, глобальные плавающие элементы убираются: они перекрывали
+   поля и кнопки сохранения. Состояние показывает собственный заголовок. */
+body.collection-editor-open{padding-bottom:0;}
+body.collection-editor-open #tabbar,
+body.collection-editor-open .admin-indicator{display:none;}
+.editor-head{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:12px;
+  padding:calc(var(--safe-top) + 10px) 20px 12px;background:linear-gradient(180deg,var(--bg) 76%,transparent);}
+.editor-head h1{flex:1;min-width:0;overflow:hidden;font-size:19px;font-weight:700;
+  letter-spacing:-.025em;text-overflow:ellipsis;white-space:nowrap;}
+.collection-editor{padding:2px 20px calc(28px + env(safe-area-inset-bottom));}
+.collection-editor .admin-field{margin-bottom:18px;}
+/* Кнопки сохранения остаются в потоке документа: фиксированная панель на iOS
+   уезжает под клавиатуру. */
+.editor-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px;}
+.editor-actions.secondary{grid-template-columns:1fr 1fr;margin-top:10px;}
+.editor-actions .pbtn{min-height:48px;}
+.editor-link{min-height:44px;padding:0 4px;border:0;background:none;color:var(--accent-2);
+  font:600 13px var(--font);cursor:pointer;}
+.editor-films-head{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.editor-films-head>span{color:var(--ink-2);font-size:12px;}
+.editor-error{display:block;margin-top:6px;color:#fca5a5;font-size:12px;font-style:normal;}
+.collection-editor button,.collection-editor [role="button"]{min-height:44px;}
+.collection-editor .admin-backdrop{min-height:60px;}
+.collection-editor .admin-segment{min-height:64px;}
+@media(max-width:360px){.editor-head,.collection-editor{padding-left:16px;padding-right:16px;}}

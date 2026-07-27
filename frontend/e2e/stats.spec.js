@@ -577,3 +577,140 @@ test("featured card survives a broken backdrop image", async ({ page }) => {
   await expect(page.locator(".featured-card-meta")).toBeVisible();
   await expect(page.locator(".featured-card-scrim")).toBeVisible();
 });
+
+// ── Единый редактор подборки: состояние переживает переход к поиску фильмов ──
+function editorHarness(page, { collections = [], onCreate = null } = {}) {
+  page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
+  page.addInitScript(() => {
+    window.__posts = [];
+    window.Telegram = { WebApp: {
+      initData: "test", initDataUnsafe: { user: { id: 1, first_name: "D" } },
+      ready() {}, expand() {}, setHeaderColor() {}, setBackgroundColor() {}, disableVerticalSwipes() {},
+      HapticFeedback: { impactOccurred() {}, notificationOccurred() {}, selectionChanged() {} },
+      showConfirm(_t, cb) { cb(true); }, showAlert() {}, openTelegramLink() {},
+    } };
+    try { localStorage.setItem("addictfilm.adminMode.enabled", "true"); } catch (e) { /* ignore */ }
+  });
+  return page.route("**/api/**", async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() !== "GET") {
+      await page.evaluate(([p, b]) => window.__posts.push({ path: p, body: b }),
+        [path, request.postData() || ""]);
+    }
+    if (path === "/api/admin/films/resolve") {
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+        id: 77, title: "Донни Дарко", year: "2001",
+        poster_url: "https://img/p.jpg", backdrop_url: "https://img/b.jpg" }) });
+      return;
+    }
+    if (path === "/api/admin/collections" && request.method() === "POST") {
+      onCreate?.();
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ id: 900 }) });
+      return;
+    }
+    const json = path === "/api/me" ? { id: 1, label: "D", role: "admin" }
+      : path === "/api/me/capabilities"
+        ? { is_admin: true, admin_role: "admin", capabilities: ["collections.read", "collections.write", "content.publish"] }
+      : path === "/api/search" ? { items: [{ src: "i", ref: "tt0246578", title: "Донни Дарко", year: "2001", poster: null, rating: 8 }] }
+      : (path === "/api/collections" || path === "/api/admin/collections") ? { items: collections }
+      : path === "/api/admin/collections/900" ? { id: 900, title: "Рапунцель", description: "Мультфильмы на вечер", display_type: "featured", status: "draft", version: 1, items: [] }
+      : path.startsWith("/api/browse") ? { items: [] }
+      : path === "/api/genres" ? { items: [] }
+      : { items: [] };
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(json) });
+  });
+}
+
+test("plus opens the editor directly and creates nothing until saved", async ({ page }) => {
+  await editorHarness(page);
+  await page.goto("/");
+  await page.locator("#coll-add-home").click();
+  // Сразу полный редактор: промежуточной формы с одним полем названия больше нет.
+  await expect(page.locator(".collection-editor")).toBeVisible();
+  await expect(page.locator("#ed-title")).toBeVisible();
+  await expect(page.locator("#ed-publish")).toBeVisible();
+  await expect(page.locator("#coll-title-input")).toHaveCount(0);
+  // И ни одной записи в базе до явного сохранения.
+  expect(await page.evaluate(() => window.__posts.filter(p => p.path === "/api/admin/collections").length)).toBe(0);
+  // Глобальные плавающие элементы не перекрывают редактор.
+  await expect(page.locator("#tabbar")).toBeHidden();
+  // Индикатор режима остаётся в DOM, но не должен перекрывать редактор.
+  await expect(page.locator("#admin-indicator")).toBeHidden();
+});
+
+test("editor keeps title, description, format and films across the film picker", async ({ page }) => {
+  await editorHarness(page);
+  await page.goto("/");
+  await page.locator("#coll-add-home").click();
+
+  await page.locator("#ed-title").fill("Рапунцель");
+  await page.locator("#ed-desc").fill("Мультфильмы на вечер");
+  await page.locator('[data-display="featured"]').click();
+
+  await page.locator("#ed-add-film").click();
+  await page.locator("#si").fill("донни");
+  await page.locator("#sr .poster").first().click();
+
+  // Вернулись в ТОТ ЖЕ редактор: ничего не сбросилось.
+  await expect(page.locator("#ed-title")).toHaveValue("Рапунцель");
+  await expect(page.locator("#ed-desc")).toHaveValue("Мультфильмы на вечер");
+  await expect(page.locator('[data-display="featured"]')).toHaveClass(/on/);
+  await expect(page.locator(".admin-item")).toHaveCount(1);
+  await expect(page.locator(".admin-item-copy b")).toHaveText("Донни Дарко");
+  // Превью отражает введённое.
+  await expect(page.locator("#ed-preview .featured-card-title")).toHaveText("Рапунцель");
+});
+
+test("first save creates exactly one collection with its films", async ({ page }) => {
+  let creates = 0;
+  await editorHarness(page, { onCreate: () => { creates += 1; } });
+  await page.goto("/");
+  await page.locator("#coll-add-home").click();
+  await page.locator("#ed-title").fill("Рапунцель");
+  await page.locator("#ed-add-film").click();
+  await page.locator("#si").fill("донни");
+  await page.locator("#sr .poster").first().click();
+
+  await page.locator("#ed-save").click();
+  await expect(page.locator("#ed-badge")).toHaveText("Черновик");
+  expect(creates).toBe(1);
+  const created = await page.evaluate(() =>
+    window.__posts.filter(p => p.path === "/api/admin/collections").map(p => JSON.parse(p.body)));
+  expect(created).toHaveLength(1);
+  expect(created[0].ordered_film_ids).toEqual([77]);
+  expect(created[0].title).toBe("Рапунцель");
+  // После сохранения остаёмся в редакторе, а не улетаем на главную.
+  await expect(page.locator(".collection-editor")).toBeVisible();
+});
+
+test("empty title blocks save and shows a field error", async ({ page }) => {
+  await editorHarness(page);
+  await page.goto("/");
+  await page.locator("#coll-add-home").click();
+  await page.locator("#ed-save").click();
+  await expect(page.locator("#ed-err-title")).toBeVisible();
+  expect(await page.evaluate(() => window.__posts.filter(p => p.path === "/api/admin/collections").length)).toBe(0);
+});
+
+test("ordinary user sees no collection creation action", async ({ page }) => {
+  await page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
+  await page.addInitScript(() => {
+    window.Telegram = { WebApp: {
+      initData: "test", initDataUnsafe: { user: { id: 2, first_name: "U" } },
+      ready() {}, expand() {}, setHeaderColor() {}, setBackgroundColor() {}, disableVerticalSwipes() {},
+      HapticFeedback: { impactOccurred() {}, notificationOccurred() {}, selectionChanged() {} },
+      showConfirm(_t, cb) { cb(true); }, showAlert() {}, openTelegramLink() {},
+    } };
+  });
+  await page.route("**/api/**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    const json = path === "/api/me" ? { id: 2, label: "U", role: null }
+      : path === "/api/me/capabilities" ? { is_admin: false, admin_role: null, capabilities: [] }
+      : { items: [] };
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(json) });
+  });
+  await page.goto("/");
+  await expect(page.locator("#coll-add-home")).toHaveCount(0);
+  await expect(page.locator("#featured-add")).toHaveCount(0);
+});
