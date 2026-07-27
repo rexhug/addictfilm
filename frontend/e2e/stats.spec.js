@@ -104,7 +104,7 @@ async function openStats(page, paired = false, options = {}) {
     const json = path === "/api/me"
       ? { id: 1, label: "Denys", username: "denys", role: null }
       : path === "/api/recommendations/random"
-        ? { item: { ...recommendationMovie, role: "random", reasons: ["UNSEEN_PICK", "HIGH_QUALITY"] }, context: "solo" }
+        ? { item: { ...recommendationMovie, role: "random", strategy: "discovery", reasons: ["UNSEEN_PICK", "RANDOM_DISCOVERY"] }, context: "solo" }
       : path === "/api/recommendations/quiz/start"
         ? recommendationPayload()
       : path.endsWith("/answer") && path.startsWith("/api/recommendations/quiz/")
@@ -122,6 +122,8 @@ async function openStats(page, paired = false, options = {}) {
           quizItems = quizItems.map(item => (item.id === body.film_id ? replacement : item));
           return { id: "quiz_test", items: quizItems, replacement, context: "solo" };
         })()
+      : path === "/api/wishlist/random"
+        ? { item: { ...recommendationMovie, id: 11, title: "Wishlist Pick", reasons: ["IN_WISHLIST"] }, cycle: { cycle: 1, wishlist_size: 3, shown_in_cycle: 1, remaining_in_cycle: 2 } }
       : /^\/api\/recommendations\/\d+\/feedback$/.test(path)
         ? { ok: true }
       : path === "/api/movie/1/status"
@@ -200,8 +202,9 @@ test("adaptive picker completes a mobile-safe eight-question flow without old to
   await expect(page.getByRole("heading", { name: "Что посмотреть?" })).toBeVisible();
   await expect(page.getByText("Мой топ")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Случайный фильм" }).click();
-  await expect(page.getByText("Из фильмов, которых ты ещё не видел · Высокая оценка зрителей")).toBeVisible();
+  await page.getByRole("button", { name: "Умный случайный фильм" }).click();
+  await expect(page.getByText("Из фильмов, которых ты ещё не видел · Находка не на слуху")).toBeVisible();
+  await expect(page.getByText("Находка", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Уже смотрел" })).toBeVisible();
   await page.getByRole("button", { name: "Другой вариант" }).click();
   await expect(page.locator(".recommendation-film")).toHaveCount(1);
@@ -900,4 +903,18 @@ test("inside Telegram the init data header is still sent", async ({ page }) => {
   await page.waitForTimeout(600);
   expect(headers.length).toBeGreaterThan(0);
   expect(headers[0]).toContain("query_id=test");
+});
+
+
+test("wishlist roulette is a separate mode from smart random", async ({ page }) => {
+  await openStats(page);
+  await page.getByRole("button", { name: "Подбор" }).click();
+  // Два разных режима с разными обещаниями: рулетка по своему списку и подбор
+  // из каталога. Раньше оба назывались «случайный фильм».
+  await expect(page.getByRole("button", { name: /Случайный из «Хочу»/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Умный случайный фильм/ })).toBeVisible();
+
+  await page.getByRole("button", { name: /Случайный из «Хочу»/ }).click();
+  await expect(page.locator(".recommendation-film-copy h2", { hasText: "Wishlist Pick" })).toBeVisible();
+  await expect(page.getByText("Случайный из «Хочу»", { exact: true })).toBeVisible();
 });

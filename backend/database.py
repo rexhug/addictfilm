@@ -49,6 +49,7 @@ _SCHEMA_MIGRATION_FEATURED_COLLECTIONS = "2026-07-27-featured-collections-v1"
 _SCHEMA_MIGRATION_MEDIA_TYPE = "2026-07-27-media-type-v1"
 _SCHEMA_MIGRATION_MOVIE_ENRICHMENT = "2026-07-27-movie-enrichment-v1"
 _SCHEMA_MIGRATION_WORKER_HEARTBEATS = "2026-07-27-worker-heartbeats-v1"
+_SCHEMA_MIGRATION_WISHLIST_ROULETTE = "2026-07-27-wishlist-roulette-v1"
 
 # Значения films.media_type. Дублируются константами, а не импортом media_type,
 # чтобы не затенять одноимённый аргумент get_or_create_film.
@@ -736,6 +737,36 @@ async def _apply_worker_heartbeats_migration() -> None:
         await db.commit()
 
 
+async def _apply_wishlist_roulette_migration() -> None:
+    """Состояние рулетки по списку «Хочу посмотреть».
+
+    Прежний выбор был равномерным, но без памяти: один и тот же фильм мог
+    выпадать подряд, а человек воспринимает это как «оно сломалось». Храним
+    номер цикла и показанные в нём фильмы — тогда каждый фильм показывается
+    один раз за круг, а история показов не удаляется ради перезапуска круга.
+    """
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS wishlist_random_state (
+                user_id      BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                cycle_number INTEGER NOT NULL DEFAULT 1,
+                updated_at   TEXT NOT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS wishlist_random_picks (
+                user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                film_id      INTEGER NOT NULL REFERENCES films(id) ON DELETE CASCADE,
+                cycle_number INTEGER NOT NULL,
+                shown_at     TEXT NOT NULL,
+                PRIMARY KEY (user_id, film_id, cycle_number)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_wishlist_picks_cycle "
+                         "ON wishlist_random_picks(user_id, cycle_number)")
+        await db.commit()
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -755,6 +786,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_MEDIA_TYPE, _apply_media_type_migration),
         (_SCHEMA_MIGRATION_MOVIE_ENRICHMENT, _apply_movie_enrichment_migration),
         (_SCHEMA_MIGRATION_WORKER_HEARTBEATS, _apply_worker_heartbeats_migration),
+        (_SCHEMA_MIGRATION_WISHLIST_ROULETTE, _apply_wishlist_roulette_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -1955,24 +1987,103 @@ async def count_user_films(user_id: int, status: str) -> int:
         return (await cur.fetchone())[0]
 
 
-async def get_random_want(user_id: int) -> dict | None:
+async def pick_random_wishlist_film(user_id: int) -> dict | None:
+    """Равномерная рулетка по списку «Хочу посмотреть» БЕЗ повторов внутри круга.
+
+    Требования, из которых выросла эта реализация:
+    * равные шансы у всех фильмов — никакого рейтинга, жанров и настроения:
+      человек уже выбрал эти фильмы сам, ранжировать их заново незачем;
+    * фильм не повторяется, пока не показаны все остальные из текущего списка;
+    * список меняется на ходу: добавленный фильм включается в текущий круг, а
+      удалённый или просмотренный просто перестаёт участвовать;
+    * выбор и запись показа атомарны — иначе два одновременных запроса вернут
+      один фильм.
+
+    Круг НЕ обнуляет историю: он увеличивает номер, и прошлые показы остаются
+    для аудита.
+    """
+    now = _now()
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
-        count_row = await (await db.execute(
-            "SELECT COUNT(*) FROM user_films WHERE user_id = ? AND status = 'want_to_watch'", (user_id,)
-        )).fetchone()
-        count = int(count_row[0]) if count_row else 0
-        if not count:
-            return None
-        offset = secrets.randbelow(count)
-        cur = await db.execute(
-            """
-            SELECT f.*, uf.rating AS my_rating FROM user_films uf JOIN films f ON f.id = uf.film_id
-            WHERE uf.user_id = ? AND uf.status = 'want_to_watch'
-            ORDER BY uf.added_at DESC LIMIT 1 OFFSET ?
-            """, (user_id, offset))
-        row = await cur.fetchone()
-        return dict(row) if row else None
+        # Строка состояния — точка сериализации. В Postgres блокируем её, чтобы
+        # параллельные запросы одного пользователя выстроились в очередь.
+        await db.execute(
+            "INSERT INTO wishlist_random_state (user_id, cycle_number, updated_at) "
+            "VALUES (?,1,?) ON CONFLICT DO NOTHING", (user_id, now))
+        if _PG:
+            state = await (await db.execute(
+                "SELECT cycle_number FROM wishlist_random_state WHERE user_id=? FOR UPDATE",
+                (user_id,))).fetchone()
+        else:
+            state = await (await db.execute(
+                "SELECT cycle_number FROM wishlist_random_state WHERE user_id=?",
+                (user_id,))).fetchone()
+        cycle = int(state["cycle_number"]) if state else 1
+
+        async def _unseen(current_cycle: int) -> list[dict]:
+            cur = await db.execute(
+                """
+                SELECT f.*, uf.rating AS my_rating FROM user_films uf
+                JOIN films f ON f.id = uf.film_id
+                WHERE uf.user_id = ? AND uf.status = 'want_to_watch'
+                  AND NOT EXISTS (SELECT 1 FROM wishlist_random_picks p
+                                  WHERE p.user_id = uf.user_id AND p.film_id = uf.film_id
+                                    AND p.cycle_number = ?)
+                ORDER BY f.id
+                """, (user_id, current_cycle))
+            return [dict(row) for row in await cur.fetchall()]
+
+        pool = await _unseen(cycle)
+        if not pool:
+            # Либо круг пройден, либо список пуст — отличаем одно от другого.
+            total = await (await db.execute(
+                "SELECT COUNT(*) FROM user_films WHERE user_id=? AND status='want_to_watch'",
+                (user_id,))).fetchone()
+            if not int(total[0] or 0):
+                await db.commit()
+                return None
+            cycle += 1
+            await db.execute(
+                "UPDATE wishlist_random_state SET cycle_number=?, updated_at=? WHERE user_id=?",
+                (cycle, now, user_id))
+            pool = await _unseen(cycle)
+            if not pool:
+                await db.commit()
+                return None
+
+        chosen = pool[secrets.randbelow(len(pool))]
+        await db.execute(
+            "INSERT INTO wishlist_random_picks (user_id, film_id, cycle_number, shown_at) "
+            "VALUES (?,?,?,?) ON CONFLICT DO NOTHING",
+            (user_id, chosen["id"], cycle, now))
+        await db.execute(
+            "UPDATE wishlist_random_state SET updated_at=? WHERE user_id=?", (now, user_id))
+        await db.commit()
+        return chosen
+
+
+async def get_random_want(user_id: int) -> dict | None:
+    """Совместимость со старым именем и старым эндпоинтом /api/random."""
+    return await pick_random_wishlist_film(user_id)
+
+
+async def wishlist_roulette_state(user_id: int) -> dict:
+    """Диагностика круга: сколько показано и сколько осталось."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        state = await (await db.execute(
+            "SELECT cycle_number FROM wishlist_random_state WHERE user_id=?", (user_id,))).fetchone()
+        cycle = int(state["cycle_number"]) if state else 1
+        total = await (await db.execute(
+            "SELECT COUNT(*) FROM user_films WHERE user_id=? AND status='want_to_watch'",
+            (user_id,))).fetchone()
+        shown = await (await db.execute(
+            "SELECT COUNT(*) FROM wishlist_random_picks p JOIN user_films uf "
+            "ON uf.user_id=p.user_id AND uf.film_id=p.film_id AND uf.status='want_to_watch' "
+            "WHERE p.user_id=? AND p.cycle_number=?", (user_id, cycle))).fetchone()
+    return {"cycle": cycle, "wishlist_size": int(total[0] or 0),
+            "shown_in_cycle": int(shown[0] or 0),
+            "remaining_in_cycle": max(0, int(total[0] or 0) - int(shown[0] or 0))}
 
 
 # ── Deterministic recommendations ───────────────────────────────────────────

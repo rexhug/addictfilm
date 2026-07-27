@@ -66,7 +66,10 @@ const DICT = {
     chip_popular: "Популярное", chip_top: "Топ сообщества", chip_genres: "Жанры", chip_collections: "Подборки", chip_nav: "Разделы каталога",
     see_all: "Смотреть все",
     reco_title: "Не знаешь, что включить?", reco_sub: "Подберём фильм под твоё настроение", reco_cta: "Подобрать",
-    pick_tab: "Подбор", pick_title: "Что посмотреть?", pick_sub: "Быстрый вариант или подборка по настроению.", pick_random_title: "Случайный фильм", pick_random_sub: "Из каталога, который ты ещё не смотрел", pick_quiz_title: "Подбор по настроению", pick_quiz_sub: "7–8 коротких вопросов — и три варианта на вечер", pick_start: "Начать", pick_loading: "Подбираю фильм…", pick_another: "Другой вариант", pick_not_suggest: "Не предлагать", pick_open: "Открыть фильм", pick_want: "В «Хочу»", pick_watched: "Уже смотрел", pick_back: "Назад", pick_restart: "Начать заново", pick_progress: (n, total) => `${n} из ${total}`, pick_best: "Лучший выбор", pick_reliable: "Надёжный вариант", pick_unexpected: "Неожиданный вариант", pick_best_sub: "Максимально совпадает с твоим запросом", pick_reliable_sub: "Высокий рейтинг и уверенный выбор", pick_unexpected_sub: "Чуть необычнее, но может приятно удивить", pick_empty: "Пока не хватает фильмов для подбора", pick_empty_sub: "Добавь несколько фильмов через поиск — каталог будет расти вместе с приложением.", pick_pair: "Смотреть с партнёром", pick_solo: "Смотреть одному", pick_pair_unavailable: "Пара сейчас не подключена",
+    pick_tab: "Подбор", pick_title: "Что посмотреть?", pick_sub: "Быстрый вариант или подборка по настроению.", pick_wishlist_title: "Случайный из «Хочу»", pick_wishlist_sub: "Рулетка по твоему списку — без повторов",
+    pick_random_title: "Умный случайный фильм", pick_random_sub: "Одно хорошее кино из каталога, без вопросов", pick_quiz_title: "Подбор по настроению", pick_quiz_sub: "7–8 коротких вопросов — и три варианта на вечер", pick_start: "Начать", pick_loading: "Подбираю фильм…", pick_another: "Другой вариант", pick_not_suggest: "Не предлагать", pick_open: "Открыть фильм", pick_want: "В «Хочу»", pick_watched: "Уже смотрел", pick_back: "Назад", pick_restart: "Начать заново", pick_progress: (n, total) => `${n} из ${total}`, pick_best: "Лучший выбор", pick_reliable: "Надёжный вариант", pick_unexpected: "Неожиданный вариант", pick_best_sub: "Максимально совпадает с твоим запросом", pick_reliable_sub: "Высокий рейтинг и уверенный выбор", pick_unexpected_sub: "Чуть необычнее, но может приятно удивить", pick_empty: "Пока не хватает фильмов для подбора", pick_empty_sub: "Добавь несколько фильмов через поиск — каталог будет расти вместе с приложением.", pick_pair: "Смотреть с партнёром", pick_solo: "Смотреть одному", pick_pair_unavailable: "Пара сейчас не подключена",
+    pick_wishlist_empty: "В списке «Хочу посмотреть» пока пусто",
+    strategy_reliable: "Надёжный выбор", strategy_taste_match: "Под твой вкус", strategy_discovery: "Находка",
     pick_partial: "Под такой запрос в каталоге нашлось меньше вариантов, чем обычно — показываем только то, что действительно подходит.",
     pick_rejected: "Больше не предложим",
     reason_DARK_COMEDY_TONE: "Чёрный юмор и мрачный тон", reason_SATIRICAL_HUMOR: "Сатира на серьёзные темы",
@@ -79,6 +82,8 @@ const DICT = {
     reason_HIGH_QUALITY: "Высокая оценка зрителей", reason_HIDDEN_GEM: "Не на слуху, но крепкий",
     reason_IN_WISHLIST: "Уже в твоём списке «Хочу посмотреть»", reason_PAIR_FRIENDLY: "Подходит вам обоим",
     reason_UNSEEN_PICK: "Из фильмов, которых ты ещё не видел",
+    reason_RANDOM_RELIABLE: "Надёжный выбор", reason_RANDOM_TASTE_MATCH: "Похоже на то, что ты любишь",
+    reason_RANDOM_DISCOVERY: "Находка не на слуху",
     notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся важные события вашей пары", notif_mark_all: "Прочитать все", notif_load_more: "Показать ещё", notif_loading: "Загружаю уведомления…", notif_error: "Не удалось загрузить уведомления", notif_retry: "Повторить", notif_now: "только что", notif_min_ago: (n) => `${n} мин назад`, notif_hour_ago: (n) => `${n} ч назад`, notif_day_ago: (n) => `${n} дн назад`, notif_inapp: "В приложении", notif_telegram: "В Telegram", notif_telegram_hint: "События пары от бота Addict Film", notif_telegram_unavailable: "Бот сейчас недоступен", notif_browser: "В браузере", notif_browser_hint: "Локальные напоминания на этом устройстве",
     back: "Назад", settings_title: "Настройки", settings_loading: "Загружаю настройки…",
     settings_notifications: "Уведомления", settings_notifications_hint: "Важные события пары всегда видны в приложении", settings_notifications_on: "Включены", settings_notifications_off: "Выключены", settings_notifications_permission: "Нужно разрешение", settings_notifications_denied: "Разрешения отключены в Telegram или браузере", settings_notifications_unavailable: "Недоступны на этом устройстве", settings_notifications_error: "Не удалось запросить разрешение",
@@ -192,7 +197,10 @@ const DICT = {
     chip_popular: "Popular", chip_top: "Community Top", chip_genres: "Genres", chip_collections: "Collections", chip_nav: "Catalog sections",
     see_all: "See all",
     reco_title: "Not sure what to watch?", reco_sub: "We'll find a film for your current mood", reco_cta: "Find a film",
-    pick_tab: "Pick", pick_title: "What should we watch?", pick_sub: "A quick pick or a mood-based selection.", pick_random_title: "Random film", pick_random_sub: "From films you have not watched yet", pick_quiz_title: "Pick by mood", pick_quiz_sub: "7–8 quick questions, then three options for tonight", pick_start: "Start", pick_loading: "Finding a film…", pick_another: "Another option", pick_not_suggest: "Don't suggest", pick_open: "Open film", pick_want: "Add to wishlist", pick_watched: "Already watched", pick_back: "Back", pick_restart: "Start over", pick_progress: (n, total) => `${n} of ${total}`, pick_best: "Best match", pick_reliable: "Reliable choice", pick_unexpected: "Unexpected choice", pick_best_sub: "The closest match for your request", pick_reliable_sub: "A highly rated, confident pick", pick_unexpected_sub: "A little more unusual, potentially rewarding", pick_empty: "There are not enough films to recommend yet", pick_empty_sub: "Add a few films through search — the catalog grows with the app.", pick_pair: "Watch with partner", pick_solo: "Watch alone", pick_pair_unavailable: "Your pair is not connected right now",
+    pick_tab: "Pick", pick_title: "What should we watch?", pick_sub: "A quick pick or a mood-based selection.", pick_wishlist_title: "Random from wishlist", pick_wishlist_sub: "A roulette over your own list — no repeats",
+    pick_random_title: "Smart random film", pick_random_sub: "One good film from the catalog, no questions", pick_quiz_title: "Pick by mood", pick_quiz_sub: "7–8 quick questions, then three options for tonight", pick_start: "Start", pick_loading: "Finding a film…", pick_another: "Another option", pick_not_suggest: "Don't suggest", pick_open: "Open film", pick_want: "Add to wishlist", pick_watched: "Already watched", pick_back: "Back", pick_restart: "Start over", pick_progress: (n, total) => `${n} of ${total}`, pick_best: "Best match", pick_reliable: "Reliable choice", pick_unexpected: "Unexpected choice", pick_best_sub: "The closest match for your request", pick_reliable_sub: "A highly rated, confident pick", pick_unexpected_sub: "A little more unusual, potentially rewarding", pick_empty: "There are not enough films to recommend yet", pick_empty_sub: "Add a few films through search — the catalog grows with the app.", pick_pair: "Watch with partner", pick_solo: "Watch alone", pick_pair_unavailable: "Your pair is not connected right now",
+    pick_wishlist_empty: "Your watchlist is empty for now",
+    strategy_reliable: "Reliable choice", strategy_taste_match: "Matches your taste", strategy_discovery: "Discovery",
     pick_partial: "This request has fewer good matches in the catalog than usual — we only show what genuinely fits.",
     pick_rejected: "We won't suggest it again",
     reason_DARK_COMEDY_TONE: "Dark humour with a grim tone", reason_SATIRICAL_HUMOR: "Satire about serious things",
@@ -205,6 +213,8 @@ const DICT = {
     reason_HIGH_QUALITY: "Highly rated by viewers", reason_HIDDEN_GEM: "Not well known, but solid",
     reason_IN_WISHLIST: "Already on your watchlist", reason_PAIR_FRIENDLY: "Works for both of you",
     reason_UNSEEN_PICK: "From films you have not seen yet",
+    reason_RANDOM_RELIABLE: "A reliable choice", reason_RANDOM_TASTE_MATCH: "Close to what you love",
+    reason_RANDOM_DISCOVERY: "An off-the-radar find",
     notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "Important pair events will appear here", notif_mark_all: "Mark all read", notif_load_more: "Show more", notif_loading: "Loading notifications…", notif_error: "Couldn't load notifications", notif_retry: "Try again", notif_now: "just now", notif_min_ago: (n) => `${n}m ago`, notif_hour_ago: (n) => `${n}h ago`, notif_day_ago: (n) => `${n}d ago`, notif_inapp: "In app", notif_telegram: "In Telegram", notif_telegram_hint: "Pair events from the Addict Film bot", notif_telegram_unavailable: "The bot is unavailable right now", notif_browser: "In browser", notif_browser_hint: "Local reminders on this device",
     back: "Back", settings_title: "Settings", settings_loading: "Loading settings…",
     settings_notifications: "Notifications", settings_notifications_hint: "Important pair events are always shown in the app", settings_notifications_on: "On", settings_notifications_off: "Off", settings_notifications_permission: "Permission needed", settings_notifications_denied: "Notifications are blocked in Telegram or your browser", settings_notifications_unavailable: "Unavailable on this device", settings_notifications_error: "Couldn't request permission",
@@ -811,6 +821,10 @@ async function showPicker() {
   window.scrollTo(0, 0);
   screen.innerHTML = `${pickerHeader()}<main class="picker-landing rise d1">
     <p class="picker-lead">${esc(t("pick_sub"))}</p>
+    <button class="picker-mode-card" id="pick-wishlist" type="button">
+      <span class="picker-mode-icon" aria-hidden="true">${PICK_ICONS.shuffle}</span>
+      <span><b>${esc(t("pick_wishlist_title"))}</b><small>${esc(t("pick_wishlist_sub"))}</small></span><i aria-hidden="true">›</i>
+    </button>
     <button class="picker-mode-card" id="pick-random" type="button">
       <span class="picker-mode-icon" aria-hidden="true">${PICK_ICONS.shuffle}</span>
       <span><b>${esc(t("pick_random_title"))}</b><small>${esc(t("pick_random_sub"))}</small></span><i aria-hidden="true">›</i>
@@ -821,6 +835,7 @@ async function showPicker() {
     </button>
   </main>`;
   wireBack(() => { setActiveTab("home"); showHome(); });
+  document.getElementById("pick-wishlist").onclick = () => showWishlistRandom();
   document.getElementById("pick-random").onclick = () => showRandomRecommendation();
   document.getElementById("pick-quiz").onclick = () => startRecommendationQuiz();
 }
@@ -890,6 +905,25 @@ function wireRecommendationMovie(container, item, { mode, sessionId = null, role
   if (another) another.onclick = async () => { await feedback("another"); onAnother?.(); };
 }
 
+// Рулетка по СВОЕМУ списку «Хочу»: никакого рейтинга и настроения — человек уже
+// выбрал эти фильмы сам. Отдельный экран, чтобы её не путали с умным подбором.
+async function showWishlistRandom() {
+  pickerMode(false);
+  screen.innerHTML = `${pickerHeader()}<main class="picker-result"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
+  wireBack(showPicker);
+  try {
+    const { item } = await api("/api/wishlist/random", { method: "POST", body: "{}" });
+    const box = screen.querySelector(".picker-result");
+    box.innerHTML = `<div class="picker-result-label">${esc(t("pick_wishlist_title"))}</div>${recommendationMovieCard(item, { onAnother: showWishlistRandom })}`;
+    wireRecommendationMovie(box, item, { mode: "random", onAnother: showWishlistRandom, returnTo: showPicker });
+  } catch (error) {
+    const message = error.message === "404" ? t("pick_wishlist_empty") : error.message;
+    screen.querySelector(".picker-result").innerHTML = `${pickerError(message)}`;
+  }
+}
+
+const STRATEGY_LABELS = { reliable: "strategy_reliable", taste_match: "strategy_taste_match", discovery: "strategy_discovery" };
+
 async function showRandomRecommendation() {
   pickerMode(false);
   screen.innerHTML = `${pickerHeader()}<main class="picker-result"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
@@ -897,7 +931,9 @@ async function showRandomRecommendation() {
   try {
     const { item } = await api("/api/recommendations/random", { method: "POST", body: JSON.stringify({ language: lang, context: "solo" }) });
     const box = screen.querySelector(".picker-result");
-    box.innerHTML = `<div class="picker-result-label">${esc(t("pick_random_title"))}</div>${recommendationMovieCard(item, { onAnother: showRandomRecommendation })}`;
+    // Стратегия называется честно: «надёжный выбор» и «находка» — разные обещания.
+    const strategy = STRATEGY_LABELS[item.strategy] ? t(STRATEGY_LABELS[item.strategy]) : t("pick_random_title");
+    box.innerHTML = `<div class="picker-result-label">${esc(strategy)}</div>${recommendationMovieCard(item, { onAnother: showRandomRecommendation })}`;
     wireRecommendationMovie(box, item, { mode: "random", onAnother: showRandomRecommendation, returnTo: showPicker });
   } catch (error) {
     screen.querySelector(".picker-result").innerHTML = `${pickerError(error.message === "404" ? t("pick_empty") : error.message)}<p class="picker-empty-copy">${esc(t("pick_empty_sub"))}</p>`;

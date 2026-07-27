@@ -9,13 +9,13 @@ from __future__ import annotations
 import math
 import os
 import re
-import secrets
 
 import database as db
 import media_type
 import mood
 import reasons as reason_codes
 import search
+import smart_random
 import text_matching
 from recommendation_questions import answer_state
 
@@ -678,20 +678,25 @@ async def quiz_results(user_id: int, answers: dict[str, str], language: str,
 
 
 async def random_recommendation(user_id: int, language: str, partner_id: int | None = None) -> dict | None:
-    # A neutral but quality-conscious profile.  Random mode deliberately does
-    # not infer a mood the user did not provide.
-    ranked = await ranked_candidates(user_id, partner_id=partner_id, weights={}, filters={}, context={"risk": "medium"}, minimum=12)
+    """Умный случайный выбор: сначала стратегия, потом фильм внутри неё.
+
+    Режим намеренно не выдумывает настроение, которого человек не называл, —
+    поэтому и причины здесь только фактические.
+    """
+    ranked = await ranked_candidates(user_id, partner_id=partner_id, weights={}, filters={},
+                                     context={"risk": "medium"}, minimum=12)
     if not ranked:
         return None
-    qualified = [movie for movie in ranked if _quality(movie) >= 6.5]
-    pool = qualified or [movie for movie in ranked if _quality(movie) >= 6.0] or ranked
-    # Bounded weighted lottery: quality matters, but the same three blockbusters
-    # are not returned every time.  History exclusion is handled by DB filters.
-    weights = [max(0.1, (_quality(movie) - 5.2) ** 2 + movie.get("_novelty", 0.0)) for movie in pool[:80]]
-    movie = secrets.SystemRandom().choices(pool[:80], weights=weights, k=1)[0]
+    preferences = await db.get_recommendation_preferences(user_id)
+    confidence = profile_confidence(preferences)
+    movie, strategy, used_fallback = smart_random.select(ranked, profile_confidence=confidence)
+    if movie is None:
+        return None
     await db.save_recommendation_tags(movie["id"], movie["_tags"], version=TAG_VERSION)
-    # Случайный режим намеренно не выдумывает настроение, которого человек не
-    # называл, — поэтому и причины здесь только фактические.
-    codes = [reason_codes.UNSEEN_PICK, *build_reasons(
-        movie, pair=partner_id is not None, fallback=reason_codes.HIGH_QUALITY)]
-    return public_movie(movie, role="random", codes=codes, language=language)
+    codes = smart_random.reason_codes_for(strategy, movie, pair=partner_id is not None)
+    result = public_movie(movie, role="random", codes=codes, language=language)
+    # Стратегия отдаётся наружу: интерфейс обязан называть вещи своими именами,
+    # а старые клиенты просто игнорируют лишнее поле.
+    result["strategy"] = strategy
+    result["strategy_fallback"] = used_fallback
+    return result

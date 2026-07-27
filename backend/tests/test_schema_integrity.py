@@ -34,7 +34,8 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("role", {row[1] for row in users})
         self.assertTrue({"movie_enrichment_jobs", "movie_recommendation_profiles",
                          "movie_recommendation_profile_overrides",
-                         "worker_heartbeats"}.issubset({row[0] for row in tables}))
+                         "worker_heartbeats", "wishlist_random_state",
+                         "wishlist_random_picks"}.issubset({row[0] for row in tables}))
         self.assertTrue({"kp_id", "search_text", "poster_checked_at", "artwork_checked_at", "actor_photos_checked_at",
                          "directors_photos", "director_photos_checked_at",
                          "media_type", "media_type_source"}.issubset(
@@ -56,6 +57,7 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
             db._SCHEMA_MIGRATION_FEATURED_COLLECTIONS,
             db._SCHEMA_MIGRATION_MEDIA_TYPE,
             db._SCHEMA_MIGRATION_MOVIE_ENRICHMENT,
+            db._SCHEMA_MIGRATION_WISHLIST_ROULETTE,
             db._SCHEMA_MIGRATION_WORKER_HEARTBEATS,
         ])
 

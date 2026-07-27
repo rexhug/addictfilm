@@ -688,10 +688,23 @@ def _schedule_profile_director_enrichment(user_id: int) -> None:
     task.add_done_callback(_director_profile_enrichment_tasks.discard)
 
 
+@app.post("/api/wishlist/random")
+async def wishlist_random(user: dict = Depends(current_user)):
+    """Рулетка по СВОЕМУ списку «Хочу посмотреть».
+
+    POST, а не GET: выбор меняет состояние круга (фильм помечается показанным),
+    и кэшировать такой ответ нельзя.
+    """
+    item = await db.pick_random_wishlist_film(user["id"])
+    if item is None:
+        raise HTTPException(status_code=404, detail="Список «Хочу посмотреть» пуст")
+    return {"item": item, "cycle": await db.wishlist_roulette_state(user["id"])}
+
+
 @app.get("/api/random")
 async def random_movie(user: dict = Depends(current_user)):
-    m = await db.get_random_want(user["id"])
-    return {"item": m}
+    """Прежний эндпоинт: оставлен для уже установленных клиентов."""
+    return {"item": await db.pick_random_wishlist_film(user["id"])}
 
 
 # ── Adaptive recommendations ────────────────────────────────────────────────

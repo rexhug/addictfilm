@@ -6,7 +6,7 @@ source of truth for routing and scoring semantics.
 """
 from __future__ import annotations
 
-QUESTION_VERSION = "v1"
+QUESTION_VERSION = "quiz-v2"
 
 
 def _text(ru: str, en: str) -> dict[str, str]:
@@ -96,11 +96,15 @@ QUESTIONS: dict[str, dict] = {
         _option("soul", "Немного душевности не помешает", "A little heart is welcome", weights={"emotion": 4}, reason="some heart"),
         _option("satire", "Хочу смеяться над серьёзными вещами", "I want to laugh at serious things", weights={"satire": 5, "dark_comedy": 4}, reason="satire"),
     ]},
-    "h3": {"id": "h3", "branch": "humor", "answer_type": "single", "text": _text("Кого ты готов терпеть два часа?", "Who can you tolerate for two hours?"), "options": [
-        _option("loser", "Неудачника, который всё портит", "A loser who ruins everything", weights={"loser": 4}, reason="a chaotic lead"),
-        _option("arrogant", "Самоуверенного идиота", "A confident idiot", weights={"arrogant": 4}, reason="a flawed lead"),
-        _option("friends", "Странную компанию друзей", "A strange group of friends", weights={"ensemble": 4, "friendship": 3}, reason="an ensemble"),
-        _option("cynical", "Человека, который ненавидит всех", "Someone who hates everyone", weights={"cynical": 5}, reason="a cynical lead"),
+    # Прежний h3 спрашивал про архетип героя (неудачник / самоуверенный идиот /
+    # компания друзей / циник). Ни один из этих признаков не выводится из
+    # доступных метаданных, поэтому все четыре варианта не влияли на выдачу:
+    # человек выбирал разное и получал одно и то же. Заменено на темп — его
+    # каталог измеряет надёжно.
+    "h3": {"id": "h3", "branch": "humor", "answer_type": "single", "text": _text("В каком темпе смотрим?", "What pace are you after?"), "options": [
+        _option("calm", "Спокойно, без суеты", "Calm, unhurried", weights={"slow_pace": 4}, reason="a calm pace"),
+        _option("steady", "Ровно, но не скучно", "Steady, but not slow", weights={"medium_pace": 4}, reason="a steady pace"),
+        _option("wild", "Бешеный ритм и хаос", "Frantic rhythm and chaos", weights={"fast_pace": 5, "absurd": 3}, reason="a frantic pace"),
     ]},
     "e1": {"id": "e1", "branch": "emotion", "answer_type": "single", "text": _text("Что должно задеть тебя сильнее?", "What should move you most?"), "options": [
         _option("romance", "Любовь и отношения", "Love and relationships", weights={"romance": 4, "relationships": 5}, reason="relationships"),
@@ -185,8 +189,12 @@ def next_question_id(answers: dict[str, str]) -> str | None:
         return None
     for step in BRANCH_STEPS[branch]:
         qid = f"t2_{answers.get('t1')}" if step == "__t2__" else step
-        if qid not in QUESTIONS:  # defensive fallback if a future option lacks a specialized T2
-            qid = "t2_horror"
+        if qid not in QUESTIONS:
+            # Раньше здесь стояла молчаливая подмена на t2_horror: человек
+            # выбирал «психологическая игра», а получал вопрос про страх, и
+            # заметить это было нечем. Отсутствие продолжения — ошибка
+            # конфигурации, её ловит validate_question_graph() в тестах.
+            raise KeyError(f"нет специализированного продолжения ветки: {qid}")
         if qid not in answers:
             return qid
     for qid in COMMON_STEPS:
@@ -236,6 +244,6 @@ def answer_reasons(answers: dict[str, str], language: str, limit: int = 4) -> li
             reasons.append(option["reason"])
     if language == "ru":
         # Keep these factual labels compact; they are derived only from chosen answers.
-        translate = {"comfort": "комфорт", "tension": "напряжение", "humor": "юмор", "emotion": "эмоции", "unusual": "необычный опыт", "warm": "тёплая история", "adventure": "приключение", "atmosphere": "атмосфера", "light humor": "лёгкий юмор", "fast pace": "быстрый темп", "steady pace": "ровный темп", "a hopeful tone": "светлый тон", "some drama": "драма", "danger and survival": "опасность и выживание", "psychological tension": "психологическое напряжение", "a mystery": "загадка", "fear of the unknown": "страх неизвестности", "an unreliable hero": "ненадёжный герой", "relationship tension": "напряжение в отношениях", "paranoia": "паранойя", "a mind-bending angle": "игра с восприятием", "a crime mystery": "криминальная загадка", "a disappearance": "исчезновение", "the unexplained": "необъяснимое", "a clear resolution": "понятный финал", "some ambiguity": "немного недосказанности", "an open ending": "открытый финал", "situational humor": "ситуативный юмор", "sharp humor": "сарказм", "absurd humor": "абсурд", "dark humor": "чёрный юмор", "warm humor": "добрый юмор", "an easy watch": "лёгкий просмотр", "some heart": "душевность", "satire": "сатира", "relationships": "отношения", "family": "семья", "friendship": "дружба", "an inspiring story": "вдохновляющая история", "a difficult choice": "сложный выбор", "character relationships": "герои и отношения", "a strong plot": "сильный сюжет", "a balanced story": "баланс героев и сюжета", "a distinctive visual world": "визуальный мир", "a high-concept idea": "необычная идея", "an unusual narrative": "нестандартный рассказ", "unusual characters": "необычные герои", "a reality-bending premise": "сломанная реальность", "accessible originality": "понятная необычность", "understandable originality": "необычность с логикой", "bold originality": "смелая необычность", "dreamlike visuals": "сновидческая атмосфера", "an anxious mood": "тревожная атмосфера", "a puzzle": "головоломка", "a wild adventure": "безумное приключение"}
+        translate = {"comfort": "комфорт", "tension": "напряжение", "humor": "юмор", "emotion": "эмоции", "unusual": "необычный опыт", "warm": "тёплая история", "adventure": "приключение", "atmosphere": "атмосфера", "light humor": "лёгкий юмор", "fast pace": "быстрый темп", "steady pace": "ровный темп", "a hopeful tone": "светлый тон", "some drama": "драма", "danger and survival": "опасность и выживание", "psychological tension": "психологическое напряжение", "a mystery": "загадка", "fear of the unknown": "страх неизвестности", "an unreliable hero": "ненадёжный герой", "relationship tension": "напряжение в отношениях", "paranoia": "паранойя", "a mind-bending angle": "игра с восприятием", "a crime mystery": "криминальная загадка", "a disappearance": "исчезновение", "the unexplained": "необъяснимое", "a clear resolution": "понятный финал", "some ambiguity": "немного недосказанности", "an open ending": "открытый финал", "situational humor": "ситуативный юмор", "sharp humor": "сарказм", "absurd humor": "абсурд", "dark humor": "чёрный юмор", "warm humor": "добрый юмор", "an easy watch": "лёгкий просмотр", "some heart": "душевность", "satire": "сатира", "relationships": "отношения", "family": "семья", "friendship": "дружба", "an inspiring story": "вдохновляющая история", "a difficult choice": "сложный выбор", "a calm pace": "спокойный темп", "a frantic pace": "бешеный ритм", "character relationships": "герои и отношения", "a strong plot": "сильный сюжет", "a balanced story": "баланс героев и сюжета", "a distinctive visual world": "визуальный мир", "a high-concept idea": "необычная идея", "an unusual narrative": "нестандартный рассказ", "unusual characters": "необычные герои", "a reality-bending premise": "сломанная реальность", "accessible originality": "понятная необычность", "understandable originality": "необычность с логикой", "bold originality": "смелая необычность", "dreamlike visuals": "сновидческая атмосфера", "an anxious mood": "тревожная атмосфера", "a puzzle": "головоломка", "a wild adventure": "безумное приключение"}
         reasons = [translate.get(reason, reason) for reason in reasons]
     return reasons[:limit]

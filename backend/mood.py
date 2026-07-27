@@ -343,10 +343,33 @@ ANSWER_CONTRIBUTIONS: dict[tuple[str, str], MoodContribution] = {
     ("e2", "tragic"):     MoodContribution({"darkness": .82, "emotionality": .92}, {"darkness": .85, "emotionality": .75}),
     ("e3", "characters"): MoodContribution({"emotionality": .82, "pace": .35}, {"emotionality": .60, "pace": .40}),
     ("e3", "plot"):       MoodContribution({"pace": .70, "complexity": .60}, {"pace": .50, "complexity": .40}),
+    # tension-ветка: специализированные продолжения. Раньше все 15 вариантов
+    # t2_* не влияли ни на что — человек выбирал «психологическая игра против
+    # всех» и получал ровно ту же выдачу, что и при любом другом ответе.
+    ("t2_psychological", "hero"):     MoodContribution({"complexity": .88, "realism": .35}, {"complexity": .80, "realism": .45}),
+    ("t2_psychological", "close"):    MoodContribution({"emotionality": .78, "tension": .78}, {"emotionality": .70, "tension": .60}),
+    ("t2_psychological", "everyone"): MoodContribution({"tension": .90, "darkness": .72}, {"tension": .85, "darkness": .55}),
+    ("t2_psychological", "eyes"):     MoodContribution({"realism": .15, "complexity": .92}, {"realism": .75, "complexity": .85}),
+    ("t2_mystery", "crime"):       MoodContribution({"complexity": .78, "realism": .78, "darkness": .65}, {"complexity": .70, "realism": .50, "darkness": .45}),
+    ("t2_mystery", "missing"):     MoodContribution({"tension": .82, "emotionality": .70}, {"tension": .70, "emotionality": .50}),
+    ("t2_mystery", "past"):        MoodContribution({"emotionality": .78, "pace": .30}, {"emotionality": .60, "pace": .55}),
+    ("t2_mystery", "unexplained"): MoodContribution({"realism": .18, "tension": .78}, {"realism": .75, "tension": .60}),
+    ("t2_survival", "people"):  MoodContribution({"tension": .88, "darkness": .72, "realism": .72}, {"tension": .80, "darkness": .55, "realism": .40}),
+    ("t2_survival", "nature"):  MoodContribution({"energy": .82, "tension": .88, "realism": .78}, {"energy": .65, "tension": .80, "realism": .50}),
+    ("t2_survival", "system"):  MoodContribution({"complexity": .78, "darkness": .75, "realism": .40}, {"complexity": .70, "darkness": .60, "realism": .40}),
+    ("t2_survival", "self"):    MoodContribution({"complexity": .78, "emotionality": .82, "darkness": .68}, {"complexity": .65, "emotionality": .70, "darkness": .45}),
+    ("t2_horror", "unknown"): MoodContribution({"realism": .22, "tension": .90}, {"realism": .70, "tension": .85}),
+    ("t2_horror", "mind"):    MoodContribution({"complexity": .82, "darkness": .82, "tension": .88}, {"complexity": .75, "darkness": .65, "tension": .80}),
+    ("t2_horror", "threat"):  MoodContribution({"energy": .85, "pace": .80, "realism": .75}, {"energy": .70, "pace": .65, "realism": .45}),
+    # humor-ветка: h3 переписан с неизмеримых архетипов героя на темп.
+    ("h3", "calm"):   MoodContribution({"pace": .25, "energy": .30}, {"pace": .80, "energy": .55}),
+    ("h3", "steady"): MoodContribution({"pace": .52}, {"pace": .40}),
+    ("h3", "wild"):   MoodContribution({"pace": .88, "energy": .88}, {"pace": .85, "energy": .70}),
     # unusual-ветка
     ("u1", "visual"):     MoodContribution({"realism": .20, "pace": .40}, {"realism": .60, "pace": .30}),
     ("u1", "idea"):       MoodContribution({"complexity": .88}, {"complexity": .85}),
     ("u1", "telling"):    MoodContribution({"complexity": .82, "pace": .40}, {"complexity": .75, "pace": .30}),
+    ("u1", "characters"): MoodContribution({"complexity": .70, "realism": .28, "humor": .60}, {"complexity": .60, "realism": .55, "humor": .35}),
     ("u1", "reality"):    MoodContribution({"realism": .15, "complexity": .78}, {"realism": .75, "complexity": .60}),
     ("u2", "low"):        MoodContribution({"complexity": .45}, {"complexity": .45}),
     ("u2", "medium"):     MoodContribution({"complexity": .65}, {"complexity": .45}),

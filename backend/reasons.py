@@ -34,6 +34,10 @@ HIDDEN_GEM = "HIDDEN_GEM"
 IN_WISHLIST = "IN_WISHLIST"
 PAIR_FRIENDLY = "PAIR_FRIENDLY"
 UNSEEN_PICK = "UNSEEN_PICK"
+# Стратегии умного случайного выбора: каждая — отдельное обещание человеку.
+RANDOM_RELIABLE = "RANDOM_RELIABLE"
+RANDOM_TASTE_MATCH = "RANDOM_TASTE_MATCH"
+RANDOM_DISCOVERY = "RANDOM_DISCOVERY"
 
 TEXTS: dict[str, dict[str, str]] = {
     DARK_COMEDY_TONE:  {"ru": "Чёрный юмор и мрачный тон", "en": "Dark humour with a grim tone"},
@@ -55,6 +59,9 @@ TEXTS: dict[str, dict[str, str]] = {
     IN_WISHLIST:       {"ru": "Уже в твоём списке «Хочу посмотреть»", "en": "Already on your watchlist"},
     PAIR_FRIENDLY:     {"ru": "Подходит вам обоим", "en": "Works for both of you"},
     UNSEEN_PICK:       {"ru": "Из фильмов, которых ты ещё не видел", "en": "From films you have not seen yet"},
+    RANDOM_RELIABLE:   {"ru": "Надёжный выбор", "en": "A reliable choice"},
+    RANDOM_TASTE_MATCH: {"ru": "Похоже на то, что ты любишь", "en": "Close to what you love"},
+    RANDOM_DISCOVERY:  {"ru": "Находка не на слуху", "en": "An off-the-radar find"},
 }
 
 KNOWN_CODES = frozenset(TEXTS)
