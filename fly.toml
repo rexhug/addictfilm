@@ -15,19 +15,22 @@ primary_region = 'fra'
 # (Postgres/Neon) — том зайвий, але безпечний (просто не використовується).
 # Щоб прибрати: `fly volume destroy movies_data` (інтерактивно через flyctl).
 [[mounts]]
-  processes = ['web']
+  processes = ['app']
   source = 'movies_data'
   destination = '/data'
 
 # Обогащение каталога — отдельная группа процессов: воркер не должен ни получать
 # публичный HTTP, ни делить память с веб-процессом. `processes` в http_service
 # гарантирует, что трафик идёт только в web.
+# Группа веб-процесса называется `app` — так же, как существующие машины. Иначе
+# Fly считает `web` новой группой, пытается поднять новые машины и упирается в
+# том, уже занятый работающими: деплой падает, а прод остаётся на старой версии.
 [processes]
-  web = "sh -c 'uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}'"
+  app = "sh -c 'uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}'"
   worker = "python -m enrichment.worker"
 
 [http_service]
-  processes = ["web"]
+  processes = ["app"]
   internal_port = 8080
   force_https = true
   auto_stop_machines = 'off'
@@ -42,7 +45,7 @@ primary_region = 'fra'
     path = '/healthz'
 
 [[vm]]
-  processes = ['web']
+  processes = ['app']
   size = 'shared-cpu-1x'
   memory = '256mb'
 
