@@ -9,8 +9,7 @@ from __future__ import annotations
 
 from .extraction import TONE_MOOD_DELTAS, clamp01
 from .models import ExtractedMovieFeatures, FeatureEvidence
-from .taxonomy import (AudienceFlag, CanonicalGenre, CanonicalTone, ContentType,
-                       EvidenceSource)
+from .taxonomy import AudienceFlag, CanonicalGenre, CanonicalTone, ContentType, EvidenceSource
 
 # Тон, который не может сочетаться с флагом аудитории. Не «странно», а прямо
 # противоречит: детская анимация не бывает взрослой чёрной комедией.

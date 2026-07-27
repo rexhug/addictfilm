@@ -14,9 +14,11 @@ import logging
 import os
 import re
 import secrets
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+
 import aiosqlite
 import db_runtime
-from datetime import datetime, timezone, timedelta
 from config import DATABASE_URL
 
 logger = logging.getLogger(__name__)
@@ -54,7 +56,7 @@ _PAIR_INVITE_TTL = timedelta(days=7)
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # Каталог наполняется из kinopoisk (жанры по-русски) и OMDb (по-английски) — из-за
@@ -152,7 +154,7 @@ async def _add_column_if_missing(table: str, col_def: str) -> None:
         async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
             await db.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
             await db.commit()
-    except Exception as exc:  # noqa: BLE001 - drivers expose different exception classes.
+    except Exception as exc:
         # Fresh databases call this only after the base tables are created.  On
         # existing databases the only harmless failure is "already exists".
         # Do not hide syntax, permission, disk, or connectivity errors: those
@@ -703,6 +705,15 @@ async def _apply_movie_enrichment_migration() -> None:
                          "ON movie_recommendation_profiles(feature_version, taxonomy_version)")
         # Ручная правка живёт отдельно и переживает любой пересчёт: иначе
         # исправление, сделанное руками, стирается следующим же обогащением.
+        # Пульс фоновых процессов: без него «очередь стоит» и «воркер умер»
+        # выглядят из диагностики одинаково.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS worker_heartbeats (
+                name       TEXT PRIMARY KEY,
+                worker_id  TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS movie_recommendation_profile_overrides (
                 film_id       INTEGER PRIMARY KEY REFERENCES films(id) ON DELETE CASCADE,
@@ -743,7 +754,41 @@ async def _run_schema_migrations() -> None:
 
 
 # ── Инициализация ────────────────────────────────────────────────────────────
+# Идентификатор консультативной блокировки. Произвольное, но СТАБИЛЬНОЕ число:
+# менять его нельзя — иначе старый и новый процесс возьмут разные замки и снова
+# смогут мигрировать одновременно.
+_SCHEMA_LOCK_KEY = 8_140_233_517_902_611
+
+
+@asynccontextmanager
+async def _schema_migration_lock():
+    """Сериализует инициализацию схемы между процессами Postgres.
+
+    Веб и воркер стартуют одновременно (в Fly это ещё и разные машины), и оба
+    зовут init_db. CREATE TABLE IF NOT EXISTS такое переживает, но ALTER TABLE и
+    журнал миграций — нет: две гонки дают либо дубль, либо ошибку деплоя.
+
+    Блокировка сессионная, а не транзакционная: миграции внутри открывают
+    собственные соединения, и транзакционный замок отпустился бы слишком рано.
+    """
+    if not _PG:
+        yield          # SQLite: один писатель, дополнительная блокировка не нужна
+        return
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as lock_conn:
+        await lock_conn.execute("SELECT pg_advisory_lock(?)", (_SCHEMA_LOCK_KEY,))
+        try:
+            yield
+        finally:
+            # Отпускаем и после ошибки: иначе упавший деплой заблокирует следующий.
+            await lock_conn.execute("SELECT pg_advisory_unlock(?)", (_SCHEMA_LOCK_KEY,))
+
+
 async def init_db() -> None:
+    async with _schema_migration_lock():
+        await _init_schema()
+
+
+async def _init_schema() -> None:
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         # WAL: чтение не блокирует запись — публичный трафик без «database is locked».
         await db.execute("PRAGMA journal_mode=WAL")
@@ -962,7 +1007,7 @@ async def search_cache_get(q: str, max_age_sec: int, empty_max_age_sec: int | No
     if not row:
         return None
     try:
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(row["created_at"])).total_seconds()
+        age = (datetime.now(UTC) - datetime.fromisoformat(row["created_at"])).total_seconds()
     except ValueError:
         return None
     try:
@@ -985,7 +1030,7 @@ async def search_cache_put(q: str, results: list) -> None:
 async def purge_search_cache(max_age_sec: int) -> int:
     """Удалить протухшие записи кэша поиска (иначе таблица растёт без границы).
     Возвращает число удалённых строк."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_sec)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(seconds=max_age_sec)).isoformat()
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute("DELETE FROM search_cache WHERE created_at < ?", (cutoff,))
         await db.commit()
@@ -1014,7 +1059,7 @@ async def backup_db(keep: int = 7) -> str | None:
     if _PG:
         return None
     dirname = os.path.dirname(os.path.abspath(DB_PATH))
-    path = os.path.join(dirname, f"movies.backup-{datetime.now(timezone.utc):%Y%m%d}.db")
+    path = os.path.join(dirname, f"movies.backup-{datetime.now(UTC):%Y%m%d}.db")
     if not os.path.exists(path):
         try:
             async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
@@ -1038,7 +1083,7 @@ async def upsert_user(user: dict) -> None:
     больше не создаёт коммит в Postgres на каждый GET.
     """
     now = _now()
-    last_seen_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+    last_seen_cutoff = (datetime.now(UTC) - timedelta(minutes=15)).isoformat()
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         await db.execute(
             """
@@ -1231,7 +1276,7 @@ async def _enqueue_enrichment(db, film_id: int, *, priority: int) -> None:
         await enrichment_queue.enqueue(
             film_id, feature_version=MOVIE_FEATURE_VERSION,
             taxonomy_version=MOVIE_TAXONOMY_VERSION, priority=priority, connection=db)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("не удалось поставить задание обогащения для film_id=%s", film_id,
                        exc_info=True)
 
@@ -1519,7 +1564,7 @@ async def watched_films_needing_people_photo_enrichment(user_id: int, people_col
         ("directors", "directors_photos", "director_photos_checked_at"),
     }:
         raise ValueError("Unsupported person portrait columns")
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=retry_days)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(days=retry_days)).isoformat()
 
     def incomplete(row: dict) -> bool:
         people = {_person_key(name) for name in _split_people(row.get(people_column))}
@@ -1591,7 +1636,7 @@ def _merge_people_portraits(existing_people: str | None, existing_payload: str |
         names.append(name)
 
     merged: list[dict] = []
-    for key, name in zip(ordered_keys, names):
+    for key, name in zip(ordered_keys, names, strict=False):
         fresh = incoming_by_key.get(key, {})
         old = existing_by_key.get(key, {})
         urls: list[str] = []
@@ -1927,7 +1972,7 @@ _RECOMMENDATION_SESSION_TTL = timedelta(hours=12)
 async def create_recommendation_session(user_id: int, version: str, session_id: str,
                                         current_question: str | None) -> dict:
     now = _now()
-    expires = (datetime.now(timezone.utc) + _RECOMMENDATION_SESSION_TTL).isoformat()
+    expires = (datetime.now(UTC) + _RECOMMENDATION_SESSION_TTL).isoformat()
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         await db.execute(
             "INSERT INTO recommendation_sessions (id, user_id, version, answers, current_question, state, created_at, updated_at, expires_at) "
@@ -1981,7 +2026,7 @@ async def update_recommendation_session(user_id: int, session_id: str, answers: 
 
 async def restart_recommendation_session(user_id: int, session_id: str, current_question: str) -> dict | None:
     now = _now()
-    expires = (datetime.now(timezone.utc) + _RECOMMENDATION_SESSION_TTL).isoformat()
+    expires = (datetime.now(UTC) + _RECOMMENDATION_SESSION_TTL).isoformat()
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute(
             "UPDATE recommendation_sessions SET answers='{}', current_question=?, state='active', results=NULL, updated_at=?, expires_at=? "
@@ -2016,7 +2061,7 @@ async def get_recommendation_candidates(user_id: int, partner_id: int | None = N
     """
     limit = max(60, min(int(limit), 900))
     partner_id = int(partner_id) if partner_id is not None else None
-    recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    recent_cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         if partner_id is None:
@@ -2111,7 +2156,7 @@ async def record_recommendation_history(user_id: int, film_id: int, mode: str, *
 
 async def get_unrated_watched(user_id: int, since_days: int = 30, limit: int = 10) -> list[dict]:
     """Просмотренные за N дней, не оценённые пользователем (для напоминаний ботом)."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=since_days)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(days=since_days)).isoformat()
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
@@ -2429,7 +2474,7 @@ async def browse_by_genre(user_id: int, genre: str, limit: int = 30, offset: int
 async def list_genres() -> list[dict]:
     """Жанры, присутствующие в каталоге, по убыванию частоты: [{name, count}]."""
     global _genres_cache
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     if _genres_cache and _genres_cache[0] > now:
         return [dict(item) for item in _genres_cache[1]]
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
@@ -2841,7 +2886,7 @@ async def create_invite(from_user: int, *, with_state: bool = False) -> str | di
 
         token = secrets.token_urlsafe(12)
         now = _now()
-        expires_at = (datetime.now(timezone.utc) + _PAIR_INVITE_TTL).isoformat()
+        expires_at = (datetime.now(UTC) + _PAIR_INVITE_TTL).isoformat()
         cur = await db.execute(
             "INSERT INTO partner_invites (token, from_user, status, created_at, expires_at) VALUES (?,?, 'pending', ?, ?) "
             "ON CONFLICT DO NOTHING RETURNING token",
@@ -3155,7 +3200,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
     but active production pairs read every saved session for these two IDs.  A
     user's personal list is never modified or reset by this calculation.
     """
-    year_now = datetime.now(timezone.utc).year
+    year_now = datetime.now(UTC).year
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         sessions = await _pair_sessions_for(db, user_id, partner_id, since)

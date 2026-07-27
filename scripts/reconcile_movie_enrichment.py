@@ -10,8 +10,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
 
-import database as db  # noqa: E402
-from enrichment import queue, reconciliation, repository  # noqa: E402
+import database as db
+from enrichment import queue, reconciliation, repository
 
 
 async def main() -> None:

@@ -16,33 +16,31 @@ import os
 import re
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
-import sentry_sdk
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, Response
-from fastapi.staticfiles import StaticFiles
-from starlette.middleware.gzip import GZipMiddleware
-from pydantic import BaseModel, Field
-
 import database as db
 import db_runtime
 import kinopoisk
 import omdb
 import pair_notifications
-from observability import RequestMetrics, observe_request
 import posters
 import ratelimit
 import recommendations
-from recommendation_questions import QUESTION_VERSION, next_question_id, public_question
 import search
+import sentry_sdk
 import stats_cache
 import wikidata
 from auth import validate_init_data
-from config import (ADMIN_TOKEN, ADMIN_USER_IDS, BOT_TOKEN, DATABASE_URL, SENTRY_DSN,
-                    SENTRY_TRACES_SAMPLE_RATE)
+from config import ADMIN_TOKEN, ADMIN_USER_IDS, BOT_TOKEN, DATABASE_URL, SENTRY_DSN, SENTRY_TRACES_SAMPLE_RATE
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
+from observability import RequestMetrics, observe_request
+from pydantic import BaseModel, Field
+from recommendation_questions import QUESTION_VERSION, next_question_id, public_question
+from starlette.middleware.gzip import GZipMiddleware
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)  # урок: иначе лог распухает
@@ -102,7 +100,7 @@ async def _periodic_backup() -> None:
             path = await db.backup_db()
             if path:
                 logger.info("Scheduled SQLite backup: %s", path)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("Scheduled backup failed", exc_info=True)
 
 
@@ -119,7 +117,7 @@ async def _periodic_pair_expiry() -> None:
             await pair_notifications.replay_pending_pair_events()
             await pair_notifications.retry_notification_deliveries()
             await _emit_expired_pair_invites()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("Pair invite expiry sweep failed", exc_info=True)
 
 @app.on_event("startup")
@@ -177,7 +175,7 @@ async def shutdown() -> None:
     for mod in (kinopoisk, omdb, wikidata):
         try:
             await mod.aclose()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     await pair_notifications.drain()
     await db_runtime.close()
@@ -218,9 +216,10 @@ async def healthz():
     try:
         if not await db.ping():
             raise RuntimeError("empty database ping response")
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("Health check failed: database is unavailable")
-        raise HTTPException(status_code=503, detail="Database unavailable")
+        # from None: наружу уходит только код 503 — детали БД в ответе не нужны.
+        raise HTTPException(status_code=503, detail="Database unavailable") from None
     return {"ok": True}
 
 
@@ -353,7 +352,7 @@ async def _enrich_film_visuals(film_id: int, imdb_id: str) -> None:
                 imdb_id, assets.get("poster_url"), assets.get("backdrop_url"),
                 assets.get("age_rating"),
             )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("Visual enrichment failed for film %s", film_id, exc_info=True)
     finally:
         _visual_enrichment_film_ids.discard(film_id)
@@ -400,7 +399,7 @@ async def _enrich_film_people(film_id: int, imdb_id: str, enrich_actors: bool = 
             else:
                 await db.mark_film_director_photos_checked(film_id)
         return enriched
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("People enrichment failed for film %s", film_id, exc_info=True)
         return False
     finally:
@@ -433,7 +432,7 @@ async def rate(film_id: int, body: RateBody, user: dict = Depends(current_user))
         raise HTTPException(status_code=404, detail="Фильм не найден")
     await db.set_rating(user["id"], film_id, body.rating)  # урок: тап по оценке = «просмотрено»
     await db.sync_film_to_partner(user["id"], film_id)  # пара: партнёру фильм в «Хочу»
-    stats_cache.clear()
+    await _invalidate_stats_for(user["id"])
     logger.info("Rating saved: film=%s user=%s rating=%s", film_id, user["id"], body.rating)
     return {"ok": True}
 
@@ -442,7 +441,7 @@ async def rate(film_id: int, body: RateBody, user: dict = Depends(current_user))
 async def unrate(film_id: int, user: dict = Depends(current_user)):
     """Убрать оценку — повторный тап по своей звезде. Статус (списки) не меняется."""
     await db.clear_rating(user["id"], film_id)
-    stats_cache.clear()
+    await _invalidate_stats_for(user["id"])
     return {"ok": True}
 
 
@@ -458,7 +457,7 @@ async def set_status(film_id: int, body: StatusBody, user: dict = Depends(curren
         raise HTTPException(status_code=404, detail="Фильм не найден")
     await db.set_status(user["id"], film_id, body.status)
     await db.sync_film_to_partner(user["id"], film_id)  # пара: партнёру фильм в «Хочу»
-    stats_cache.clear()
+    await _invalidate_stats_for(user["id"])
     return {"ok": True}
 
 
@@ -481,7 +480,7 @@ async def comment(film_id: int, body: CommentBody, user: dict = Depends(current_
 @app.delete("/api/movie/{film_id}")
 async def delete(film_id: int, user: dict = Depends(current_user)):
     await db.remove_from_list(user["id"], film_id)  # из своего списка; в каталоге остаётся
-    stats_cache.clear()
+    await _invalidate_stats_for(user["id"])
     return {"ok": True}
 
 
@@ -561,20 +560,37 @@ async def add(body: AddBody, user: dict = Depends(current_user)):
     if body.status not in ("want_to_watch", "watched"):
         raise HTTPException(status_code=422, detail="Неизвестный статус")
     film_id = await _resolve_film_id(body.src, body.ref, user_id=user["id"])
-    watched_at = datetime.now(timezone.utc).isoformat() if body.status == "watched" else None
+    watched_at = datetime.now(UTC).isoformat() if body.status == "watched" else None
     added = await db.add_to_list(user["id"], film_id, body.status, watched_at)
     await db.sync_film_to_partner(user["id"], film_id)  # пара: партнёру фильм в «Хочу»
     if added:
-        stats_cache.clear()
+        await _invalidate_stats_for(user["id"])
     if not added:
         return {"ok": False, "reason": "exists", "movie_id": film_id}
     return {"ok": True, "movie_id": film_id}
 
 
+async def _invalidate_stats_for(user_id: int) -> None:
+    """Точечный сброс статистики: только затронутый пользователь и его пара.
+
+    Раньше любая оценка вызывала stats_cache.clear() и вымывала кэш ВСЕХ
+    пользователей — на публичном приложении это превращает кэш в бесполезный.
+    Партнёра сбрасываем тоже: общая статистика пары считается из обоих списков.
+    """
+    affected = [user_id]
+    try:
+        partner_id = await db.get_partner(user_id)
+    except Exception:
+        partner_id = None
+    if partner_id:
+        affected.append(partner_id)
+    stats_cache.invalidate_users(affected)
+
+
 # ── API: статистика (личная) и случайный фильм ────────────────────────────────
 @app.get("/api/stats")
 async def stats(user: dict = Depends(current_user)):
-    year = datetime.now(timezone.utc).year
+    year = datetime.now(UTC).year
     key = ("personal", user["id"], year)
     _schedule_profile_director_enrichment(user["id"])
     cached = stats_cache.get(key)
@@ -656,8 +672,8 @@ async def _enrich_profile_people_photos(user_id: int) -> None:
                         )
                     else:
                         await db.mark_film_director_photos_checked(film["id"])
-        stats_cache.clear()
-    except Exception:  # noqa: BLE001
+        await _invalidate_stats_for(user_id)
+    except Exception:
         logger.warning("Profile people enrichment failed for user %s", user_id, exc_info=True)
     finally:
         _director_profile_enrichment_users.discard(user_id)
@@ -1042,7 +1058,7 @@ async def collection_create(body: CollectionBody, user: dict = Depends(current_u
     if display_type not in db.COLLECTION_DISPLAY_TYPES:
         raise HTTPException(status_code=422, detail={
             "code": "INVALID_DISPLAY_TYPE", "message": "Неизвестный формат отображения"})
-    for url_field, value in (("cover_url", body.cover_url), ("backdrop_url", body.backdrop_url)):
+    for _url_field, value in (("cover_url", body.cover_url), ("backdrop_url", body.backdrop_url)):
         if value and not _safe_image_url(value):
             raise HTTPException(status_code=422, detail={
                 "code": "IMAGE_URL_NOT_ALLOWED", "message": "Изображение: разрешён только https"})
@@ -1263,10 +1279,32 @@ class ProfileOverrideBody(BaseModel):
 
 @app.get("/api/admin/enrichment", dependencies=[Depends(require_editor)])
 async def admin_enrichment_status():
+    """Операционная сводка. Без единого идентификатора пользователя, запроса,
+    токена и куска стека — диагностика не должна становиться утечкой."""
     from enrichment import queue as enrichment_queue
     from enrichment import repository as enrichment_repository
-    return {"queue": await enrichment_queue.stats(),
-            "profiles": await enrichment_repository.distribution()}
+    from enrichment.semantic import build_classifier
+    from enrichment.taxonomy import MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION, RULE_EXTRACTOR_VERSION
+    return {
+        "build": {
+            "commit": os.getenv("FLY_MACHINE_VERSION") or os.getenv("GIT_COMMIT_SHA") or None,
+            "region": os.getenv("FLY_REGION") or None,
+        },
+        "versions": {
+            "feature": MOVIE_FEATURE_VERSION,
+            "taxonomy": MOVIE_TAXONOMY_VERSION,
+            "extractor": RULE_EXTRACTOR_VERSION,
+            "semantic_classifier": getattr(build_classifier(), "model_version", None),
+        },
+        "flags": {
+            "mood_layer_enabled": recommendations.MOOD_LAYER_ENABLED,
+            "mood_layer_admin_preview": recommendations.MOOD_LAYER_ADMIN_PREVIEW,
+        },
+        "queue": await enrichment_queue.stats(),
+        "oldest_pending_job": await enrichment_repository.oldest_pending_job(),
+        "worker_heartbeat": await enrichment_repository.heartbeat(),
+        "profiles": await enrichment_repository.distribution(),
+    }
 
 
 @app.get("/api/admin/enrichment/exceptions", dependencies=[Depends(require_editor)])
@@ -1409,7 +1447,7 @@ async def partner_accept(body: AcceptBody, user: dict = Depends(current_user)):
     res = await db.accept_invite(token, user["id"])
     if not res["ok"]:
         return {"ok": False, "reason": res["reason"]}
-    stats_cache.clear()
+    await _invalidate_stats_for(user["id"])
     await pair_notifications.dispatch_pair_event(event=res["event"])
     return {"ok": True, "partner": _partner_brief(await db.get_user(res["partner_id"]), user["id"])}
 
@@ -1429,10 +1467,8 @@ async def partner_decline(body: AcceptBody, user: dict = Depends(current_user)):
 @app.post("/api/partner/unpair")
 async def partner_unpair(user: dict = Depends(current_user)):
     result = await db.unpair(user["id"])
-    stats_cache.clear()
-    if result["kind"] == "ended":
-        await pair_notifications.dispatch_pair_event(event=result["event"])
-    elif result["kind"] == "cancelled":
+    await _invalidate_stats_for(user["id"])
+    if result["kind"] == "ended" or result["kind"] == "cancelled":
         await pair_notifications.dispatch_pair_event(event=result["event"])
     return {"ok": True}
 
@@ -1579,14 +1615,37 @@ async def telegram_avatar(user_id: int, viewer: int = 0, exp: int = 0, sig: str 
                         headers={"Cache-Control": f"private, max-age={_AVATAR_URL_TTL_SECONDS}"})
     except HTTPException:
         raise
-    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError):
-        raise HTTPException(status_code=404, detail="Аватар не знайдено")
+    except (TimeoutError, aiohttp.ClientError, ValueError, KeyError) as error:
+        raise HTTPException(status_code=404, detail="Аватар не знайдено") from error
 
 
 # Дисковый кэш картинок на томе /data (пустует после миграции БД на Postgres).
 # Смысл: раздача с локального диска стабильнее и быстрее, чем каждый раз ходить
 # на CDN Яндекса/Amazon — меньше шансов оборвать медленное мобильное соединение.
-_IMG_CACHE_DIR = os.getenv("IMG_CACHE_DIR") or ("/data/imgcache" if os.path.isdir("/data") else "")
+def _resolve_image_cache_dir() -> str:
+    """Каталог кэша картинок — только если в него реально можно писать.
+
+    Контейнер работает не от root, а том Fly монтируется root-овым. Молча
+    ловить отказ на каждом запросе — худший вариант: кэш «есть», но не работает.
+    Проверяем запись один раз на старте и честно выключаем при отказе.
+    """
+    configured = os.getenv("IMG_CACHE_DIR") or ("/data/imgcache" if os.path.isdir("/data") else "")
+    if not configured:
+        return ""
+    try:
+        os.makedirs(configured, exist_ok=True)
+        probe = os.path.join(configured, ".write-probe")
+        with open(probe, "wb") as handle:
+            handle.write(b"1")
+        os.remove(probe)
+        return configured
+    except OSError as error:
+        logger.warning("Дисковый кэш картинок отключён: в %s нельзя писать (%s)",
+                       configured, error)
+        return ""
+
+
+_IMG_CACHE_DIR = _resolve_image_cache_dir()
 _IMG_CACHE_MAX_BYTES = max(0, int(os.getenv("IMG_CACHE_MAX_BYTES", str(256 * 1024 * 1024))))
 _IMG_CACHE_MAX_FILES = max(0, int(os.getenv("IMG_CACHE_MAX_FILES", "4000")))
 _IMG_CACHE_TRIM_INTERVAL_SECONDS = max(5.0, float(os.getenv("IMG_CACHE_TRIM_INTERVAL_SECONDS", "60")))
@@ -1748,8 +1807,9 @@ async def img_proxy(request: Request, u: str):
         )
     try:
         await asyncio.wait_for(_img_fetch_gate.acquire(), timeout=_IMG_FETCH_WAIT_SECONDS)
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=503, detail="Черга завантаження зображень переповнена")
+    except TimeoutError as error:
+        raise HTTPException(status_code=503,
+                            detail="Черга завантаження зображень переповнена") from error
 
     # Две попытки к CDN. Редиректы проходим вручную: каждая цель повторно
     # проверяется по allowlist, чтобы не превратить прокси в SSRF-канал.
@@ -1787,9 +1847,10 @@ async def img_proxy(request: Request, u: str):
                 raise HTTPException(status_code=502, detail="Слишком много перенаправлений")
             except HTTPException:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception as error:
                 if attempt == 2:
-                    raise HTTPException(status_code=502, detail="Не удалось загрузить изображение")
+                    raise HTTPException(status_code=502,
+                                        detail="Не удалось загрузить изображение") from error
     finally:
         _img_fetch_gate.release()
 

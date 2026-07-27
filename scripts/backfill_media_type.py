@@ -17,13 +17,13 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
 
-import aiosqlite  # noqa: E402
-import database as db  # noqa: E402
-import db_runtime  # noqa: E402
-import kinopoisk  # noqa: E402
-import media_type  # noqa: E402
-import omdb  # noqa: E402
-from config import DATABASE_URL  # noqa: E402
+import aiosqlite
+import database as db
+import db_runtime
+import kinopoisk
+import media_type
+import omdb
+from config import DATABASE_URL
 
 
 async def _pending(limit: int) -> list[dict]:

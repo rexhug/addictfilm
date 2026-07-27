@@ -4,12 +4,10 @@
 Ответ поиска уже содержит всё нужное (постер, рейтинги, imdb id, жанры,
 описание, длительность), поэтому второй запрос за деталями обычно не нужен.
 """
-import asyncio
 import logging
 from collections import OrderedDict
 
 import aiohttp
-
 import ratelimit
 from config import KINOPOISK_TOKENS
 
@@ -145,7 +143,7 @@ async def _request(path: str, params) -> dict | None:
                     continue
                 logger.warning("Kinopoisk %s -> HTTP %s", path, resp.status)
                 return None
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        except (TimeoutError, aiohttp.ClientError) as e:
             logger.warning("Kinopoisk %s error: %s", path, e)
             last = "err"
             continue

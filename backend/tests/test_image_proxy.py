@@ -4,10 +4,9 @@ import time
 import unittest
 from pathlib import Path
 
-from fastapi import HTTPException
-
 import main
 import ratelimit
+from fastapi import HTTPException
 from main import _MAX_IMAGE_BYTES, _is_allowed_image_url, _read_image_limited
 
 

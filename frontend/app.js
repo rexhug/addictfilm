@@ -124,10 +124,10 @@ const DICT = {
     admin_err_title: "Введите название подборки",
     admin_err_films: "Добавьте хотя бы один фильм",
     admin_unsaved_changes: "Изменения не сохранены. Выйти без сохранения?",
-    coll_confirm_add: (t) => `Добавить «${t}» в подборку?`, coll_already_in: "Уже в этой подборке",
-    coll_remove_confirm: (t) => `Убрать «${t}» из подборки?`, coll_add_film_btn: "+ Добавить фильм",
+    coll_confirm_add: (title) => `Добавить «${title}» в подборку?`, coll_already_in: "Уже в этой подборке",
+    coll_remove_confirm: (title) => `Убрать «${title}» из подборки?`, coll_add_film_btn: "+ Добавить фильм",
     coll_edit_hint: "Тап на фильм — убрать из подборки",
-    coll_delete_btn: "Удалить подборку", coll_delete_confirm: (t) => `Удалить подборку «${t}»? Фильмы останутся в каталоге.`,
+    coll_delete_btn: "Удалить подборку", coll_delete_confirm: (title) => `Удалить подборку «${title}»? Фильмы останутся в каталоге.`,
     tab_home: "Главная", tab_want: "Хочу", tab_watched: "Смотрел", tab_pick: "Подбор", tab_stats: "Статистика",
     list_want: "Хочу посмотреть", list_watched: "Смотрел",
     sort_title: "Сортировка", sort_best: "Лучшие", sort_new: "Сначала новые", sort_old: "Сначала старые", sort_worst: "Худшие",
@@ -143,13 +143,13 @@ const DICT = {
     already_watched_link: "Уже смотрел? Отметить",
     my_review: "Мой отзыв", comment_ph: "Написать отзыв…",
     cast_title: "Актёры", share_text: (title) => `Смотри «${title}» в Addict Film`,
-    confirm_remove: (t) => `Убрать «${t}» из своего списка?`,
+    confirm_remove: (title) => `Убрать «${title}» из своего списка?`,
     search_start_t: "Что смотрим?", search_start_s: "Введи название — минимум 2 буквы",
     search_toomany_t: "Слишком часто", search_toomany_s: "Подожди минуту и попробуй снова",
     search_err_t: "Ошибка поиска",
     search_limited_t: "Поиск временно ограничен", search_limited_s: "Дневной лимит источника. Попробуй позже",
     search_none_t: "Ничего не найдено", search_none_s: "Попробуй год или английское название",
-    confirm_add: (t) => `Добавить «${t}» в «Хочу посмотреть»?`, already_in_list: "Уже в твоём списке!",
+    confirm_add: (title) => `Добавить «${title}» в «Хочу посмотреть»?`, already_in_list: "Уже в твоём списке!",
     stats_title: "Мой кинопрофиль", my_stats: "Моя статистика", stats_empty_t: "Пока нет статистики", stats_empty_s: "Добавь фильмы и поставь оценки", calc: "Считаю…",
     stats_profile_fallback: "Киноман", stats_profile_sub: "Твоя история в кино", stats_more: "Показать ещё", stats_less: "Свернуть", stats_view_all: "Посмотреть всех",
     stats_me_tab: "Я", stats_together_tab: "Мы вместе", stats_taste: "Твой вкус", stats_together: "Ваша история",
@@ -250,10 +250,10 @@ const DICT = {
     admin_err_title: "Enter a collection title",
     admin_err_films: "Add at least one film",
     admin_unsaved_changes: "Changes are not saved. Leave without saving?",
-    coll_confirm_add: (t) => `Add "${t}" to the collection?`, coll_already_in: "Already in this collection",
-    coll_remove_confirm: (t) => `Remove "${t}" from the collection?`, coll_add_film_btn: "+ Add film",
+    coll_confirm_add: (title) => `Add "${title}" to the collection?`, coll_already_in: "Already in this collection",
+    coll_remove_confirm: (title) => `Remove "${title}" from the collection?`, coll_add_film_btn: "+ Add film",
     coll_edit_hint: "Tap a film to remove it from the collection",
-    coll_delete_btn: "Delete collection", coll_delete_confirm: (t) => `Delete collection "${t}"? Films stay in the catalog.`,
+    coll_delete_btn: "Delete collection", coll_delete_confirm: (title) => `Delete collection "${title}"? Films stay in the catalog.`,
     tab_home: "Home", tab_want: "Wishlist", tab_watched: "Watched", tab_pick: "Pick", tab_stats: "Stats",
     list_want: "Wishlist", list_watched: "Watched",
     sort_title: "Sort", sort_best: "Best rated", sort_new: "Newest first", sort_old: "Oldest first", sort_worst: "Worst rated",
@@ -269,13 +269,13 @@ const DICT = {
     already_watched_link: "Already seen it? Mark watched",
     my_review: "My review", comment_ph: "Write a review…",
     cast_title: "Cast", share_text: (title) => `Watch "${title}" on Addict Film`,
-    confirm_remove: (t) => `Remove "${t}" from your list?`,
+    confirm_remove: (title) => `Remove "${title}" from your list?`,
     search_start_t: "What are we watching?", search_start_s: "Type a title — at least 2 letters",
     search_toomany_t: "Too many requests", search_toomany_s: "Wait a minute and try again",
     search_err_t: "Search error",
     search_limited_t: "Search temporarily limited", search_limited_s: "Daily source limit. Try later",
     search_none_t: "Nothing found", search_none_s: "Try a year or the English title",
-    confirm_add: (t) => `Add "${t}" to your wishlist?`, already_in_list: "Already in your list!",
+    confirm_add: (title) => `Add "${title}" to your wishlist?`, already_in_list: "Already in your list!",
     stats_title: "My movie profile", my_stats: "My stats", stats_empty_t: "No stats yet", stats_empty_s: "Add films and rate them", calc: "Calculating…",
     stats_profile_fallback: "Movie fan", stats_profile_sub: "Your story in movies", stats_more: "Show more", stats_less: "Show less", stats_view_all: "View all",
     stats_me_tab: "Me", stats_together_tab: "Together", stats_taste: "Your taste", stats_together: "Your story",
@@ -337,7 +337,9 @@ async function api(path, opts = {}) {
   if (cached && cached.expiresAt > Date.now()) return cached.value;
   const res = await fetch(path, {
     ...opts,
-    headers: { "Content-Type": "application/json", "X-Init-Data": tg.initData, ...(opts.headers || {}) },
+    // Вне Telegram tg === null: без ?. падал сам вызов api(), и экран
+    // «нужен Telegram» не успевал отрисоваться — вместо него было исключение.
+    headers: { "Content-Type": "application/json", "X-Init-Data": tg?.initData || "", ...(opts.headers || {}) },
   });
   if (!res.ok) {
     // detail бывает строкой (обычные ошибки) и объектом {code, message} —
@@ -2945,7 +2947,6 @@ function pairHeroHTML(ps) {
   const partnerAvatar = userAvatarHTML(partner, partnerName, "pair-avatar pair-avatar-partner");
   const partnerHandle = partner.username ? `@${partner.username}` : "";
   const myHandle = me?.username || meUser.username ? `@${me?.username || meUser.username}` : "";
-  const empty = !ps.watched && !ps.want && !ps.rated_together;
   const compatibility = ps.agreement != null ? `${ps.agreement}%` : "—";
   const explainer = ps.agreement != null ? t("partner_explainer", ps.rated_together) : t("pair_empty");
   return `<section class="pair-hero">
@@ -3099,8 +3100,6 @@ function peopleStatsSection({ type, title, subtitle, items }) {
 
 function personalStatsHTML(s, scope = "me", expanded = { genres: false }) {
   const hours = Math.floor(s.total_runtime_min / 60);
-  const topGenre = cap(s.top_genres_pct?.[0]?.[0] || "");
-  const topRating = (s.rating_dist || []).reduce((best, count, index, values) => count > values[best] ? index : best, 0) + 1;
   const intro = "";
   const tiles = `<div class="stats-grid">
     ${statTile("eye", s.watched, t(scope === "pair" ? "tile_shared_watched" : "tile_watched"))}${statTile("heart", s.want, t(scope === "pair" ? "tile_shared_want" : "tile_want"))}
@@ -3226,13 +3225,11 @@ async function showAcceptInvite(param) {
 // stroke и один цвет; иконка вторична по отношению к числу.
 function statTile(icon, value, label) { return `<div class="tile">${icon ? `<span class="tile-icon" aria-hidden="true">${appIcon(icon)}</span>` : ""}<div class="tile-val">${esc(value)}</div><div class="tile-label">${esc(label)}</div></div>`; }
 function chartCard(title, inner) { return `<div class="chart-card"><div class="chart-title">${esc(title)}</div>${inner}</div>`; }
-function hbar(label, valueText, pct) { return `<div class="hbar-row"><div class="hbar-label">${esc(label)}</div><div class="hbar-track"><div class="hbar-fill" style="width:${Math.max(4, pct)}%"></div></div><div class="hbar-val">${esc(valueText)}</div></div>`; }
-function personPill(name, count, photoUrl = null) { return `<div class="person-pill"><span class="person-avatar"><span class="fb">${esc(initials(name))}</span>${photoUrl ? `<img loading="lazy" decoding="async" src="${posterSrc(photoUrl)}" alt="" data-img-retry data-person-photo>` : ""}</span><span><b>${esc(name)}</b><small>${esc(t("stats_films", count))}</small></span></div>`; }
 
 // ── Навигация ─────────────────────────────────────────────────────────────────
 function backBtn() { return `<button class="back" aria-label="${esc(t("back"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>`; }
 function wireBack(fn) { const b = screen.querySelector(".back"); if (b) b.onclick = fn; }
-function setActiveTab(t) {
+function setActiveTab(tab) {
   document.querySelectorAll("#tabbar .tab").forEach(b => {
     const active = b.dataset.tab === t;
     b.classList.toggle("active", active);
@@ -3298,7 +3295,7 @@ if (!tg) {
       // Возможности спрашиваем у сервера отдельно и не блокируем ими старт:
       // обычный пользователь получит пустой набор и ничего админского не увидит.
       AdminMode.refresh().catch(() => {});
-      const sp = tg.initDataUnsafe?.start_param || "";
+      const sp = tg?.initDataUnsafe?.start_param || "";
       if (sp.startsWith("inv_")) showAcceptInvite(sp);  // пришли по инвайт-ссылке
       else if (sp.startsWith("film_")) openDetail(+sp.slice(5));  // пришли по ссылке «Поделиться» фильмом
       else showHome();

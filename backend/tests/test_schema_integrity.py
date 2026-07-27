@@ -22,6 +22,8 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_fresh_schema_contains_role_and_catalog_cache_columns(self):
         async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            tables = await (await conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")).fetchall()
             users = await (await conn.execute("PRAGMA table_info(users)")).fetchall()
             films = await (await conn.execute("PRAGMA table_info(films)")).fetchall()
             user_films_fks = await (await conn.execute("PRAGMA foreign_key_list(user_films)")).fetchall()
@@ -30,6 +32,9 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
             )).fetchall()
 
         self.assertIn("role", {row[1] for row in users})
+        self.assertTrue({"movie_enrichment_jobs", "movie_recommendation_profiles",
+                         "movie_recommendation_profile_overrides",
+                         "worker_heartbeats"}.issubset({row[0] for row in tables}))
         self.assertTrue({"kp_id", "search_text", "poster_checked_at", "artwork_checked_at", "actor_photos_checked_at",
                          "directors_photos", "director_photos_checked_at",
                          "media_type", "media_type_source"}.issubset(

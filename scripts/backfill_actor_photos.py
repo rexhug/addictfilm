@@ -18,9 +18,9 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
-import database as db  # noqa: E402
-import kinopoisk  # noqa: E402
-import posters  # noqa: E402
+import database as db
+import kinopoisk
+import posters
 
 
 async def _run(limit: int, run_all: bool) -> None:

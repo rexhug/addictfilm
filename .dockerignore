@@ -1,5 +1,6 @@
 .venv/
 .git/
+.github/
 .claude/
 __pycache__/
 *.pyc
@@ -10,3 +11,9 @@ __pycache__/
 .env
 docs/
 README.md
+node_modules/
+test-results/
+playwright-report/
+frontend/e2e/
+backend/tests/
+scripts/__pycache__/

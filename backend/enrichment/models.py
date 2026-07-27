@@ -128,7 +128,7 @@ class ExtractedMovieFeatures:
     confidence: float = 0.0
     evidence: tuple[FeatureEvidence, ...] = ()
 
-    def with_evidence(self, extra: tuple[FeatureEvidence, ...]) -> "ExtractedMovieFeatures":
+    def with_evidence(self, extra: tuple[FeatureEvidence, ...]) -> ExtractedMovieFeatures:
         return ExtractedMovieFeatures(
             content_type=self.content_type, genres=self.genres, themes=self.themes,
             tones=self.tones, audience_flags=self.audience_flags, mood=dict(self.mood),

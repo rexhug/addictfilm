@@ -16,6 +16,7 @@ import media_type
 import mood
 import reasons as reason_codes
 import search
+import text_matching
 from recommendation_questions import answer_state
 
 TAG_VERSION = "v1"
@@ -88,10 +89,10 @@ def film_tags(film: dict) -> dict[str, float]:
         tags[canonical] = max(tags.get(canonical, 0.0), 1.0)
         for tag in GENRE_TAGS.get(canonical, ()):
             tags[tag] = max(tags.get(tag, 0.0), 0.72)
-    plot = str(film.get("plot") or "").casefold()
-    for tag, words in PLOT_KEYWORDS.items():
-        if any(word in plot for word in words):
-            tags[tag] = max(tags.get(tag, 0.0), 0.55)
+    # По границе слова, а не подстрокой: «семь» не должно находиться в «восемь»,
+    # а «мест» — во «вместе» (см. text_matching).
+    for tag in text_matching.matched_keys(film.get("plot"), PLOT_KEYWORDS):
+        tags[tag] = max(tags.get(tag, 0.0), 0.55)
     return tags
 
 
@@ -371,7 +372,7 @@ async def _warm_catalog_if_sparse(user_id: int, partner_id: int | None, weights:
         # Ignore a provider/cache failure here: local recommendations must stay
         # available even during a third-party outage.
         await search.cached_search(_discovery_query(weights), user_id=user_id)
-    except Exception:  # noqa: BLE001
+    except Exception:
         # Search itself logs provider detail.  A recommendation should never
         # fail solely because the optional catalog warmer could not run.
         pass
@@ -383,7 +384,13 @@ async def _warm_catalog_if_sparse(user_id: int, partner_id: int | None, weights:
 # ни из каталога, ни из обычного подбора — доступность в продукте и пригодность
 # для строгого режима это разные вещи.
 _PROFILE_TRUSTED_STATUSES = ("ready",)
-_PROFILE_BROAD_STATUSES = ("ready", "low_confidence")
+# Устаревший профиль остаётся временно годным — иначе смена версии выключала бы
+# весь каталог из строгого подбора до конца пересчёта, что прямо противоречит
+# заявленной атомарной замене. Но доверия ему меньше: он посчитан прошлыми
+# правилами, поэтому уверенность урезается и не может дотянуть до потолка.
+_PROFILE_USABLE_STATUSES = ("ready", "stale")
+_STALE_CONFIDENCE_FACTOR = 0.85
+_STALE_CONFIDENCE_CAP = 0.65
 
 
 async def _attach_profiles(candidates: list[dict]) -> list[dict]:
@@ -394,7 +401,7 @@ async def _attach_profiles(candidates: list[dict]) -> list[dict]:
     try:
         from enrichment import repository as enrichment_repository
         profiles = await enrichment_repository.get_profiles([film["id"] for film in candidates])
-    except Exception:  # noqa: BLE001 — сбой обогащения не должен ронять подбор
+    except Exception:
         return candidates
     if not profiles:
         return candidates
@@ -406,7 +413,10 @@ async def _attach_profiles(candidates: list[dict]) -> list[dict]:
         if profile and profile["content_type"] in ("tv", "episode", "short"):
             continue
         attached.append({**film, "_profile": profile} if profile else film)
-    return attached or candidates
+    # Возвращаем отфильтрованное КАК ЕСТЬ, даже если пусто: прежний
+    # `attached or candidates` воскрешал сериалы, которые профиль только что
+    # отсеял, — то есть отменял собственную проверку в самый нужный момент.
+    return attached
 
 
 def profile_mood_features(movie: dict):
@@ -414,16 +424,27 @@ def profile_mood_features(movie: dict):
     доверия. Иначе None — и вызывающий считает по прежнему детерминированному
     пути, как и до появления обогащения."""
     profile = movie.get("_profile")
-    if not profile or profile["status"] not in _PROFILE_TRUSTED_STATUSES:
+    if not profile or profile["status"] not in _PROFILE_USABLE_STATUSES:
+        return None
+    # Невалидный профиль не спасает даже статус: он уже не прошёл проверки
+    # здравого смысла, и опираться на его числа нельзя.
+    if profile.get("validation_level") == "invalid":
+        return None
+    if profile["content_type"] in ("tv", "episode", "short"):
         return None
     values = dict(profile["mood"])
-    if not values:
+    if not values or any(not 0.0 <= float(v) <= 1.0 for v in values.values()):
         return None
+    if not set(mood.MOOD_DIMENSIONS) <= set(values):
+        return None
+    confidence = float(profile["confidence"])
+    if profile["status"] == "stale":
+        confidence = min(confidence * _STALE_CONFIDENCE_FACTOR, _STALE_CONFIDENCE_CAP)
     return mood.MovieMoodFeatures(
         film_id=int(movie.get("id") or 0),
         feature_version=profile["feature_version"],
         values=values,
-        confidence=float(profile["confidence"]),
+        confidence=confidence,
         # Тоны канонического словаря переиспользуются как маркеры: составные
         # требования (например «чёрный юмор») проверяют ровно эти имена.
         markers=tuple(sorted(profile["tones"])),
@@ -438,11 +459,16 @@ async def ranked_candidates(user_id: int, *, partner_id: int | None, weights: di
     # Подбор ФИЛЬМОВ: сериалы, эпизоды и короткий метр здесь неуместны, каким бы
     # высоким ни был их рейтинг. Тип берётся из метаданных провайдера, а не из
     # длительности (22 минуты — это и мультсериал, и короткометражка).
-    movies_only = [film for film in candidates if media_type.is_movie_flow_eligible(film)]
-    # Пустой результат означал бы, что тип не проставлен вообще ни у чего, —
-    # тогда лучше отдать прежний пул, чем показать человеку пустой экран.
-    candidates = movies_only or candidates
+    # Подбор ФИЛЬМОВ: сериалы, эпизоды и короткий метр здесь неуместны, каким бы
+    # высоким ни был их рейтинг. Отката к нефильтрованному пулу здесь НЕТ:
+    # прежний `movies_only or candidates` возвращал сериалы обратно ровно в том
+    # случае, ради которого фильтр и написан. Пустая выдача честнее подмены.
+    candidates = [film for film in candidates if media_type.is_movie_flow_eligible(film)]
+    if not candidates:
+        return []
     candidates = await _attach_profiles(candidates)
+    if not candidates:
+        return []
     # First strict, then gently relaxed so a narrow runtime/year choice never
     # leaves a real user with an empty screen.
     strict = [film for film in candidates if _matches_filters(film, filters)]
@@ -487,6 +513,19 @@ def mood_layer_active(*, is_admin: bool = False) -> bool:
 # Потолок базового счёта: match(38) + quality(25) + affinity(17) + wishlist(5)
 # + novelty(5). Используется только для перевода в 0…1 и обратно.
 _MAX_BASE_SCORE = 90.0
+
+
+def normalized_base_score(movie: dict) -> float:
+    """Базовый счёт 0…1 БЕЗ вклада настроения.
+
+    apply_mood_layer кладёт в ``_score`` уже смешанное значение, а исходное
+    прячет в ``_base_score``. Рольевые формулы обязаны брать именно исходное:
+    иначе настроение входит в результат дважды — один раз через смешивание, а
+    второй раз явным слагаемым, и любая калибровка весов становится ложью.
+    Fallback на ``_score`` нужен кандидатам, которые слой настроения не трогал.
+    """
+    score = movie.get("_base_score", movie.get("_score", 0.0))
+    return mood.clamp01(float(score) / _MAX_BASE_SCORE)
 
 
 def apply_mood_layer(ranked: list[dict], answers: dict, preferences_count: int) -> list[dict]:
@@ -608,15 +647,16 @@ async def quiz_results(user_id: int, answers: dict[str, str], language: str,
         floors = mood.collect_dimension_floors(answers)
         requirements = mood.collect_compound_requirements(answers)
         # У «лучшего совпадения» настроение весит больше базового счёта.
-        best_ranked = [{**m, "_best": 0.58 * m["_mood"] + 0.42 * (m["_score"] / _MAX_BASE_SCORE)} for m in ranked]
+        best_ranked = [{**m, "_best": 0.58 * m["_mood"] + 0.42 * normalized_base_score(m)} for m in ranked]
         best, _ = select_mood_role(best_ranked, intent, floors, "best", [], "_best",
                                    requirements=requirements, evidence_first=True)
         # У «надёжного» — наоборот, но только среди уместных по настроению.
-        reliable_ranked = [{**m, "_reliable": 0.38 * m["_mood"] + 0.62 * (m["_score"] / _MAX_BASE_SCORE)} for m in ranked]
+        reliable_ranked = [{**m, "_reliable": 0.38 * m["_mood"] + 0.62 * normalized_base_score(m)} for m in ranked]
         reliable, _ = select_mood_role(reliable_ranked, intent, floors, "reliable",
                                        [best] if best else [], "_reliable", requirements=requirements)
-        unexpected_ranked = [{**m, "_unexpected": 0.50 * m["_mood"] + 0.28 * (m["_novelty"] / 5.0)
-                              + 0.22 * (m["_score"] / _MAX_BASE_SCORE)} for m in ranked]
+        unexpected_ranked = [{**m, "_unexpected": 0.50 * m["_mood"]
+                              + 0.28 * mood.clamp01(m["_novelty"] / 5.0)
+                              + 0.22 * normalized_base_score(m)} for m in ranked]
         unexpected, _ = select_mood_role(unexpected_ranked, intent, floors, "unexpected",
                                          [i for i in (best, reliable) if i], "_unexpected",
                                          requirements=requirements)
@@ -652,6 +692,6 @@ async def random_recommendation(user_id: int, language: str, partner_id: int | N
     await db.save_recommendation_tags(movie["id"], movie["_tags"], version=TAG_VERSION)
     # Случайный режим намеренно не выдумывает настроение, которого человек не
     # называл, — поэтому и причины здесь только фактические.
-    codes = [reason_codes.UNSEEN_PICK] + build_reasons(
-        movie, pair=partner_id is not None, fallback=reason_codes.HIGH_QUALITY)
+    codes = [reason_codes.UNSEEN_PICK, *build_reasons(
+        movie, pair=partner_id is not None, fallback=reason_codes.HIGH_QUALITY)]
     return public_movie(movie, role="random", codes=codes, language=language)

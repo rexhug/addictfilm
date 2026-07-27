@@ -52,7 +52,7 @@ def validate(features: ExtractedMovieFeatures) -> ValidationOutcome:
     for name, severity, predicate in _CHECKS:
         try:
             triggered = bool(predicate(features))
-        except Exception:  # noqa: BLE001 — проверка не должна ронять обогащение
+        except Exception:
             continue
         if triggered:
             warnings.append(name)

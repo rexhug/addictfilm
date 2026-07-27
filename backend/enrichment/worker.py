@@ -14,15 +14,14 @@ import time
 import uuid
 
 import database as db
+from config import ENRICHMENT_BATCH_SIZE as BATCH_SIZE
+from config import ENRICHMENT_IDLE_SLEEP as IDLE_SLEEP_SECONDS
+from config import ENRICHMENT_RECONCILE_INTERVAL as RECONCILE_INTERVAL_SECONDS
 
 from . import queue, reconciliation, repository, service
 from .semantic import build_classifier
 
 logger = logging.getLogger(__name__)
-
-IDLE_SLEEP_SECONDS = float(os.getenv("ENRICHMENT_IDLE_SLEEP", "5"))
-BATCH_SIZE = int(os.getenv("ENRICHMENT_BATCH_SIZE", "5"))
-RECONCILE_INTERVAL_SECONDS = float(os.getenv("ENRICHMENT_RECONCILE_INTERVAL", "900"))
 
 
 class WorkerState:
@@ -42,6 +41,24 @@ def worker_identity() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
 
+HEARTBEAT_INTERVAL_SECONDS = 45.0
+_last_heartbeat = 0.0
+
+
+async def _touch_heartbeat(worker_id: str) -> None:
+    """Пишем не чаще раза в HEARTBEAT_INTERVAL_SECONDS: цикл крутится каждые
+    несколько секунд, и запись на каждой итерации была бы пустой нагрузкой."""
+    global _last_heartbeat
+    now = time.monotonic()
+    if now - _last_heartbeat < HEARTBEAT_INTERVAL_SECONDS:
+        return
+    _last_heartbeat = now
+    try:
+        await repository.touch_heartbeat(worker_id)
+    except Exception:
+        logger.warning("enrichment worker: не удалось записать пульс", exc_info=True)
+
+
 async def process_one(job, *, classifier) -> str:
     try:
         result = await service.process_job(job, classifier=classifier)
@@ -50,7 +67,7 @@ async def process_one(job, *, classifier) -> str:
                     job.id, job.film_id, result["status"], result["skipped"],
                     result["duration_ms"])
         return result["status"]
-    except Exception as error:  # noqa: BLE001 — падение одного фильма не должно
+    except Exception as error:
         code, message = service.classify_error(error)   # останавливать очередь
         status = await queue.fail(job, error_code=code, message=message)
         logger.warning("enrichment: job_id=%s film_id=%s error_code=%s → %s",
@@ -76,6 +93,7 @@ async def run_worker(state: WorkerState | None = None, *, max_cycles: int | None
         if max_cycles is not None and cycles >= max_cycles:
             break
         cycles += 1
+        await _touch_heartbeat(worker_id)
         jobs = await queue.claim(worker_id, batch_size=BATCH_SIZE)
         if not jobs:
             if time.monotonic() - last_reconcile > RECONCILE_INTERVAL_SECONDS:

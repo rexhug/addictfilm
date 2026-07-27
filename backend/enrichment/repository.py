@@ -2,21 +2,21 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiosqlite
 import database as db
 import db_runtime
 import mood
 
-from .models import ExtractedMovieFeatures, PROFILE_STALE
+from .models import PROFILE_STALE, ExtractedMovieFeatures
 from .taxonomy import ContentType
 
 _MOOD_COLUMNS = (*mood.MOOD_DIMENSIONS, "peak_darkness")
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _loads(value, default):
@@ -43,15 +43,30 @@ async def save_profile(film_id: int, features: ExtractedMovieFeatures, *, status
                           ensure_ascii=False, separators=(",", ":"))
     columns = ", ".join(_MOOD_COLUMNS)
     marks = ", ".join("?" for _ in _MOOD_COLUMNS)
-    updates = ", ".join(f"{dim}=?" for dim in _MOOD_COLUMNS)
+    mood_updates = ", ".join(f"{dim}=excluded.{dim}" for dim in _MOOD_COLUMNS)
     async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
-        cur = await conn.execute(
-            f"UPDATE movie_recommendation_profiles SET status=?, content_type=?, "
-            f"feature_version=?, taxonomy_version=?, extractor_version=?, "
-            f"semantic_model_version=?, source_hash=?, genres=?, themes=?, tones=?, "
-            f"audience_flags=?, {updates}, confidence=?, validation_level=?, warnings=?, "
-            f"evidence=?, calculated_at=?, updated_at=? WHERE film_id=?",
-            (status, str(features.content_type), feature_version, taxonomy_version,
+        # Один INSERT ... ON CONFLICT вместо UPDATE-затем-INSERT: два воркера
+        # успевали оба получить rowcount=0 и оба уходили в INSERT, а строка в
+        # таблице одна. Заодно замена профиля становится по-настоящему атомарной —
+        # промежуточного состояния «половина полей новая» не существует.
+        await conn.execute(
+            f"INSERT INTO movie_recommendation_profiles (film_id, status, content_type, "
+            f"feature_version, taxonomy_version, extractor_version, semantic_model_version, "
+            f"source_hash, genres, themes, tones, audience_flags, {columns}, confidence, "
+            f"validation_level, warnings, evidence, calculated_at, updated_at) "
+            f"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,{marks},?,?,?,?,?,?) "
+            f"ON CONFLICT(film_id) DO UPDATE SET status=excluded.status, "
+            f"content_type=excluded.content_type, feature_version=excluded.feature_version, "
+            f"taxonomy_version=excluded.taxonomy_version, "
+            f"extractor_version=excluded.extractor_version, "
+            f"semantic_model_version=excluded.semantic_model_version, "
+            f"source_hash=excluded.source_hash, genres=excluded.genres, "
+            f"themes=excluded.themes, tones=excluded.tones, "
+            f"audience_flags=excluded.audience_flags, {mood_updates}, "
+            f"confidence=excluded.confidence, validation_level=excluded.validation_level, "
+            f"warnings=excluded.warnings, evidence=excluded.evidence, "
+            f"calculated_at=excluded.calculated_at, updated_at=excluded.updated_at",
+            (film_id, status, str(features.content_type), feature_version, taxonomy_version,
              extractor_version, semantic_model_version, source_hash,
              json.dumps(sorted(features.genres), ensure_ascii=False),
              json.dumps(sorted(features.themes), ensure_ascii=False),
@@ -59,23 +74,7 @@ async def save_profile(film_id: int, features: ExtractedMovieFeatures, *, status
              json.dumps(sorted(features.audience_flags), ensure_ascii=False),
              *[values[dim] for dim in _MOOD_COLUMNS],
              float(features.confidence), validation_level,
-             json.dumps(list(warnings), ensure_ascii=False), evidence, now, now, film_id))
-        if not cur.rowcount:
-            await conn.execute(
-                f"INSERT INTO movie_recommendation_profiles (film_id, status, content_type, "
-                f"feature_version, taxonomy_version, extractor_version, semantic_model_version, "
-                f"source_hash, genres, themes, tones, audience_flags, {columns}, confidence, "
-                f"validation_level, warnings, evidence, calculated_at, updated_at) "
-                f"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,{marks},?,?,?,?,?,?)",
-                (film_id, status, str(features.content_type), feature_version, taxonomy_version,
-                 extractor_version, semantic_model_version, source_hash,
-                 json.dumps(sorted(features.genres), ensure_ascii=False),
-                 json.dumps(sorted(features.themes), ensure_ascii=False),
-                 json.dumps(sorted(features.tones), ensure_ascii=False),
-                 json.dumps(sorted(features.audience_flags), ensure_ascii=False),
-                 *[values[dim] for dim in _MOOD_COLUMNS],
-                 float(features.confidence), validation_level,
-                 json.dumps(list(warnings), ensure_ascii=False), evidence, now, now))
+             json.dumps(list(warnings), ensure_ascii=False), evidence, now, now))
         await conn.commit()
 
 
@@ -164,6 +163,41 @@ async def delete_override(film_id: int) -> bool:
             "DELETE FROM movie_recommendation_profile_overrides WHERE film_id=?", (film_id,))
         await conn.commit()
         return bool(cur.rowcount)
+
+
+_HEARTBEAT_KEY = "enrichment_worker"
+
+
+async def touch_heartbeat(worker_id: str) -> None:
+    """Отметка «воркер жив». Дешёвая: один UPSERT раз в десятки секунд.
+
+    Без неё «очередь не разбирается» и «воркер умер» выглядят одинаково.
+    """
+    now = _now()
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+        await conn.execute(
+            "INSERT INTO worker_heartbeats (name, worker_id, updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(name) DO UPDATE SET worker_id=excluded.worker_id, "
+            "updated_at=excluded.updated_at", (_HEARTBEAT_KEY, worker_id, now))
+        await conn.commit()
+
+
+async def heartbeat() -> dict | None:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+        conn.row_factory = aiosqlite.Row
+        row = await (await conn.execute(
+            "SELECT worker_id, updated_at FROM worker_heartbeats WHERE name=?",
+            (_HEARTBEAT_KEY,))).fetchone()
+    return {"worker_id": row["worker_id"], "updated_at": row["updated_at"]} if row else None
+
+
+async def oldest_pending_job() -> str | None:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+        conn.row_factory = aiosqlite.Row
+        row = await (await conn.execute(
+            "SELECT MIN(created_at) AS oldest FROM movie_enrichment_jobs "
+            "WHERE status IN ('pending','retry')")).fetchone()
+    return row["oldest"] if row else None
 
 
 async def distribution() -> dict:

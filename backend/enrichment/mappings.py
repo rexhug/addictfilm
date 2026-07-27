@@ -10,16 +10,12 @@
 """
 from __future__ import annotations
 
-import re
-import unicodedata
+import text_matching
 
 from .taxonomy import AudienceFlag, CanonicalGenre, CanonicalTheme, CanonicalTone
 
-
-def normalize_label(value: str) -> str:
-    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
-    normalized = re.sub(r"[^\w\s-]", " ", normalized)
-    return " ".join(normalized.split())
+# Одна нормализация на весь проект (см. backend/text_matching.py).
+normalize_label = text_matching.normalize_text
 
 
 # ── Жанры провайдеров → канон ────────────────────────────────────────────────
@@ -142,26 +138,14 @@ REVIEWED_THEME_MARKERS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _pattern(needle: str) -> re.Pattern[str]:
-    return re.compile(rf"(?<!\w){re.escape(needle)}", re.IGNORECASE)
-
-
-_TONE_PATTERNS = {tone: tuple(_pattern(n) for n in needles)
-                  for tone, needles in REVIEWED_TONE_MARKERS.items()}
-_THEME_PATTERNS = {theme: tuple(_pattern(n) for n in needles)
-                   for theme, needles in REVIEWED_THEME_MARKERS.items()}
-
-
 def match_reviewed_tones(text: str) -> frozenset[str]:
-    lowered = normalize_label(text)
-    return frozenset(str(tone) for tone, patterns in _TONE_PATTERNS.items()
-                     if any(p.search(lowered) for p in patterns))
+    return frozenset(str(tone) for tone in
+                     text_matching.matched_keys(text, REVIEWED_TONE_MARKERS))
 
 
 def match_reviewed_themes(text: str) -> frozenset[str]:
-    lowered = normalize_label(text)
-    return frozenset(str(theme) for theme, patterns in _THEME_PATTERNS.items()
-                     if any(p.search(lowered) for p in patterns))
+    return frozenset(str(theme) for theme in
+                     text_matching.matched_keys(text, REVIEWED_THEME_MARKERS))
 
 
 # ── Возрастные ограничения → флаги аудитории ─────────────────────────────────

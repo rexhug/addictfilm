@@ -2,9 +2,9 @@ import asyncio
 import tempfile
 import unittest
 from contextlib import asynccontextmanager
-from unittest.mock import patch
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import database as db
 import db_runtime
@@ -170,7 +170,7 @@ class PairNotificationStoreTests(unittest.IsolatedAsyncioTestCase):
         await db.register_invite_recipient(token, 2)
         async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
             await conn.execute("UPDATE partner_invites SET expires_at = ? WHERE token = ?", (
-                (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(), token))
+                (datetime.now(UTC) - timedelta(seconds=1)).isoformat(), token))
             await conn.commit()
         expired, = await db.expire_pending_invites()
         self.assertEqual(expired["event"]["event_type"], "pair.invite.expired")

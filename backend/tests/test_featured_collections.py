@@ -8,10 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi import HTTPException
-
 import database as db
 import main
+from fastapi import HTTPException
 
 
 class _Base(unittest.IsolatedAsyncioTestCase):

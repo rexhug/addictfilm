@@ -14,10 +14,10 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
 
-import media_type  # noqa: E402
-import mood  # noqa: E402
-import recommendations as rec  # noqa: E402
-from recommendation_questions import answer_state  # noqa: E402
+import media_type
+import mood
+import recommendations as rec
+from recommendation_questions import answer_state
 
 SCENARIOS: dict[str, dict[str, str]] = {
     "dark_humor":    {"q1": "humor", "h1": "dark", "h2": "satire", "h3": "cynical", "c1": "any", "c2": "any", "c3": "safe", "c4": "solo"},
@@ -68,7 +68,7 @@ def report(result: dict) -> None:
     print(f"\n=== {result['name']}  (уместных на строгом уровне: {result['eligible']})")
     if not result["picks"]:
         print("    НИ ОДНОГО подходящего фильма — честнее показать пусто, чем случайный")
-    for movie, level in zip(result["picks"], result["levels"]):
+    for movie, level in zip(result["picks"], result["levels"], strict=False):
         features = movie["_mood_features"]
         strength = mood.compound_evidence_strength(features, result["requirements"]) \
             if result["requirements"] else "—"

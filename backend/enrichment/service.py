@@ -7,10 +7,9 @@ import time
 import database as db
 
 from . import extraction, merge, provider, queue, repository, validation
-from .models import (JOB_FULL, NormalizedMovieSource, PROFILE_FAILED, build_source_hash)
+from .models import JOB_FULL, PROFILE_FAILED, NormalizedMovieSource, build_source_hash
 from .semantic import DisabledSemanticClassifier
-from .taxonomy import (MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION, RULE_EXTRACTOR_VERSION,
-                       ContentType)
+from .taxonomy import MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION, RULE_EXTRACTOR_VERSION, ContentType
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +39,24 @@ async def build_profile(film: dict, *, classifier=None, fetch_provider: bool = T
     слой обязан отработать в любом случае, иначе один сбойный компонент
     выключает обогащение целиком.
     """
-    source = provider.from_catalog(film)
-    if not source.title.strip():
+    # Два источника с РАЗНЫМ назначением, и путать их нельзя:
+    #
+    # catalog_source  — только то, что лежит в каталоге. Это воспроизводимая
+    #                   личность записи для пересчёта: согласование считает хеш
+    #                   ровно из неё и обязано получить то же число.
+    # resolved_source — то же плюс временно дотянутое у провайдера. Богаче, но
+    #                   невоспроизводимо: провайдер может ответить иначе или не
+    #                   ответить вовсе.
+    #
+    # Если считать хеш из resolved_source, согласование никогда не совпадёт с
+    # сохранённым значением и будет вечно переставлять фильм в очередь:
+    # changed_source → задание → фетч → тот же профиль → снова changed_source.
+    catalog_source = provider.from_catalog(film)
+    if not catalog_source.title.strip():
         raise PermanentEnrichmentError("missing_title", "у записи нет названия")
+    source = catalog_source
     if fetch_provider:
-        source = await provider.fetch_missing_metadata(film, source)
+        source = await provider.fetch_missing_metadata(film, catalog_source)
 
     deterministic = extraction.extract(source)
 
@@ -53,7 +65,7 @@ async def build_profile(film: dict, *, classifier=None, fetch_provider: bool = T
     semantic_version = getattr(classifier, "model_version", None)
     try:
         semantic = classifier.classify(source)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("enrichment: семантический классификатор упал на film_id=%s",
                        source.film_id, exc_info=True)
         semantic_version = f"{semantic_version}:failed" if semantic_version else None
@@ -84,9 +96,11 @@ async def build_profile(film: dict, *, classifier=None, fetch_provider: bool = T
         "validation_level": outcome.level,
         "warnings": outcome.warnings,
         "semantic_model_version": semantic_version,
-        # Ручная правка — такой же вход, как метаданные провайдера: без неё в
-        # хеше «ничего не изменилось» и пересчёт молча пропускал бы правку.
-        "source_hash": build_source_hash({**source.source_payload(), "override": override}),
+        # Хеш — из КАТАЛОЖНОГО источника, не из дотянутого: см. комментарий выше.
+        # Ручная правка входит в него как полноправный вход, иначе пересчёт
+        # после правки выглядел бы как «ничего не изменилось» и пропускался.
+        # Формула обязана совпадать с reconciliation._needs_rebuild.
+        "source_hash": build_source_hash({**catalog_source.source_payload(), "override": override}),
     }
 
 

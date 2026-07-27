@@ -16,14 +16,22 @@ from __future__ import annotations
 
 import logging
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 import database as db
 import db_runtime
 
-from .models import (EnrichmentJob, JOB_ACTIVE_STATES, JOB_DEAD_LETTER, JOB_COMPLETED,
-                     JOB_FAILED, JOB_FULL, JOB_PENDING, JOB_PROCESSING, JOB_RETRY)
+from .models import (
+    JOB_COMPLETED,
+    JOB_DEAD_LETTER,
+    JOB_FAILED,
+    JOB_FULL,
+    JOB_PENDING,
+    JOB_PROCESSING,
+    JOB_RETRY,
+    EnrichmentJob,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +46,7 @@ STUCK_JOB_TIMEOUT_MINUTES = 20
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _iso(moment: datetime) -> str:
@@ -56,27 +64,25 @@ def retry_delay(attempt: int) -> timedelta:
 async def enqueue(film_id: int, *, feature_version: str, taxonomy_version: str,
                   job_type: str = JOB_FULL, priority: int = 0,
                   expected_source_hash: str | None = None, connection=None) -> bool:
-    """Поставить задание. Идемпотентно: активное задание на ту же версию не
-    дублируется (гарантия — частичный уникальный индекс, а не проверка в коде)."""
-    placeholders = ",".join("?" for _ in JOB_ACTIVE_STATES)
-    sql = (f"SELECT id FROM movie_enrichment_jobs WHERE film_id=? AND job_type=? "
-           f"AND requested_feature_version=? AND requested_taxonomy_version=? "
-           f"AND status IN ({placeholders}) LIMIT 1")
-    params = (film_id, job_type, feature_version, taxonomy_version, *JOB_ACTIVE_STATES)
+    """Поставить задание. Возвращает True, только если задание действительно
+    создано; False — если активное задание на ту же версию уже есть.
 
+    Одна инструкция вместо SELECT + INSERT: между проверкой и вставкой два
+    процесса успевали оба не увидеть строку, и проигравший получал не «уже есть»,
+    а исключение уникальности. Решает частичный уникальный индекс, а не гонка в
+    коде; RETURNING отличает вставку от конфликта одинаково в SQLite и Postgres.
+    """
     async def _run(conn) -> bool:
         conn.row_factory = aiosqlite.Row
-        existing = await (await conn.execute(sql, params)).fetchone()
-        if existing:
-            return False
         now = _now()
-        await conn.execute(
+        cur = await conn.execute(
             "INSERT INTO movie_enrichment_jobs (film_id, job_type, status, priority, "
             "requested_feature_version, requested_taxonomy_version, expected_source_hash, "
-            "run_after, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "run_after, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT DO NOTHING RETURNING id",
             (film_id, job_type, JOB_PENDING, priority, feature_version, taxonomy_version,
              expected_source_hash, now, now, now))
-        return True
+        return await cur.fetchone() is not None
 
     if connection is not None:
         # В той же транзакции, что и сохранение фильма: либо фильм и задание,
@@ -173,7 +179,7 @@ async def fail(job: EnrichmentJob, *, error_code: str, message: str) -> str:
         status, run_after = JOB_DEAD_LETTER, _now()
     else:
         status = JOB_RETRY
-        run_after = _iso(datetime.now(timezone.utc) + retry_delay(job.attempts))
+        run_after = _iso(datetime.now(UTC) + retry_delay(job.attempts))
     now = _now()
     async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         await conn.execute(
@@ -190,7 +196,7 @@ async def release_stuck(timeout_minutes: int = STUCK_JOB_TIMEOUT_MINUTES) -> int
     Таймаут заметно больше измеренной длительности задания (доли секунды на
     правилах), поэтому живое задание сбросить нельзя.
     """
-    cutoff = _iso(datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes))
+    cutoff = _iso(datetime.now(UTC) - timedelta(minutes=timeout_minutes))
     now = _now()
     async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         cur = await conn.execute(

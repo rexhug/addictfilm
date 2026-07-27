@@ -6,9 +6,8 @@
 import unittest
 from unittest.mock import patch
 
-from fastapi import HTTPException
-
 import main
+from fastapi import HTTPException
 
 
 class RequireEditorTests(unittest.IsolatedAsyncioTestCase):

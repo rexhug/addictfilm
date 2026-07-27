@@ -144,7 +144,7 @@ async def _expand(items: list[dict]) -> list[dict]:
         if not eng:
             return items
         more, _, _ = await omdb.search_movies(eng)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return items
 
     seen = {it["ref"] for it in items}
@@ -165,7 +165,7 @@ async def _enrich_items(items: list[dict]) -> dict[str, dict]:
             return
         try:
             d = await omdb.get_movie(it["ref"])
-        except Exception:  # noqa: BLE001
+        except Exception:
             return
         if not d:
             return
@@ -221,10 +221,10 @@ async def find_movies(query: str) -> list[dict]:
                         continue
                     try:
                         await db.get_or_create_film(**_kp_details(doc))
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         logger.warning("Could not cache Kinopoisk film %s", doc.get("id"), exc_info=True)
                 return items
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning("Kinopoisk search failed, fallback: %s", e)
 
     results, _translated, _fail = await omdb.search_movies(query)
@@ -247,7 +247,7 @@ async def find_movies(query: str) -> list[dict]:
         if data:
             try:
                 await db.get_or_create_film(**_omdb_catalog_details(data, it["title"], it.get("poster")))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("Could not cache OMDb film %s", it["ref"], exc_info=True)
     return items
 

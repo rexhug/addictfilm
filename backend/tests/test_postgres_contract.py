@@ -8,9 +8,9 @@ import asyncio
 import os
 import unittest
 
+import asyncpg
 import database as db
 import db_runtime
-
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 
@@ -143,7 +143,7 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_profile_check_constraints_reject_out_of_range_values(self):
         """CHECK в схеме — последняя защита от кривого профиля."""
         film_id = await db.get_or_create_film("tt77788", "Фильм", media_type="movie")
-        with self.assertRaises(Exception):
+        with self.assertRaises(asyncpg.PostgresError):
             async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
                 await conn.execute(
                     "INSERT INTO movie_recommendation_profiles (film_id, status, content_type, "
@@ -154,3 +154,71 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
                     (film_id, "ready", "movie", "v", "v", "v", "h",
                      0.5, 0.5, 0.5, 0.5, 9.9, 0.5, 0.5, 0.5, 0.5, "now", "now"))
                 await conn.commit()
+
+    async def test_concurrent_enqueue_does_not_raise_a_unique_violation(self):
+        """Раньше SELECT-затем-INSERT давал проигравшему исключение, а не False."""
+        from enrichment import queue
+        from enrichment.taxonomy import MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION
+
+        film_id = await db.get_or_create_film("tt66601", "Гонка", media_type="movie")
+        results = await asyncio.gather(*[
+            queue.enqueue(film_id, feature_version=MOVIE_FEATURE_VERSION,
+                          taxonomy_version=MOVIE_TAXONOMY_VERSION)
+            for _ in range(5)
+        ], return_exceptions=True)
+        self.assertFalse([r for r in results if isinstance(r, BaseException)])
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            row = await (await conn.execute(
+                "SELECT COUNT(*) AS n FROM movie_enrichment_jobs WHERE film_id = ?",
+                (film_id,))).fetchone()
+        self.assertEqual(row["n"], 1)      # задание уже создано сохранением каталога
+
+    async def test_concurrent_profile_saves_are_atomic(self):
+        from enrichment import extraction, repository
+        from enrichment.models import NormalizedMovieSource
+        from enrichment.taxonomy import ContentType
+
+        film_id = await db.get_or_create_film("tt66602", "Профиль", media_type="movie")
+        features = extraction.extract(NormalizedMovieSource(
+            film_id=film_id, provider="kinopoisk", provider_id="1",
+            content_type=ContentType.MOVIE, title="Профиль", genre_names=("драма",)))
+        results = await asyncio.gather(*[
+            repository.save_profile(film_id, features, status="ready", source_hash=f"h{i}",
+                                    feature_version="v", taxonomy_version="v",
+                                    extractor_version="v", semantic_model_version=None,
+                                    validation_level="valid", warnings=())
+            for i in range(5)
+        ], return_exceptions=True)
+        self.assertFalse([r for r in results if isinstance(r, BaseException)])
+        profile = await repository.get_profile(film_id)
+        self.assertEqual(profile["status"], "ready")
+        self.assertTrue(set(profile["mood"]))
+        self.assertIsNotNone(profile["source_hash"])
+
+    async def test_reconciliation_is_idempotent_across_two_passes(self):
+        """Главная защита от вечной петли changed_source → задание → тот же хеш."""
+        from enrichment import queue, reconciliation, service
+        from enrichment.semantic import DisabledSemanticClassifier
+
+        await db.get_or_create_film("tt66603", "Идемпотентность", genres="драма",
+                                    plot="История про расследование", media_type="movie",
+                                    poster_url="https://example.test/p.jpg")
+        while True:
+            jobs = await queue.claim("pg-test", batch_size=10)
+            if not jobs:
+                break
+            for job in jobs:
+                await service.process_job(job, classifier=DisabledSemanticClassifier(),
+                                          fetch_provider=False)
+                await queue.complete(job.id)
+
+        first = await reconciliation.reconcile(batch_size=100)
+        second = await reconciliation.reconcile(batch_size=100)
+        self.assertEqual(first.enqueued, 0)
+        self.assertEqual(second.enqueued, 0)
+        self.assertEqual(second.changed_source, 0)
+
+    async def test_concurrent_init_db_does_not_race(self):
+        """Веб и воркер стартуют одновременно и оба зовут init_db."""
+        results = await asyncio.gather(db.init_db(), db.init_db(), return_exceptions=True)
+        self.assertFalse([r for r in results if isinstance(r, BaseException)])

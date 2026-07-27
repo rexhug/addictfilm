@@ -13,7 +13,7 @@ import recommendations
 from enrichment import queue, reconciliation, repository, service, worker
 from enrichment.models import PROFILE_READY
 from enrichment.semantic import DisabledSemanticClassifier
-from enrichment.taxonomy import ContentType, MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION
+from enrichment.taxonomy import MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION, ContentType
 
 
 async def _keep_local_catalog(_user_id, _partner_id, _weights, candidates, _minimum):

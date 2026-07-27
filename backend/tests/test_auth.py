@@ -7,7 +7,6 @@ from urllib.parse import urlencode
 
 from auth import validate_init_data
 
-
 BOT_TOKEN = "test:token"
 
 

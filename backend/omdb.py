@@ -1,8 +1,10 @@
-import re
 import asyncio
 import logging
-import aiohttp
+import re
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+
+import aiohttp
 from config import OMDB_API_KEY
 
 logger = logging.getLogger(__name__)
@@ -93,7 +95,7 @@ async def search_movies(query: str) -> tuple[list[dict], str | None, str | None]
                 data = await resp.json(content_type=None)
                 if data.get("Response") == "True":
                     return data.get("Search", [])[:10], None, None
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+    except (TimeoutError, aiohttp.ClientError) as e:
         logger.warning("OMDb search error: %s", e)
         return [], None, "❌ Ошибка соединения с OMDb. Попробуй позже."
 
@@ -114,7 +116,7 @@ async def search_movies(query: str) -> tuple[list[dict], str | None, str | None]
                     data2 = await resp2.json(content_type=None)
                     if data2.get("Response") == "True":
                         return data2.get("Search", [])[:7], translated, None
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            except (TimeoutError, aiohttp.ClientError) as e:
                 logger.warning("OMDb translated search error: %s", e)
 
             fail = (
@@ -131,13 +133,17 @@ async def search_movies(query: str) -> tuple[list[dict], str | None, str | None]
 # Детали фильма по IMDb ID не меняются — кэшируем в памяти на время жизни бота.
 # За один поиск get_movie дёргается несколько раз по одному id (обогащение +
 # выбор) — кэш убирает лишние сетевые запросы.
-_movie_cache: dict[str, dict] = {}
+# LRU без обрыва: раньше на 500-й записи кэш очищался ЦЕЛИКОМ, и следом шла
+# волна повторных сетевых запросов за тем, что только что там лежало. Теперь
+# новая запись вытесняет одну самую давнюю (тот же приём, что в kinopoisk.py).
+_movie_cache: OrderedDict[str, dict] = OrderedDict()
 _CACHE_MAX = 500
 
 
 async def get_movie(imdb_id: str) -> dict | None:
     cached = _movie_cache.get(imdb_id)
     if cached is not None:
+        _movie_cache.move_to_end(imdb_id)
         return cached
 
     session = await _get_session()
@@ -147,11 +153,12 @@ async def get_movie(imdb_id: str) -> dict | None:
             resp.raise_for_status()
             data = await resp.json(content_type=None)
             if data.get("Response") == "True":
-                if len(_movie_cache) >= _CACHE_MAX:
-                    _movie_cache.clear()
                 _movie_cache[imdb_id] = data
+                _movie_cache.move_to_end(imdb_id)
+                if len(_movie_cache) > _CACHE_MAX:
+                    _movie_cache.popitem(last=False)
                 return data
             return None
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+    except (TimeoutError, aiohttp.ClientError) as e:
         logger.warning("OMDb get_movie error for %s: %s", imdb_id, e)
         return None

@@ -7,7 +7,7 @@
 """
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import database as db
@@ -97,7 +97,7 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stuck_job_of_a_dead_worker_is_released(self):
         job = (await queue.claim("worker-a"))[0]
-        stale = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        stale = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
         async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
             await conn.execute("UPDATE movie_enrichment_jobs SET locked_at=? WHERE id=?",
                                (stale, job.id))

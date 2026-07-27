@@ -16,7 +16,7 @@ import database as db
 import db_runtime
 
 from . import provider, queue, repository
-from .models import (JOB_ACTIVE_STATES, PROFILE_FAILED, PROFILE_STALE, build_source_hash)
+from .models import JOB_ACTIVE_STATES, PROFILE_FAILED, PROFILE_STALE, build_source_hash
 from .taxonomy import MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION, RULE_EXTRACTOR_VERSION
 
 logger = logging.getLogger(__name__)

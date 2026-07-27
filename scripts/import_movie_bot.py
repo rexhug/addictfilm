@@ -22,15 +22,14 @@ import asyncio
 import os
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, os.path.join(ROOT, "backend"))
 
-import database as db  # noqa: E402
-import db_runtime  # noqa: E402
-
+import database as db
+import db_runtime
 
 SRC_DEFAULT = "/Users/denyszapriahailo/movie_bot/movies.db"
 # Два користувачі старого спільного бота. За потреби мапінг можна змінити тут,
@@ -40,11 +39,13 @@ REQUIRED_TABLES = {"movies", "ratings", "comments"}
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _source_value(row: sqlite3.Row, name: str, default: Any = None) -> Any:
-    return row[name] if name in row.keys() else default
+    # .keys() обязателен: `name in row` у sqlite3.Row проверяет ЗНАЧЕНИЯ,
+    # а не имена колонок — без него функция молча вернёт не то.
+    return row[name] if name in row.keys() else default  # noqa: SIM118
 
 
 def read_source(path: str) -> tuple[list[sqlite3.Row], dict[tuple[int, int], int], dict[tuple[int, int], str]]:

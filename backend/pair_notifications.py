@@ -8,14 +8,13 @@ guesses roles from user order or from the user currently using the Mini App.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import json
 import logging
 import os
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 import aiohttp
-
 import database as db
 from config import BOT_TOKEN
 
@@ -151,7 +150,7 @@ def _retryable_telegram_error(error: str | None) -> bool:
 
 
 def _stale_delivery_cutoff() -> str:
-    return (datetime.now(timezone.utc) - timedelta(seconds=_DELIVERY_STALE_AFTER_SECONDS)).isoformat()
+    return (datetime.now(UTC) - timedelta(seconds=_DELIVERY_STALE_AFTER_SECONDS)).isoformat()
 
 
 def _delivery_text(row: dict) -> dict | None:

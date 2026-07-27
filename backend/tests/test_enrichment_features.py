@@ -8,8 +8,15 @@ import unittest
 
 from enrichment import extraction, mappings, merge, semantic, validation
 from enrichment.models import FeatureEvidence, NormalizedMovieSource
-from enrichment.taxonomy import (AudienceFlag, CanonicalGenre, CanonicalTone, ContentType,
-                                 EvidenceSource, MOVIE_TAXONOMY_VERSION, precedence_rank)
+from enrichment.taxonomy import (
+    MOVIE_TAXONOMY_VERSION,
+    AudienceFlag,
+    CanonicalGenre,
+    CanonicalTone,
+    ContentType,
+    EvidenceSource,
+    precedence_rank,
+)
 
 
 def _source(**kwargs) -> NormalizedMovieSource:

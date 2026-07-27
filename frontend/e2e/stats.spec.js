@@ -859,3 +859,45 @@ test("metric cards stay readable and overflow-free at 320px", async ({ page }) =
   expect(clipped).toBe(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 });
+
+test("app initializes outside Telegram without throwing", async ({ page }) => {
+  // Вне Telegram window.Telegram нет вовсе. Раньше api() читал tg.initData и
+  // падал ДО отрисовки экрана «нужен Telegram» — вместо понятного сообщения
+  // пользователь видел пустую страницу.
+  const errors = [];
+  page.on("pageerror", error => errors.push(String(error)));
+  // Глушим сам SDK: без него window.Telegram не появляется вовсе — это и есть
+  // «открыли ссылку в обычном браузере».
+  await page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
+  await page.route("**/api/**", route => route.fulfill({
+    status: 401, contentType: "application/json",
+    body: JSON.stringify({ detail: "Требуется Telegram" }),
+  }));
+  await page.goto("/");
+  await page.waitForTimeout(600);
+  expect(errors.filter(text => /Cannot read propert|null|undefined/i.test(text))).toEqual([]);
+  expect(await page.evaluate(() => typeof window.Telegram)).toBe("undefined");
+});
+
+test("inside Telegram the init data header is still sent", async ({ page }) => {
+  const headers = [];
+  await page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
+  await page.addInitScript(() => {
+    window.Telegram = { WebApp: {
+      initData: "query_id=test&user=%7B%22id%22%3A1%7D", initDataUnsafe: { user: { id: 1 } },
+      ready() {}, expand() {}, colorScheme: "dark", themeParams: {},
+      HapticFeedback: { impactOccurred() {}, notificationOccurred() {} },
+      showConfirm(_t, cb) { cb(true); }, showAlert() {}, openTelegramLink() {},
+      onEvent() {}, offEvent() {}, setHeaderColor() {}, setBackgroundColor() {},
+      BackButton: { show() {}, hide() {}, onClick() {}, offClick() {} },
+    } };
+  });
+  await page.route("**/api/**", route => {
+    headers.push(route.request().headers()["x-init-data"]);
+    return route.fulfill({ status: 401, contentType: "application/json", body: "{}" });
+  });
+  await page.goto("/");
+  await page.waitForTimeout(600);
+  expect(headers.length).toBeGreaterThan(0);
+  expect(headers[0]).toContain("query_id=test");
+});

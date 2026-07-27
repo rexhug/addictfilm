@@ -16,10 +16,10 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
 
-import aiosqlite  # noqa: E402
-import database as db  # noqa: E402
-import db_runtime  # noqa: E402
-from enrichment import repository  # noqa: E402
+import aiosqlite
+import database as db
+import db_runtime
+from enrichment import repository
 
 # Категории для представительной выборки: по одной строке на каждую, чтобы
 # обзор покрывал не только то, чего в каталоге больше всего.

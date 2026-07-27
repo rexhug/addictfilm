@@ -4,6 +4,16 @@ line-length = 110
 extend-exclude = [".venv", "frontend/e2e"]
 
 [tool.ruff.lint]
-# Runtime correctness rules only. Formatting can be introduced gradually without
-# creating a noisy, unrelated rewrite of production code.
-select = ["E9", "F"]
+# Правила корректности и типичных ошибок asyncio/логики. Форматирование
+# (E1/E2/E3, W) намеренно НЕ включаем: оно дало бы огромный диф, не связанный с
+# поведением, и утопило бы настоящие находки.
+select = ["E9", "F", "I", "UP", "B", "ASYNC", "SIM", "RUF"]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # кириллица в строках и комментариях — это язык продукта
+    "UP038",                       # isinstance(x, (A, B)) читается лучше, чем A | B
+    "SIM108",                      # тернарник не всегда яснее if/else
+    "B008",                        # Depends(...) в аргументах — идиома FastAPI
+    # Ниже — вкусовые правила SIM. Их выполнение переписало бы легаси-код без
+    # изменения поведения; настоящие находки утонули бы в таком дифе.
+    "SIM105", "SIM102", "SIM103", "SIM117", "SIM115",
+]

@@ -1,10 +1,9 @@
 import unittest
 from urllib.parse import parse_qs, urlparse
 
+import main
 from fastapi import Request
 from fastapi.responses import Response
-
-import main
 from main import _HTML_CSP, index, log_slow_requests
 
 

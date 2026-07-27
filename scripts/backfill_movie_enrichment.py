@@ -16,13 +16,13 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
 
-import aiosqlite  # noqa: E402
-import database as db  # noqa: E402
-import db_runtime  # noqa: E402
-from enrichment import reconciliation, repository, service  # noqa: E402
-from enrichment.models import EnrichmentJob, JOB_FULL, PROFILE_FAILED  # noqa: E402
-from enrichment.semantic import DisabledSemanticClassifier, build_classifier  # noqa: E402
-from enrichment.taxonomy import MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION  # noqa: E402
+import aiosqlite
+import database as db
+import db_runtime
+from enrichment import reconciliation, repository, service
+from enrichment.models import JOB_FULL, PROFILE_FAILED, EnrichmentJob
+from enrichment.semantic import DisabledSemanticClassifier, build_classifier
+from enrichment.taxonomy import MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION
 
 
 async def _films(movie_id: int | None) -> list[dict]:
@@ -88,7 +88,7 @@ async def main() -> None:
         try:
             result = await service.process_job(_fake_job(film["id"]), classifier=classifier,
                                                fetch_provider=not args.without_provider)
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             code, message = service.classify_error(error)
             counters["failed"] += 1
             print(f"  ОШИБКА {code}: {str(film['title'])[:44]} — {message[:80]}")

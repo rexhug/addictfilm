@@ -20,6 +20,8 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 
+import text_matching
+
 MOVIE_MOOD_FEATURE_VERSION = "movie-mood-v1"
 MOOD_SCORING_VERSION = "mood-ranking-v1"
 
@@ -176,23 +178,10 @@ def _canon_genres(value: object) -> list[str]:
             for part in str(value or "").split(",") if part.strip()]
 
 
-def _marker_pattern(needle: str) -> re.Pattern[str]:
-    # Совпадение только с НАЧАЛА слова: «месть» не должна находиться в «вместе».
-    return re.compile(rf"(?<!\w){re.escape(needle)}", re.IGNORECASE)
-
-
-_MARKER_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
-    marker: tuple(_marker_pattern(needle) for needle in needles)
-    for marker, needles in PLOT_MARKERS.items()
-}
-
-
 def detect_markers(film: dict) -> tuple[str, ...]:
-    plot = f"{film.get('plot') or ''} {film.get('title') or ''}".casefold()
-    if not plot.strip():
-        return ()
-    return tuple(marker for marker, patterns in _MARKER_PATTERNS.items()
-                 if any(pattern.search(plot) for pattern in patterns))
+    """Совпадение только с НАЧАЛА слова — общая реализация в text_matching."""
+    text = f"{film.get('plot') or ''} {film.get('title') or ''}"
+    return tuple(sorted(text_matching.matched_keys(text, PLOT_MARKERS)))
 
 
 def _runtime_minutes(value: object) -> int | None:
@@ -512,7 +501,7 @@ def collect_compound_requirements(answers: dict) -> tuple[CompoundRequirement, .
     return tuple(found)
 
 
-def compound_evidence(requirement: CompoundRequirement, features: "MovieMoodFeatures") -> int:
+def compound_evidence(requirement: CompoundRequirement, features: MovieMoodFeatures) -> int:
     """0 — доказательств нет, 1 — косвенное, 2 — прямой проверенный маркер."""
     if not passes_dimension_floors(features, requirement.floors):
         return EVIDENCE_NONE
@@ -524,14 +513,14 @@ def compound_evidence(requirement: CompoundRequirement, features: "MovieMoodFeat
     return EVIDENCE_NONE
 
 
-def passes_compound_requirements(features: "MovieMoodFeatures",
+def passes_compound_requirements(features: MovieMoodFeatures,
                                  requirements: tuple[CompoundRequirement, ...]) -> bool:
     """Составные требования не ослабляются на fallback-уровнях: это ровно то,
     что человек назвал прямым текстом."""
     return all(compound_evidence(req, features) > EVIDENCE_NONE for req in requirements)
 
 
-def compound_evidence_strength(features: "MovieMoodFeatures",
+def compound_evidence_strength(features: MovieMoodFeatures,
                                requirements: tuple[CompoundRequirement, ...]) -> int:
     """Сила самого слабого из выполненных требований — по ней «лучшее
     совпадение» выбирает подтверждённый фильм, а не просто более рейтинговый."""
@@ -554,7 +543,7 @@ def collect_dimension_floors(answers: dict) -> dict[str, float]:
     return floors
 
 
-def passes_dimension_floors(features: "MovieMoodFeatures", floors: dict[str, float]) -> bool:
+def passes_dimension_floors(features: MovieMoodFeatures, floors: dict[str, float]) -> bool:
     for key, limit in floors.items():
         dimension, _, bound = key.rpartition("_")
         value = features.get(dimension)
@@ -587,7 +576,7 @@ def primary_intent_dimensions(intent: MoodIntent, *, limit: int = 3) -> list[str
     return [dim for dim, _ in sorted(intent.importance.items(), key=lambda kv: -kv[1])[:limit]]
 
 
-def primary_intent_match(intent: MoodIntent, features: "MovieMoodFeatures") -> float:
+def primary_intent_match(intent: MoodIntent, features: MovieMoodFeatures) -> float:
     """Отдельная проверка ГЛАВНЫХ измерений: агрегат может спрятать провал в
     том единственном, ради чего человек и пришёл."""
     dimensions = primary_intent_dimensions(intent)
@@ -605,7 +594,7 @@ def primary_intent_match(intent: MoodIntent, features: "MovieMoodFeatures") -> f
     return clamp01(weighted / total) if total > 0 else 0.5
 
 
-def find_critical_contradictions(intent: MoodIntent, features: "MovieMoodFeatures",
+def find_critical_contradictions(intent: MoodIntent, features: MovieMoodFeatures,
                                  *, importance_floor: float = 0.75,
                                  distance_floor: float = 0.55) -> list[tuple[str, float]]:
     """Грубое расхождение в важном измерении: «максимум напряжения» не должен

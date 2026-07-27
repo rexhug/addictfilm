@@ -6,8 +6,9 @@
 """
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Sequence
+from typing import Any
 
 import aiosqlite
 

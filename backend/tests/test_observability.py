@@ -1,7 +1,6 @@
 import unittest
 
 from fastapi import Request
-
 from observability import RequestMetrics
 
 

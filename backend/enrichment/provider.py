@@ -6,7 +6,8 @@ OMDb, уже используемые продуктом. Модель спец�
 нейтральной: смена источника не должна протекать в правила извлечения.
 
 Дополнительный запрос к провайдеру делается ТОЛЬКО когда в каталоге не хватает
-данных для профиля, и всегда через существующий бюджет вызовов (ratelimit.py).
+данных для профиля. Бюджет вызовов списывает сам клиент провайдера
+(kinopoisk._request) — здесь его трогать нельзя, иначе один запрос стоит два.
 Обогащение никогда не ходит в сеть во время запроса рекомендаций.
 """
 from __future__ import annotations
@@ -17,7 +18,6 @@ import re
 import kinopoisk
 import media_type as media_type_module
 import omdb
-import ratelimit
 
 from .models import NormalizedMovieSource
 from .taxonomy import ContentType
@@ -94,10 +94,14 @@ async def fetch_missing_metadata(film: dict, source: NormalizedMovieSource) -> N
         return source
     enriched = source
     kp_id = film.get("kp_id")
-    if kp_id and await ratelimit.try_spend_search():
+    # Бюджет Kinopoisk списывает ТОЛЬКО kinopoisk._request — он один знает, было
+    # ли настоящее обращение к сети и сколько ключей пришлось перебрать. Списание
+    # ещё и здесь съедало по две единицы за один запрос, а на попадании в кэш —
+    # единицу вообще без обращения к провайдеру.
+    if kp_id:
         try:
             doc = await kinopoisk.get_movie(str(kp_id))
-        except Exception:  # noqa: BLE001 — провайдер не должен ронять обогащение
+        except Exception:
             logger.warning("enrichment: kinopoisk недоступен для %s", kp_id, exc_info=True)
             doc = None
         if doc:
@@ -106,7 +110,7 @@ async def fetch_missing_metadata(film: dict, source: NormalizedMovieSource) -> N
     if imdb_id.startswith("tt") and (not enriched.overview or not enriched.certification):
         try:
             data = await omdb.get_movie(imdb_id)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("enrichment: OMDb недоступен для %s", imdb_id, exc_info=True)
             data = None
         if data:

@@ -6,11 +6,11 @@
 """
 from __future__ import annotations
 
-from copy import deepcopy
 import os
 import time
+from collections.abc import Iterable
+from copy import deepcopy
 from typing import Any
-
 
 _TTL_SECONDS = max(15, int(os.getenv("STATS_CACHE_TTL_SEC", "90")))
 _MAX_ENTRIES = max(100, int(os.getenv("STATS_CACHE_MAX_ENTRIES", "2000")))
@@ -41,5 +41,25 @@ def put(key: tuple[Any, ...], value: Any) -> Any:
 
 
 def clear() -> None:
-    """Скинути кеш після зміни даних, що входять до статистики."""
+    """Повний скид. Лишається для міграцій і тестів; у звичайному потоці
+    користуйтеся invalidate_users — глобальний скид через оцінку одного
+    користувача вимиває кеш усіх інших."""
     _cache.clear()
+
+
+def invalidate_users(user_ids: Iterable[int]) -> int:
+    """Прибрати лише записи, яких торкнулася зміна.
+
+    Ключі: ("personal", user_id, year) та ("pair", user_id, partner_id, since) —
+    тому достатньо звірити перші два-три елементи. Повертає кількість
+    видалених записів (зручно для тестів і діагностики).
+    """
+    targets = {int(user_id) for user_id in user_ids if user_id is not None}
+    if not targets:
+        return 0
+    doomed = [key for key in _cache
+              if (len(key) > 1 and key[1] in targets)
+              or (key and key[0] == "pair" and len(key) > 2 and key[2] in targets)]
+    for key in doomed:
+        _cache.pop(key, None)
+    return len(doomed)
