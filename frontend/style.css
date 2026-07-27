@@ -64,13 +64,6 @@ body{
 .notifications-empty{display:flex;flex-direction:column;align-items:center;padding:58px 20px;text-align:center;}
 .notifications-empty>span{display:grid;place-items:center;width:48px;height:48px;margin-bottom:15px;border:1px solid var(--hair);border-radius:17px;background:var(--s1);color:var(--accent-2);}
 .notifications-empty svg{width:24px;height:24px;}.notifications-empty h2{font-size:17px;font-weight:650;}.notifications-empty p{max-width:260px;margin-top:7px;color:var(--ink-2);font-size:13px;line-height:1.45;}
-/* переключатель языка RU/EN */
-.lang{flex:none;height:42px;padding:0 12px;border-radius:15px;background:var(--s2);border:1px solid var(--hair);
-  display:inline-flex;align-items:center;gap:6px;color:var(--ink);box-shadow:var(--shadow);cursor:pointer;transition:transform .18s;}
-.lang:active{transform:scale(.92);}
-.lang svg{width:18px;height:18px;color:var(--ink-2);}
-.lang b{font-size:13px;font-weight:650;letter-spacing:.02em;}
-
 /* ── search (home tile) ─────────────────────── */
 .search{margin:18px 20px 0;height:54px;border-radius:16px;background:var(--s2);border:1px solid var(--hair);
   display:flex;align-items:center;gap:10px;padding:0 8px 0 16px;box-shadow:0 10px 26px -20px rgba(0,0,0,.85);}
