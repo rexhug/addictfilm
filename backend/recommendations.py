@@ -572,8 +572,49 @@ def apply_mood_layer(ranked: list[dict], answers: dict, preferences_count: int) 
     return sorted(rescored, key=lambda m: (-m["_score"], str(m.get("title") or ""), m["id"]))
 
 
+def canonical_eligible(ranked: list[dict], canonical_intent) -> list[dict]:
+    """Отбор V2 по каноническому запросу: обязательное и недопустимое.
+
+    Требование выполняется только ПОДТВЕРЖДЁННЫМ доказательством. Незнание —
+    не «нет», но и не «да»: показать фильм как соответствие обязательному
+    признаку, которого система не подтвердила, значило бы выдумать
+    подтверждение. Все три роли живут по одному правилу.
+    """
+    from recommendation import evidence
+
+    eligible = []
+    for movie in ranked:
+        if any(evidence.violates_forbidden(feature, movie)
+               for feature in canonical_intent.forbidden_features):
+            continue
+        if not all(evidence.satisfies_required(feature, movie)
+                   for feature in canonical_intent.required_features):
+            continue
+        # Пороги измерений — то, что нельзя выразить категориальной ознакой:
+        # «максимально напряжённое», «что-то сложное».
+        if not mood.passes_dimension_floors(movie["_mood_features"], canonical_intent.mood_floors):
+            continue
+        eligible.append(movie)
+    return eligible
+
+
+def preferred_bonus(movie: dict, canonical_intent) -> float:
+    """0…1 — насколько кандидат попадает в ЖЕЛАТЕЛЬНОЕ. Только ранжирование:
+    отсутствие желаемого признака никого не отсекает."""
+    from recommendation import evidence
+
+    if not canonical_intent.preferred_features:
+        return 0.0
+    features = evidence.profile_features(movie.get("_profile"))
+    total = sum(canonical_intent.preferred_features.values()) or 1.0
+    hit = sum(weight for feature, weight in canonical_intent.preferred_features.items()
+              if feature in features)
+    return mood.clamp01(hit / total)
+
+
 def mood_eligible(ranked: list[dict], intent, floors: dict, role: str,
-                  *, fallback_level: int = 0, requirements: tuple = ()) -> list[dict]:
+                  *, fallback_level: int = 0, requirements: tuple = (),
+                  strict_contradictions: bool = False) -> list[dict]:
     """Кто ВООБЩЕ уместен для этого запроса. Высокий базовый счёт здесь не
     помогает: сначала уместность, потом уже качество и вкусы."""
     threshold = mood.resolve_mood_threshold(role, intent, fallback_level=fallback_level)
@@ -605,7 +646,10 @@ def mood_eligible(ranked: list[dict], intent, floors: dict, role: str,
         if not mood.passes_dimension_floors(features, floors):
             continue
         contradictions = mood.find_critical_contradictions(intent, features)
-        if contradictions and role != "unexpected":
+        # V2 не терпит грубых расхождений ни в одной роли: «неожиданный»
+        # отличается новизной и второстепенными пожеланиями, а не тем, что
+        # противоречит главному в запросе.
+        if contradictions and (strict_contradictions or role != "unexpected"):
             continue
         if len(contradictions) > 1:
             continue      # «неожиданный» терпит одно расхождение, но не два
@@ -615,7 +659,8 @@ def mood_eligible(ranked: list[dict], intent, floors: dict, role: str,
 
 def select_mood_role(ranked: list[dict], intent, floors: dict, role: str,
                      selected: list[dict], key: str, *, requirements: tuple = (),
-                     evidence_first: bool = False) -> tuple[dict | None, int]:
+                     evidence_first: bool = False,
+                     canonical_intent=None) -> tuple[dict | None, int]:
     """Подбираем роль, постепенно ослабляя ТОЛЬКО второстепенное. Требования по
     явным ответам и грубые противоречия не ослабляются на любом уровне.
 
@@ -625,7 +670,12 @@ def select_mood_role(ranked: list[dict], intent, floors: dict, role: str,
     """
     for level in sorted(mood.FALLBACK_THRESHOLD_ADJUSTMENTS):
         pool = mood_eligible(ranked, intent, floors, role, fallback_level=level,
-                             requirements=requirements)
+                             requirements=requirements,
+                             strict_contradictions=canonical_intent is not None)
+        if canonical_intent is not None:
+            # Обязательное и недопустимое не ослабляются НИ НА ОДНОМ уровне
+            # отката: это ровно то, что человек назвал прямым текстом.
+            pool = canonical_eligible(pool, canonical_intent)
         tiers = [pool]
         if evidence_first and requirements:
             strong = [m for m in pool
@@ -640,7 +690,10 @@ def select_mood_role(ranked: list[dict], intent, floors: dict, role: str,
 
 
 async def quiz_results(user_id: int, answers: dict[str, str], language: str,
-                       partner_id: int | None = None, *, is_admin: bool = False) -> list[dict]:
+                       partner_id: int | None = None, *, is_admin: bool = False,
+                       engine_version: str | None = None) -> list[dict]:
+    """engine_version приходит ИЗ СЕССИИ, а не из флага: сессия, начатая одной
+    семантикой, обязана досчитаться ею же."""
     weights, filters, context = answer_state(answers)
     ranked = await ranked_candidates(user_id, partner_id=partner_id, weights=weights, filters=filters, context=context)
     if not ranked:
@@ -649,6 +702,11 @@ async def quiz_results(user_id: int, answers: dict[str, str], language: str,
     if mood_on:
         preferences = await db.get_recommendation_preferences(user_id)
         ranked = apply_mood_layer(ranked, answers, int(preferences.get("count", 0) or 0))
+    from recommendation import engines
+    from recommendation.intent import build_intent
+
+    use_v2 = engine_version == engines.ENGINE_V2
+    canonical = build_intent(answers) if use_v2 else None
     intent = None
     requirements: tuple = ()
     if mood_on and ranked and "_mood" in ranked[0]:
@@ -657,19 +715,29 @@ async def quiz_results(user_id: int, answers: dict[str, str], language: str,
         floors = mood.collect_dimension_floors(answers)
         requirements = mood.collect_compound_requirements(answers)
         # У «лучшего совпадения» настроение весит больше базового счёта.
-        best_ranked = [{**m, "_best": 0.58 * m["_mood"] + 0.42 * normalized_base_score(m)} for m in ranked]
+        # Желательные признаки только двигают порядок; отсекают обязательные.
+        def _preferred(movie):
+            return preferred_bonus(movie, canonical) if canonical else 0.0
+
+        best_ranked = [{**m, "_best": 0.52 * m["_mood"] + 0.38 * normalized_base_score(m)
+                        + 0.10 * _preferred(m)} for m in ranked]
         best, _ = select_mood_role(best_ranked, intent, floors, "best", [], "_best",
-                                   requirements=requirements, evidence_first=True)
+                                   requirements=requirements, evidence_first=True,
+                                   canonical_intent=canonical)
         # У «надёжного» — наоборот, но только среди уместных по настроению.
-        reliable_ranked = [{**m, "_reliable": 0.38 * m["_mood"] + 0.62 * normalized_base_score(m)} for m in ranked]
+        reliable_ranked = [{**m, "_reliable": 0.34 * m["_mood"] + 0.58 * normalized_base_score(m)
+                            + 0.08 * _preferred(m)} for m in ranked]
         reliable, _ = select_mood_role(reliable_ranked, intent, floors, "reliable",
-                                       [best] if best else [], "_reliable", requirements=requirements)
+                                       [best] if best else [], "_reliable",
+                                       requirements=requirements, canonical_intent=canonical)
         unexpected_ranked = [{**m, "_unexpected": 0.50 * m["_mood"]
                               + 0.28 * mood.clamp01(m["_novelty"] / 5.0)
                               + 0.22 * normalized_base_score(m)} for m in ranked]
+        # «Неожиданный» отличается новизной и второстепенными пожеланиями, но
+        # обязательное и недопустимое соблюдает так же строго, как остальные.
         unexpected, _ = select_mood_role(unexpected_ranked, intent, floors, "unexpected",
                                          [i for i in (best, reliable) if i], "_unexpected",
-                                         requirements=requirements)
+                                         requirements=requirements, canonical_intent=canonical)
     else:
         best = _select_distinct(ranked, [], "_score")
         reliable_ranked = [{**movie, "_reliable": movie["_score"] + movie["_quality"] * 2.2 - movie["_novelty"]} for movie in ranked]

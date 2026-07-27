@@ -36,6 +36,10 @@ class IntentContribution:
     preferred_features: dict[str, float] = field(default_factory=dict)
     forbidden_features: frozenset[str] = frozenset()
     hard_constraints: dict[str, object] = field(default_factory=dict)
+    # Пороги измерений — способ выразить требование, которое каталог умеет
+    # проверить, но категориальной ознакой оно не описывается («максимально
+    # напряжённое», «что-то сложное»).
+    mood_floors: dict[str, float] = field(default_factory=dict)
     exploration: float | None = None
     watch_context: str | None = None
 
@@ -48,6 +52,7 @@ class RecommendationIntent:
     required_features: frozenset[str] = frozenset()
     preferred_features: dict[str, float] = field(default_factory=dict)
     forbidden_features: frozenset[str] = frozenset()
+    mood_floors: dict[str, float] = field(default_factory=dict)
     mood_targets: dict[str, float] = field(default_factory=dict)
     mood_importance: dict[str, float] = field(default_factory=dict)
     exploration_level: float = 0.5
@@ -81,6 +86,11 @@ def _tone(name) -> str:
 # Канонические требования по ответам. Здесь только то, что метаданные реально
 # умеют подтвердить: обещать признак, которого в профиле не бывает, — тот же
 # декоративный ответ, от которого уходили в прошлом проходе.
+# ОБЯЗАТЕЛЬНЫХ признаков намеренно мало. Требование имеет смысл только там, где
+# каталог умеет его подтвердить: жанр приходит от провайдера и есть почти
+# всегда, а тон извлекается из описания и встречается редко. Ненадёжный признак
+# должен быть желательным или выражен порогом измерения — но не ослабляться
+# втихую уже во время отбора.
 INTENT_MAPPINGS: dict[tuple[str, str], IntentContribution] = {
     # q1 — общее направление
     ("q1", "relax"):   IntentContribution(
@@ -108,18 +118,24 @@ INTENT_MAPPINGS: dict[tuple[str, str], IntentContribution] = {
     ("r3", "positive"): IntentContribution(preferred_features={_tone(CanonicalTone.FEEL_GOOD): 0.6}),
     ("r3", "drama"):    IntentContribution(preferred_features={str(CanonicalGenre.DRAMA): 0.5}),
     # tension
+    # Тема и тон выводятся из описания и в каталоге редки. Требовать их жёстко
+    # значит показать пустой экран там, где данных просто нет; напряжение и
+    # сложность при этом остаются обязательными через пороги измерений.
     ("t1", "survival"):      IntentContribution(
-        required_features=frozenset({str(CanonicalTheme.SURVIVAL)})),
+        preferred_features={str(CanonicalTheme.SURVIVAL): 0.9}),
     ("t1", "psychological"): IntentContribution(
-        required_features=frozenset({_tone(CanonicalTone.PSYCHOLOGICAL)})),
+        preferred_features={_tone(CanonicalTone.PSYCHOLOGICAL): 0.9}),
     ("t1", "mystery"):       IntentContribution(
         required_features=frozenset({str(CanonicalGenre.MYSTERY)})),
     ("t1", "horror"):        IntentContribution(
-        required_features=frozenset({str(CanonicalGenre.HORROR)})),
-    ("t2_psychological", "hero"):     IntentContribution(preferred_features={_tone(CanonicalTone.PSYCHOLOGICAL): 0.8}),
+        required_features=frozenset({str(CanonicalGenre.HORROR)}),
+        mood_floors={"tension_min": 0.65}),
+    ("t2_psychological", "hero"):     IntentContribution(preferred_features={_tone(CanonicalTone.PSYCHOLOGICAL): 0.8},
+                                                        mood_floors={"complexity_min": 0.55}),
     ("t2_psychological", "close"):    IntentContribution(preferred_features={str(CanonicalTheme.FAMILY_RELATIONSHIP): 0.5}),
     ("t2_psychological", "everyone"): IntentContribution(preferred_features={_tone(CanonicalTone.SUSPENSEFUL): 0.7}),
-    ("t2_psychological", "eyes"):     IntentContribution(preferred_features={_tone(CanonicalTone.PSYCHOLOGICAL): 0.9}),
+    ("t2_psychological", "eyes"):     IntentContribution(preferred_features={_tone(CanonicalTone.PSYCHOLOGICAL): 0.9},
+                                                        mood_floors={"complexity_min": 0.60}),
     ("t2_mystery", "crime"):       IntentContribution(preferred_features={str(CanonicalGenre.CRIME): 0.8}),
     ("t2_mystery", "missing"):     IntentContribution(preferred_features={str(CanonicalTheme.INVESTIGATION): 0.7}),
     ("t2_mystery", "past"):        IntentContribution(preferred_features={str(CanonicalTheme.GRIEF): 0.4}),
@@ -127,9 +143,12 @@ INTENT_MAPPINGS: dict[tuple[str, str], IntentContribution] = {
     ("t2_survival", "people"): IntentContribution(preferred_features={str(CanonicalGenre.THRILLER): 0.6}),
     ("t2_survival", "nature"): IntentContribution(preferred_features={str(CanonicalTheme.SURVIVAL): 0.8}),
     ("t2_survival", "system"): IntentContribution(preferred_features={str(CanonicalTheme.DYSTOPIA): 0.8}),
-    ("t2_survival", "self"):   IntentContribution(preferred_features={_tone(CanonicalTone.PSYCHOLOGICAL): 0.7}),
-    ("t2_horror", "unknown"): IntentContribution(preferred_features={str(CanonicalTheme.SUPERNATURAL): 0.7}),
-    ("t2_horror", "mind"):    IntentContribution(preferred_features={_tone(CanonicalTone.PSYCHOLOGICAL): 0.8}),
+    ("t2_survival", "self"):   IntentContribution(preferred_features={_tone(CanonicalTone.PSYCHOLOGICAL): 0.7},
+                                                 mood_floors={"complexity_min": 0.50}),
+    ("t2_horror", "unknown"): IntentContribution(preferred_features={str(CanonicalTheme.SUPERNATURAL): 0.7},
+                                                mood_floors={"tension_min": 0.60}),
+    ("t2_horror", "mind"):    IntentContribution(preferred_features={_tone(CanonicalTone.PSYCHOLOGICAL): 0.8},
+                                                mood_floors={"complexity_min": 0.55, "tension_min": 0.60}),
     ("t2_horror", "threat"):  IntentContribution(preferred_features={str(CanonicalTheme.SURVIVAL): 0.6}),
     ("t4", "clear"): IntentContribution(preferred_features={str(CanonicalGenre.THRILLER): 0.2}),
     ("t4", "semi"):  IntentContribution(preferred_features={_tone(CanonicalTone.SUSPENSEFUL): 0.3}),
@@ -206,6 +225,7 @@ def build_intent(answers: dict) -> RecommendationIntent:
     forbidden: set[str] = set()
     preferred: dict[str, float] = {}
     hard: dict[str, object] = {}
+    floors: dict[str, float] = {}
     exploration: list[float] = []
     context = "solo"
 
@@ -220,6 +240,10 @@ def build_intent(answers: dict) -> RecommendationIntent:
             for feature, weight in contribution.preferred_features.items():
                 preferred[feature] = max(preferred.get(feature, 0.0), float(weight))
             hard.update(contribution.hard_constraints)
+            for key, value in contribution.mood_floors.items():
+                # Из нескольких требований берём самое строгое.
+                floors[key] = (max(floors.get(key, 0.0), value) if key.endswith("_min")
+                               else min(floors.get(key, 1.0), value))
             if contribution.exploration is not None:
                 exploration.append(contribution.exploration)
             if contribution.watch_context:
@@ -233,6 +257,7 @@ def build_intent(answers: dict) -> RecommendationIntent:
     mood_intent = mood.build_mood_intent(answers)
     intent = RecommendationIntent(
         hard_constraints=hard,
+        mood_floors=floors,
         required_features=frozenset(required),
         preferred_features=preferred,
         forbidden_features=frozenset(forbidden),

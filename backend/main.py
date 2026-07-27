@@ -908,7 +908,7 @@ async def recommendation_quiz_results(session_id: str, language: str = "ru", use
         raise HTTPException(status_code=404, detail="Опрос не найден")
     if session["state"] != "complete":
         raise HTTPException(status_code=409, detail="Сначала завершите опрос")
-    _require_supported_engine(session)
+    engine = _require_supported_engine(session)
     answers = session.get("answers") or {}
     partner_id = await _active_partner_for_recommendation(user["id"], "pair") if answers.get("c4") == "pair" else None
     if session.get("results") is not None:
@@ -916,7 +916,8 @@ async def recommendation_quiz_results(session_id: str, language: str = "ru", use
     # Роль резолвится на сервере: подделать её с клиента нельзя.
     is_admin = (await _effective_role(user["id"])) in ("editor", "admin")
     items = await recommendations.quiz_results(user["id"], answers, locale, partner_id,
-                                               is_admin=is_admin)
+                                               is_admin=is_admin,
+                                               engine_version=engine.engine_version)
     saved = await db.save_recommendation_session_results(user["id"], session_id, items)
     if not saved:
         raise HTTPException(status_code=404, detail="Опрос не найден")
@@ -952,7 +953,7 @@ async def recommendation_quiz_replace(session_id: str, body: RecommendationRepla
     server_role = str(rejected.get("role") or "")
     if body.role and body.role != server_role:
         raise HTTPException(status_code=422, detail="Роль не совпадает с текущей подборкой")
-    _require_supported_engine(session)
+    engine = _require_supported_engine(session)
     if not _session_versions_match(session):
         # Подборка собрана прежней семантикой. Досчитывать её новой — молча
         # смешать два движка в одном экране; честнее попросить пройти заново.
@@ -965,7 +966,9 @@ async def recommendation_quiz_replace(session_id: str, body: RecommendationRepla
     kept_ids = {int(item["id"]) for item in current if int(item["id"]) != body.film_id}
     # Отклонённый и уже показанные исключены на уровне SQL (rejected + cooldown),
     # поэтому пересчёт не может вернуть их обратно.
-    fresh = await recommendations.quiz_results(user["id"], answers, locale, partner_id, is_admin=is_admin)
+    fresh = await recommendations.quiz_results(user["id"], answers, locale, partner_id,
+                                               is_admin=is_admin,
+                                               engine_version=engine.engine_version)
     candidates = [item for item in fresh if int(item["id"]) not in kept_ids]
     replacement = next((item for item in candidates if item.get("role") == server_role), None) \
         or (candidates[0] if candidates else None)

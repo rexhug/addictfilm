@@ -140,12 +140,48 @@ def _validate_answers(answers: dict) -> None:
         raise SystemExit(f"лишние ответы вне маршрута: {sorted(extra)}")
 
 
+def attach_offline_profiles(films: list[dict]) -> list[dict]:
+    """Профили обогащения считаются здесь же, детерминированно.
+
+    Это ровно то, что кладёт в базу воркер, поэтому оценка видит те же
+    доказательства, что и продакшен, но не зависит от БД и ничего не пишет.
+    Без профилей каждый признак был бы UNKNOWN, и V2 отвергал бы весь каталог —
+    измеряли бы дефект стенда, а не движка.
+    """
+    from enrichment import extraction, merge, validation
+    from enrichment.provider import from_catalog
+
+    merger = merge.MovieFeatureMerger()
+    attached = []
+    for film in films:
+        source = from_catalog(film)
+        deterministic = extraction.extract(source)
+        features, contradictions = merger.merge(deterministic=deterministic)
+        outcome = validation.validate(features)
+        confidence = merge.calculate_profile_confidence(
+            has_valid_content_type=str(features.content_type) != "unknown",
+            genre_count=len(features.genres),
+            reviewed_marker_count=len(features.tones) + len(features.themes),
+            has_overview=bool(source.overview), semantic_confidence=0.0,
+            agreement_score=0.5, contradiction_count=contradictions)
+        attached.append({**film, "_profile": {
+            "status": merge.resolve_status(confidence, invalid=outcome.blocks_recommendations),
+            "content_type": str(features.content_type),
+            "genres": sorted(features.genres), "themes": sorted(features.themes),
+            "tones": sorted(features.tones), "audience_flags": sorted(features.audience_flags),
+            "mood": features.mood, "confidence": confidence,
+            "validation_level": outcome.level, "warnings": list(outcome.warnings),
+            "feature_version": "offline", "source_hash": "offline",
+        }})
+    return attached
+
+
 def _rank(films, answers, preferences):
     weights, filters, context = answer_state(answers)
     pool = [f for f in films if media_type.is_movie_flow_eligible(f)]
     pool = [f for f in pool if rec._matches_filters(f, filters)] or pool
-    ranked = [rec.score_film(f, weights, preferences, risk=str(context.get("risk") or "medium"))
-              for f in pool]
+    ranked = [{**rec.score_film(f, weights, preferences, risk=str(context.get("risk") or "medium")),
+               "_profile": f.get("_profile")} for f in pool]
     return sorted(ranked, key=lambda m: -m["_score"])
 
 
@@ -158,27 +194,40 @@ def evaluate(films, scenario, engine):
     requirements = mood.collect_compound_requirements(answers)
     canonical = build_intent(answers)
 
+    # V2 добавляет канонический отбор: обязательное и недопустимое.
+    canonical_for_engine = canonical if engine == "v2" else None
     eligible = rec.mood_eligible(ranked, mood_intent, floors, "best", requirements=requirements)
+    if canonical_for_engine is not None:
+        eligible = rec.canonical_eligible(eligible, canonical_for_engine)
     picks, levels = [], []
-    for role, key, weights in (("best", "_b", (.58, .42, 0.0)),
-                               ("reliable", "_r", (.38, .62, 0.0)),
+    for role, key, weights in (("best", "_b", (.52, .38, 0.0)),
+                               ("reliable", "_r", (.34, .58, 0.0)),
                                ("unexpected", "_u", (.50, .22, .28))):
         scored = [{**m, key: weights[0] * m["_mood"] + weights[1] * rec.normalized_base_score(m)
-                   + weights[2] * mood.clamp01(m["_novelty"] / 5.0)} for m in ranked]
+                   + weights[2] * mood.clamp01(m["_novelty"] / 5.0)
+                   + (0.10 * rec.preferred_bonus(m, canonical) if canonical_for_engine else 0.0)}
+                  for m in ranked]
         pick, level = rec.select_mood_role(scored, mood_intent, floors, role, picks, key,
                                            requirements=requirements,
-                                           evidence_first=(role == "best"))
+                                           evidence_first=(role == "best"),
+                                           canonical_intent=canonical_for_engine)
         if pick:
             picks.append(pick)
             levels.append(level)
 
+    from recommendation import evidence as ev
+
     failures, violations, property_failures = [], [], []
+    levels_seen = {level.value: 0 for level in ev.EvidenceLevel}
     for movie in picks:
         features = movie["_mood_features"]
-        profile_tones = set(features.markers)
-        failures += [name for name in canonical.required_features
-                     if name not in profile_tones and name not in _genres_of(movie)]
-        violations += [name for name in canonical.forbidden_features if name in profile_tones]
+        for name in canonical.required_features:
+            level = ev.evaluate(name, movie)
+            levels_seen[level.value] += 1
+            if not ev.satisfies_required(name, movie):
+                failures.append(f"{name}:{movie.get('title')}")
+        violations += [name for name in canonical.forbidden_features
+                       if ev.violates_forbidden(name, movie)]
         for expectation in scenario["expect"]:
             if not PROPERTY_CHECKS[expectation](features):
                 property_failures.append(f"{expectation}:{movie.get('title')}")
@@ -194,7 +243,14 @@ def evaluate(films, scenario, engine):
             if picks else 0.0,
         "critical_contradictions": sum(
             len(mood.find_critical_contradictions(mood_intent, m["_mood_features"])) for m in picks),
+        "contradiction_detail": [
+            f"{m.get('title')}:{mood.find_critical_contradictions(mood_intent, m['_mood_features'])}"
+            for m in picks if mood.find_critical_contradictions(mood_intent, m["_mood_features"])],
         "required_feature_failures": len(failures),
+        "direct_evidence_count": levels_seen["direct"],
+        "supported_evidence_count": levels_seen["supported"],
+        "contradicted_count": levels_seen["contradicted"],
+        "unknown_required_count": levels_seen["unknown"],
         "forbidden_feature_violations": len(violations),
         "property_failures": property_failures,
         "role_overlap": len(picks) - len({m["id"] for m in picks}),
@@ -220,6 +276,10 @@ def summarize(rows):
         "primary_intent_match": round(statistics.mean([r["primary_intent_match"] for r in picked]), 3) if picked else 0.0,
         "critical_contradictions": sum(r["critical_contradictions"] for r in rows),
         "required_feature_failures": sum(r["required_feature_failures"] for r in rows),
+        "direct_evidence": sum(r["direct_evidence_count"] for r in rows),
+        "supported_evidence": sum(r["supported_evidence_count"] for r in rows),
+        "contradicted": sum(r["contradicted_count"] for r in rows),
+        "unknown_required": sum(r["unknown_required_count"] for r in rows),
         "forbidden_feature_violations": sum(r["forbidden_feature_violations"] for r in rows),
         "property_failures": sum(len(r["property_failures"]) for r in rows),
         "role_overlap": sum(r["role_overlap"] for r in rows),
@@ -238,7 +298,7 @@ def main() -> None:
     args = parser.parse_args()
 
     with open(args.catalog, encoding="utf-8") as handle:
-        films = json.load(handle)
+        films = attach_offline_profiles(json.load(handle))
     scenarios = [s for s in SCENARIOS if not args.scenario or s["name"] == args.scenario]
     for scenario in scenarios:
         _validate_answers(scenario["answers"])
