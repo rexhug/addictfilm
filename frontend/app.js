@@ -1036,7 +1036,7 @@ async function replaceQuizPick(sessionId, item, apply) {
     // Подбор обновился уже после начала опроса: досчитывать старую подборку
     // новой логикой нельзя, поэтому предлагаем пройти заново, а не показываем
     // человеку непонятную ошибку.
-    if (error.code === "SESSION_VERSION_MISMATCH") {
+    if (error.code === "SESSION_VERSION_MISMATCH" || error.code === "SESSION_ENGINE_UNSUPPORTED") {
       tg?.showAlert?.(String(t("pick_version_changed")));
       startRecommendationQuiz();
       return;

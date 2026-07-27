@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-import smart_random
 from enrichment.taxonomy import MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION
 from recommendation_questions import QUESTION_VERSION
 
@@ -25,6 +24,21 @@ RECOMMENDATION_ENGINE_V2_ADMIN_PREVIEW = os.getenv(
 
 ENGINE_V1 = "recommendation-v1"
 ENGINE_V2 = "recommendation-v2"
+
+# Политика ОТБОРА в квизе — своя версия у каждого движка. Раньше сюда писалась
+# версия smart-random, но она описывает совсем другой режим и ничего не говорит
+# о семантике квиза: по такой записи нельзя было понять, чем считалась сессия.
+QUIZ_POLICY_V1 = "quiz-policy-v1"
+QUIZ_POLICY_V2 = "quiz-policy-v2"
+
+
+class UnknownRecommendationEngine(ValueError):
+    """Сессия ссылается на движок, которого в этой сборке нет.
+
+    Молча выполнить её через V1 нельзя: это ровно то смешивание семантики, ради
+    защиты от которого сессии и версионируются. Такое бывает при откате сборки
+    назад — сессия из более новой версии старше самого кода.
+    """
 
 
 @dataclass(frozen=True)
@@ -49,7 +63,7 @@ class EngineSpec:
 V1 = EngineSpec(
     engine_version=ENGINE_V1,
     question_version=QUESTION_VERSION,
-    policy_version=smart_random.SMART_RANDOM_POLICY_VERSION,
+    policy_version=QUIZ_POLICY_V1,
     taxonomy_version=MOVIE_TAXONOMY_VERSION,
     feature_version=MOVIE_FEATURE_VERSION,
 )
@@ -60,7 +74,7 @@ V1 = EngineSpec(
 V2 = EngineSpec(
     engine_version=ENGINE_V2,
     question_version=QUESTION_VERSION,
-    policy_version=smart_random.SMART_RANDOM_POLICY_VERSION,
+    policy_version=QUIZ_POLICY_V2,
     taxonomy_version=MOVIE_TAXONOMY_VERSION,
     feature_version=MOVIE_FEATURE_VERSION,
 )
@@ -81,16 +95,29 @@ def resolve_for_session(session: dict | None) -> EngineSpec:
     """Движок уже начатой сессии. Флаг здесь не участвует принципиально.
 
     NULL-версия — сессия старше версионирования: это legacy V1, и переводить её
-    на V2 нельзя, даже если V2 сейчас доступен.
+    на V2 нельзя, даже если V2 сейчас доступен. А вот НЕПУСТАЯ незнакомая
+    версия — не повод тихо посчитать её как V1: вызывающий обязан узнать об
+    этом и предложить начать заново.
     """
     stored = (session or {}).get("engine_version")
     if not stored:
         return V1
-    return REGISTRY.get(str(stored), V1)
+    engine = REGISTRY.get(str(stored))
+    if engine is None:
+        raise UnknownRecommendationEngine(str(stored))
+    return engine
 
 
 def uses_v2(session: dict | None) -> bool:
     return resolve_for_session(session).engine_version == ENGINE_V2
+
+
+def is_supported(session: dict | None) -> bool:
+    try:
+        resolve_for_session(session)
+    except UnknownRecommendationEngine:
+        return False
+    return True
 
 
 def engine_state(*, is_admin: bool = False) -> dict:

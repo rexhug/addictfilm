@@ -88,9 +88,16 @@ class SessionVersionMatchTests(unittest.TestCase):
             self._session(**{field: None for field in _VERSION_FIELDS}, version=None)))
 
     def test_any_changed_version_stops_recalculation(self):
-        for field in ("version", *_VERSION_FIELDS):
+        """Для ЗНАКОМОГО движка расхождение любой версии — просто несовпадение."""
+        for field in ("version", "policy_version", "taxonomy_version", "feature_version"):
             with self.subTest(field=field):
                 self.assertFalse(_session_versions_match(self._session(**{field: "чужая-версия"})))
+
+    def test_unknown_engine_is_an_error_not_a_mismatch(self):
+        """Неизвестный движок обрабатывается раньше — _require_supported_engine."""
+        from recommendation.engines import UnknownRecommendationEngine
+        with self.assertRaises(UnknownRecommendationEngine):
+            _session_versions_match(self._session(engine_version="recommendation-v9"))
 
     def test_engine_versions_are_explicit_strings(self):
         current = _current_engine_versions()

@@ -54,9 +54,24 @@ class EngineResolutionTests(unittest.TestCase):
         with patch.object(engines, "RECOMMENDATION_ENGINE_V2_ENABLED", True):
             self.assertEqual(engines.resolve_for_session(session).engine_version, engines.ENGINE_V1)
 
-    def test_unknown_engine_falls_back_to_v1(self):
-        self.assertEqual(engines.resolve_for_session({"engine_version": "из-будущего"}).engine_version,
-                         engines.ENGINE_V1)
+    def test_unknown_engine_is_an_explicit_error_not_a_silent_v1(self):
+        """Тихо посчитать чужую версию как V1 — то самое смешивание семантики,
+        от которого защищает версионирование. Бывает при откате сборки назад."""
+        with self.assertRaises(engines.UnknownRecommendationEngine):
+            engines.resolve_for_session({"engine_version": "recommendation-v3"})
+        self.assertFalse(engines.is_supported({"engine_version": "recommendation-v3"}))
+        self.assertTrue(engines.is_supported({"engine_version": None}))
+        self.assertTrue(engines.is_supported({"engine_version": engines.ENGINE_V2}))
+
+    def test_quiz_policy_is_separate_from_smart_random_policy(self):
+        """Версия smart-random ничего не говорит о семантике квиза."""
+        import smart_random
+        self.assertEqual(engines.V1.policy_version, engines.QUIZ_POLICY_V1)
+        self.assertEqual(engines.V2.policy_version, engines.QUIZ_POLICY_V2)
+        self.assertNotEqual(engines.V1.policy_version, engines.V2.policy_version)
+        for spec in engines.REGISTRY.values():
+            with self.subTest(engine=spec.engine_version):
+                self.assertNotEqual(spec.policy_version, smart_random.SMART_RANDOM_POLICY_VERSION)
 
     def test_every_spec_carries_a_complete_version_set(self):
         for name, spec in engines.REGISTRY.items():
@@ -170,3 +185,38 @@ class CanonicalIntentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnsupportedEngineRouteTests(unittest.IsolatedAsyncioTestCase):
+    """Незнакомый движок должен давать понятный отказ, а не 500."""
+
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.old = (db.DB_PATH, db.DATABASE_URL, db._PG)
+        db.DB_PATH = str(Path(self.temp.name) / "u.db")
+        db.DATABASE_URL, db._PG = "", False
+        await db.init_db()
+        await db.upsert_user({"id": 1, "first_name": "One", "username": "one"})
+        await db.create_recommendation_session(
+            1, "quiz-v2", "future", "q1",
+            versions={**engines.V1.as_session_versions(), "engine_version": "recommendation-v3"})
+
+    async def asyncTearDown(self):
+        db.DB_PATH, db.DATABASE_URL, db._PG = self.old
+        self.temp.cleanup()
+
+    async def test_route_helper_converts_it_into_a_clear_conflict(self):
+        from fastapi import HTTPException
+        from main import _require_supported_engine
+        session = await db.get_recommendation_session(1, "future")
+        with self.assertRaises(HTTPException) as error:
+            _require_supported_engine(session)
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertEqual(error.exception.detail["code"], "SESSION_ENGINE_UNSUPPORTED")
+
+    async def test_known_session_passes_through(self):
+        from main import _require_supported_engine
+        await db.create_recommendation_session(1, "quiz-v2", "ok", "q1",
+                                               versions=engines.V1.as_session_versions())
+        session = await db.get_recommendation_session(1, "ok")
+        self.assertEqual(_require_supported_engine(session).engine_version, engines.ENGINE_V1)

@@ -794,6 +794,21 @@ def _current_engine_versions() -> dict:
     return engines.V1.as_session_versions()
 
 
+def _require_supported_engine(session: dict) -> engines.EngineSpec:
+    """Движок сессии или явный отказ.
+
+    Незнакомая непустая версия бывает при откате сборки назад: сессия новее
+    самого кода. Считать её через V1 значило бы молча подменить семантику, от
+    чего версионирование и защищает.
+    """
+    try:
+        return engines.resolve_for_session(session)
+    except engines.UnknownRecommendationEngine:
+        raise HTTPException(status_code=409, detail={
+            "code": "SESSION_ENGINE_UNSUPPORTED",
+            "message": "Этот подбор собран другой версией — начните опрос заново"}) from None
+
+
 def _session_versions_match(session: dict) -> bool:
     """Совпадает ли семантика сессии с текущей.
 
@@ -842,6 +857,7 @@ async def recommendation_quiz_answer(session_id: str, body: RecommendationAnswer
         raise HTTPException(status_code=404, detail="Опрос не найден")
     if session["state"] != "active":
         raise HTTPException(status_code=409, detail="Этот опрос уже завершён")
+    _require_supported_engine(session)
     expected = session.get("current_question")
     if body.question_id != expected:
         raise HTTPException(status_code=409, detail="Вопрос уже изменился — обновите экран")
@@ -892,6 +908,7 @@ async def recommendation_quiz_results(session_id: str, language: str = "ru", use
         raise HTTPException(status_code=404, detail="Опрос не найден")
     if session["state"] != "complete":
         raise HTTPException(status_code=409, detail="Сначала завершите опрос")
+    _require_supported_engine(session)
     answers = session.get("answers") or {}
     partner_id = await _active_partner_for_recommendation(user["id"], "pair") if answers.get("c4") == "pair" else None
     if session.get("results") is not None:
@@ -935,6 +952,7 @@ async def recommendation_quiz_replace(session_id: str, body: RecommendationRepla
     server_role = str(rejected.get("role") or "")
     if body.role and body.role != server_role:
         raise HTTPException(status_code=422, detail="Роль не совпадает с текущей подборкой")
+    _require_supported_engine(session)
     if not _session_versions_match(session):
         # Подборка собрана прежней семантикой. Досчитывать её новой — молча
         # смешать два движка в одном экране; честнее попросить пройти заново.
