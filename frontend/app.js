@@ -87,11 +87,23 @@ const DICT = {
     admin_title_label: "Название", admin_description_label: "Описание",
     admin_description_ph: "Коротко о подборке (необязательно)",
     admin_move_up: "Выше", admin_move_down: "Ниже", admin_remove: "Убрать",
+    admin_move_left: "Левее", admin_move_right: "Правее", admin_edit: "Редактировать",
     admin_empty_publish: "Нельзя опубликовать пустую подборку",
     admin_published_delete: "Сначала снимите подборку с публикации",
     admin_saved: "Сохранено", admin_drafts_hidden: "Черновик виден только администраторам",
     admin_archived_hidden: "Архив скрыт от пользователей",
     admin_reorder_hint: "Стрелками меняйте порядок фильмов",
+    admin_display_label: "Формат отображения",
+    admin_display_standard: "Обычная", admin_display_standard_hint: "Компактная карточка в разделе «Подборки»",
+    admin_display_featured: "Большая", admin_display_featured_hint: "Крупная редакционная подборка на главной",
+    admin_backdrop_label: "Фоновое изображение",
+    admin_backdrop_from_film: "Из фильма подборки", admin_backdrop_url: "Ссылка (https)",
+    admin_backdrop_none: "Пока нет изображения — добавьте фильм с кадром или укажите ссылку",
+    admin_preview_label: "Предпросмотр",
+    admin_create_featured: "Создать большую подборку",
+    admin_featured_image_required: "Для большой подборки нужно изображение",
+    admin_url_not_allowed: "Разрешены только https-ссылки",
+    coll_eyebrow: "Подборка",
     coll_confirm_add: (t) => `Добавить «${t}» в подборку?`, coll_already_in: "Уже в этой подборке",
     coll_remove_confirm: (t) => `Убрать «${t}» из подборки?`, coll_add_film_btn: "+ Добавить фильм",
     coll_edit_hint: "Тап на фильм — убрать из подборки",
@@ -181,11 +193,23 @@ const DICT = {
     admin_title_label: "Title", admin_description_label: "Description",
     admin_description_ph: "A short note about the collection (optional)",
     admin_move_up: "Up", admin_move_down: "Down", admin_remove: "Remove",
+    admin_move_left: "Move left", admin_move_right: "Move right", admin_edit: "Edit",
     admin_empty_publish: "An empty collection cannot be published",
     admin_published_delete: "Unpublish the collection first",
     admin_saved: "Saved", admin_drafts_hidden: "Draft is visible to admins only",
     admin_archived_hidden: "Archived items are hidden from users",
     admin_reorder_hint: "Use arrows to reorder films",
+    admin_display_label: "Presentation format",
+    admin_display_standard: "Standard", admin_display_standard_hint: "Compact card in the “Collections” rail",
+    admin_display_featured: "Large", admin_display_featured_hint: "Large editorial block on the home screen",
+    admin_backdrop_label: "Background image",
+    admin_backdrop_from_film: "From a film in the collection", admin_backdrop_url: "Link (https)",
+    admin_backdrop_none: "No image yet — add a film with a still or paste a link",
+    admin_preview_label: "Preview",
+    admin_create_featured: "Create a large collection",
+    admin_featured_image_required: "A large collection needs an image",
+    admin_url_not_allowed: "Only https links are allowed",
+    coll_eyebrow: "Collection",
     coll_confirm_add: (t) => `Add "${t}" to the collection?`, coll_already_in: "Already in this collection",
     coll_remove_confirm: (t) => `Remove "${t}" from the collection?`, coll_add_film_btn: "+ Add film",
     coll_edit_hint: "Tap a film to remove it from the collection",
@@ -620,6 +644,9 @@ const ICONS = {
   help: '<circle cx="12" cy="12" r="9"/><path d="M9.3 9a2.8 2.8 0 0 1 5.4 1c0 1.8-2.7 2.2-2.7 3.5M12 17h.01"/>',
   arrowUp: '<path d="M12 19V5M6 11l6-6 6 6"/>',
   arrowDown: '<path d="M12 5v14M6 13l6 6 6-6"/>',
+  arrowLeft: '<path d="M19 12H5M11 6l-6 6 6 6"/>',
+  arrowRight: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   trash: '<path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M10 11v6M14 11v6"/>',
 };
 const appIcon = (name, { label = null } = {}) =>
@@ -885,13 +912,71 @@ async function loadCollectionsRail() {
     // чтобы редактировать «на месте». Публичная ручка их по-прежнему не отдаёт.
     const admin = canEditCollections();
     const { items } = await api(admin ? "/api/admin/collections" : "/api/collections");
+    // Одна подборка живёт ровно в одном формате: крупные уходят в featured-блок,
+    // обычные остаются в этой ленте.
+    const featured = items.filter(c => c.display_type === "featured");
+    const standard = items.filter(c => c.display_type !== "featured");
+    renderFeaturedCollections(featured);
     if (!el) return;
-    if (!items.length) {
-      el.innerHTML = `<div class="rail-empty">${esc(canEditCollections() ? t("collections_empty_admin_s") : t("collections_empty_s"))}</div>`;
+    if (!standard.length) {
+      el.innerHTML = `<div class="rail-empty">${esc(admin ? t("collections_empty_admin_s") : t("collections_empty_s"))}</div>`;
       return;
     }
-    el.replaceChildren(...items.map(collectionCard));
+    el.replaceChildren(...standard.map(collectionCard));
   } catch (e) { if (el) el.innerHTML = `<div class="rail-empty">${esc(t("rail_err"))}</div>`; }
+}
+
+// Крупные подборки живут отдельной секцией над лентой «Подборки». Если их нет —
+// секция не рендерится вовсе: ни заголовка, ни пустого места.
+function renderFeaturedCollections(items) {
+  document.getElementById("sec-featured")?.remove();
+  if (!items.length) return;
+  const anchor = document.getElementById("sec-coll");
+  if (!anchor) return;
+  const section = document.createElement("section");
+  section.className = "rise d4";
+  section.id = "sec-featured";
+  const track = document.createElement("div");
+  track.className = "featured-track";
+  items.forEach(item => {
+    const wrap = document.createElement("div");
+    wrap.className = "featured-slot";
+    wrap.appendChild(featuredCollectionCard(item));
+    if (canEditCollections()) wrap.appendChild(featuredAdminControls(item, items));
+    track.appendChild(wrap);
+  });
+  section.appendChild(track);
+  anchor.parentNode.insertBefore(section, anchor);
+}
+
+// Управление крупной подборкой в режиме админа: статус, редактирование и
+// порядок стрелками (тот же проверенный подход, что и у фильмов внутри подборки).
+function featuredAdminControls(item, siblings) {
+  const bar = document.createElement("div");
+  bar.className = "featured-admin";
+  const index = siblings.findIndex(c => c.id === item.id);
+  bar.innerHTML = `
+    <span class="admin-badge admin-badge-${esc(item.status || "published")}">${esc(t(COLLECTION_STATUS_LABEL[item.status] || "admin_status_published"))}</span>
+    <div class="featured-admin-controls">
+      <button class="admin-icon-btn" data-left ${index === 0 ? "disabled" : ""} aria-label="${esc(t("admin_move_left"))}">${appIcon("arrowLeft")}</button>
+      <button class="admin-icon-btn" data-right ${index === siblings.length - 1 ? "disabled" : ""} aria-label="${esc(t("admin_move_right"))}">${appIcon("arrowRight")}</button>
+      <button class="admin-icon-btn" data-edit aria-label="${esc(t("admin_edit"))}">${appIcon("pencil")}</button>
+    </div>`;
+  bar.querySelector("[data-edit]").onclick = () => showCollectionDetail(item.id);
+  bar.querySelector("[data-left]").onclick = () => reorderFeatured(siblings, index, -1);
+  bar.querySelector("[data-right]").onclick = () => reorderFeatured(siblings, index, 1);
+  return bar;
+}
+
+async function reorderFeatured(items, index, delta) {
+  const target = index + delta;
+  if (target < 0 || target >= items.length) return;
+  const ordered = items.slice();
+  [ordered[index], ordered[target]] = [ordered[target], ordered[index]];
+  const result = await adminCall("/api/admin/collections/featured/order", {
+    method: "PUT", body: JSON.stringify({ ordered_ids: ordered.map(c => c.id) }),
+  });
+  if (result) loadCollectionsRail();
 }
 
 async function loadRail(id, path, { onItems = null } = {}) {
@@ -1156,6 +1241,34 @@ function activeTabName() { return document.querySelector("#tabbar .tab.active")?
 // ── Подборки (публичный просмотр + in-app редактирование в режиме админа) ─────
 function canEditCollections() { return AdminMode.active("collections.write"); }
 
+// Крупная редакционная подборка. ОДИН рендерер и для главной, и для
+// предпросмотра в редакторе — превью не может разойтись с продакшеном.
+function featuredCollectionCard(c, { preview = false } = {}) {
+  const card = document.createElement("article");
+  card.className = "featured-card";
+  card.dataset.collectionId = c.id;
+  const image = c.backdrop || c.cover || "";
+  const count = `${c.film_count || 0} ${t("count_films", c.film_count || 0)}`;
+  card.innerHTML = `
+    ${image ? `<img class="featured-card-img" src="${posterSrc(image, true)}" alt="" loading="lazy" decoding="async" data-img-retry>` : ""}
+    <div class="featured-card-scrim"></div>
+    <div class="featured-card-body">
+      <span class="featured-card-eyebrow">${esc(t("coll_eyebrow"))}</span>
+      <h3 class="featured-card-title">${esc(c.title || "")}</h3>
+      ${c.description ? `<p class="featured-card-desc">${esc(c.description)}</p>` : ""}
+      <div class="featured-card-meta"><span>${esc(count)}</span><i aria-hidden="true">›</i></div>
+    </div>`;
+  if (!preview) {
+    card.setAttribute("role", "button");
+    card.tabIndex = 0;
+    card.onclick = () => showCollectionDetail(c.id);
+    card.onkeydown = (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); showCollectionDetail(c.id); }
+    };
+  }
+  return card;
+}
+
 function collectionCard(c) {
   // Тот же формат карточки, что у фильмов: обложка + мета-строка (кол-во фильмов
   // справа, как рейтинг у постеров) — единый визуальный ритм секций.
@@ -1177,7 +1290,7 @@ function collectionCard(c) {
   return card;
 }
 
-function createCollectionFlow() {
+function createCollectionFlow(displayType = "standard") {
   // Вызывается с Главной («+» в заголовке секции «Подборки») — временно подменяет
   // содержимое секции формой; после создания уходим в showCollectionDetail, а сама
   // секция пересоберётся из API при следующем возврате на Главную (showHome).
@@ -1186,16 +1299,26 @@ function createCollectionFlow() {
   el.innerHTML = `<div class="chart-card" style="margin:0 20px;">
     <input class="code-input" id="coll-title-input" placeholder="${esc(t("collections_title_ph"))}" autocomplete="off">
     <button class="pbtn primary" id="coll-create-btn">${esc(t("collections_create_btn"))}</button>
+    ${displayType === "standard" ? `<button class="pbtn" id="coll-create-featured">${esc(t("admin_create_featured"))}</button>` : ""}
   </div>`;
   const input = document.getElementById("coll-title-input");
   input.focus();
-  document.getElementById("coll-create-btn").onclick = async () => {
+  const create = async (type) => {
     const title = input.value.trim();
     if (!title) return;
-    const r = await api("/api/admin/collections", { method: "POST", body: JSON.stringify({ title }) });
+    const created = await adminCall("/api/admin/collections",
+      { method: "POST", body: JSON.stringify({ title }) });
+    if (!created) return;
+    // Формат ставим сразу после создания — редактор откроется уже в нужном виде.
+    if (type === "featured") {
+      await adminCall(`/api/admin/collections/${created.id}`, {
+        method: "PATCH", body: JSON.stringify({ version: 1, display_type: "featured" }) });
+    }
     tg.HapticFeedback?.notificationOccurred("success");
-    showCollectionDetail(r.id);  // сразу открываем — удобно накидать фильмов
+    showCollectionDetail(created.id);  // сразу открываем — удобно накидать фильмов
   };
+  document.getElementById("coll-create-btn").onclick = () => create(displayType);
+  document.getElementById("coll-create-featured")?.addEventListener("click", () => create("featured"));
 }
 
 const COLLECTION_STATUS_LABEL = {
@@ -1292,11 +1415,22 @@ async function showCollectionDetail(id) {
     else showCollectionDetail(id);  // конфликт/ошибка — перечитываем правду с сервера
   };
 
+  // Черновик формы: незасейвленный выбор формата/фона живёт здесь, чтобы
+  // предпросмотр обновлялся мгновенно, а на сервер уходил один явный PATCH.
+  const draft = {
+    display_type: collection.display_type || "standard",
+    backdrop_url: collection.backdrop_url || "",
+  };
+
   const renderEditor = () => {
     const editor = document.getElementById("cd-editor");
     const actions = document.getElementById("cd-actions");
     if (!canEdit) { editor.innerHTML = ""; actions.innerHTML = ""; return; }
     const status = collection.status || "draft";
+    // Кадры из фильмов подборки — первый и самый безопасный источник фона.
+    const filmBackdrops = (collection.items || [])
+      .map(m => ({ url: m.backdrop_url || m.poster_url, title: m.title }))
+      .filter(art => art.url).slice(0, 12);
     const note = status === "draft" ? t("admin_drafts_hidden") : status === "archived" ? t("admin_archived_hidden") : "";
     editor.innerHTML = `
       <div class="admin-panel">
@@ -1308,6 +1442,25 @@ async function showCollectionDetail(id) {
           <input id="cd-f-title" class="code-input" value="${esc(collection.title)}" maxlength="80" autocomplete="off"></label>
         <label class="admin-field"><span>${esc(t("admin_description_label"))}</span>
           <textarea id="cd-f-desc" class="admin-textarea" rows="2" maxlength="1000" placeholder="${esc(t("admin_description_ph"))}">${esc(collection.description || "")}</textarea></label>
+        <div class="admin-field"><span>${esc(t("admin_display_label"))}</span>
+          <div class="admin-segments" role="radiogroup" aria-label="${esc(t("admin_display_label"))}">
+            ${["standard", "featured"].map(type => `
+              <button type="button" class="admin-segment${draft.display_type === type ? " on" : ""}"
+                      data-display="${type}" role="radio" aria-checked="${draft.display_type === type}">
+                <b>${esc(t(type === "standard" ? "admin_display_standard" : "admin_display_featured"))}</b>
+                <small>${esc(t(type === "standard" ? "admin_display_standard_hint" : "admin_display_featured_hint"))}</small>
+              </button>`).join("")}
+          </div></div>
+        ${draft.display_type === "featured" ? `
+        <div class="admin-field"><span>${esc(t("admin_backdrop_label"))}</span>
+          ${filmBackdrops.length ? `<div class="admin-backdrops">${filmBackdrops.map(art => `
+            <button type="button" class="admin-backdrop${draft.backdrop_url === art.url ? " on" : ""}" data-backdrop="${esc(art.url)}" aria-label="${esc(art.title)}">
+              <img src="${posterSrc(art.url, true)}" alt="" loading="lazy" data-img-retry></button>`).join("")}</div>`
+            : `<p class="admin-hint" style="margin:0 0 8px;">${esc(t("admin_backdrop_none"))}</p>`}
+          <input id="cd-f-backdrop" class="code-input" value="${esc(draft.backdrop_url || "")}"
+                 placeholder="${esc(t("admin_backdrop_url"))}" maxlength="2048" autocomplete="off"></div>
+        <div class="admin-field"><span>${esc(t("admin_preview_label"))}</span>
+          <div id="cd-preview" class="admin-preview"></div></div>` : ""}
         <button class="pbtn primary" id="cd-save">${esc(t("admin_save"))}</button>
       </div>`;
     actions.innerHTML = `<div class="admin-actions">
@@ -1316,6 +1469,43 @@ async function showCollectionDetail(id) {
         `<button class="pbtn ${cls}" data-status-action="${action}">${esc(t(key))}</button>`).join("")}
       <button class="pbtn danger" id="cd-delete">${esc(t("admin_delete_forever"))}</button>
     </div>${esc(t("admin_reorder_hint")) ? `<p class="admin-hint">${esc(t("admin_reorder_hint"))}</p>` : ""}`;
+
+    // Предпросмотр использует ТОТ ЖЕ рендерер, что и главная, — расхождение
+    // между превью и продакшеном невозможно по построению.
+    const renderPreview = () => {
+      const host = document.getElementById("cd-preview");
+      if (!host) return;
+      host.replaceChildren(featuredCollectionCard({
+        id: collection.id,
+        title: document.getElementById("cd-f-title")?.value || collection.title,
+        description: document.getElementById("cd-f-desc")?.value || "",
+        backdrop: draft.backdrop_url || collection.backdrop,
+        cover: collection.cover,
+        film_count: (collection.items || []).length,
+      }, { preview: true }));
+    };
+    renderPreview();
+
+    editor.querySelectorAll("[data-display]").forEach(button => button.onclick = () => {
+      draft.display_type = button.dataset.display;
+      tg?.HapticFeedback?.selectionChanged?.();
+      renderEditor();   // перерисовываем: у форматов разные поля
+    });
+    editor.querySelectorAll("[data-backdrop]").forEach(button => button.onclick = () => {
+      draft.backdrop_url = button.dataset.backdrop;
+      const input = document.getElementById("cd-f-backdrop");
+      if (input) input.value = draft.backdrop_url;
+      editor.querySelectorAll("[data-backdrop]").forEach(other =>
+        other.classList.toggle("on", other === button));
+      renderPreview();
+    });
+    const backdropInput = document.getElementById("cd-f-backdrop");
+    if (backdropInput) backdropInput.oninput = () => {
+      draft.backdrop_url = backdropInput.value.trim();
+      renderPreview();
+    };
+    document.getElementById("cd-f-title")?.addEventListener("input", renderPreview);
+    document.getElementById("cd-f-desc")?.addEventListener("input", renderPreview);
 
     document.getElementById("cd-add").onclick = () => showSearch({ type: "collection", id });
     document.getElementById("cd-save").onclick = async (event) => {
@@ -1327,6 +1517,9 @@ async function showCollectionDetail(id) {
           version: collection.version,
           title: document.getElementById("cd-f-title").value,
           description: document.getElementById("cd-f-desc").value,
+          display_type: draft.display_type,
+          // Пустая строка — это «фона нет», а не «не трогать»: шлём null.
+          backdrop_url: draft.backdrop_url || null,
         }),
       });
       button.disabled = false;

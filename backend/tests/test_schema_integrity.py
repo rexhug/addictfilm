@@ -47,6 +47,7 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
             db._SCHEMA_MIGRATION_RECOMMENDATION_RESULTS,
             db._SCHEMA_MIGRATION_SEARCH_TEXT_DIRECTORS,
             db._SCHEMA_MIGRATION_EDITORIAL_COLLECTIONS,
+            db._SCHEMA_MIGRATION_FEATURED_COLLECTIONS,
         ])
 
     async def test_foreign_keys_reject_orphaned_user_film_rows(self):

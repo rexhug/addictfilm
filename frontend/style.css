@@ -770,3 +770,51 @@ section{margin-top:30px;}
 .admin-icon-btn:disabled{opacity:.3;cursor:default;}
 .admin-icon-btn.danger{color:#f58b94;}
 .admin-icon-btn svg{width:20px;height:20px;display:block;}
+
+/* ── Крупная редакционная подборка ───────────────────────────────────────────
+   Кинематографичный ландшафтный блок: тот же тёмный язык, что и везде, без
+   неона и «админского» вида. Соотношение задано заранее — картинка не двигает
+   лейаут при загрузке. */
+.featured-track{display:grid;grid-auto-flow:column;grid-auto-columns:min(88vw,420px);gap:12px;
+  padding:0 20px 2px;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none;
+  -webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;}
+.featured-track::-webkit-scrollbar{display:none;}
+.featured-slot{scroll-snap-align:start;min-width:0;}
+.featured-card{position:relative;width:100%;aspect-ratio:16/10;overflow:hidden;isolation:isolate;
+  border:1px solid var(--hair);border-radius:20px;background:var(--s2);cursor:pointer;
+  transition:transform .18s cubic-bezier(.2,.8,.2,1);}
+.featured-card:active{transform:scale(.985);}
+.featured-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+.featured-card-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;}
+.featured-card-scrim{position:absolute;inset:0;background:linear-gradient(180deg,
+  rgba(0,0,0,.12) 18%,rgba(0,0,0,.34) 52%,rgba(0,0,0,.88) 100%);}
+.featured-card-body{position:absolute;inset-inline:18px;bottom:15px;z-index:1;}
+.featured-card-eyebrow{display:block;margin-bottom:6px;color:var(--accent-2);font-size:10.5px;
+  font-weight:700;letter-spacing:.09em;text-transform:uppercase;}
+.featured-card-title{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+  font-size:21px;font-weight:700;line-height:1.16;letter-spacing:-.025em;color:#fff;}
+.featured-card-desc{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+  margin-top:5px;color:rgba(255,255,255,.72);font-size:12.5px;line-height:1.35;}
+.featured-card-meta{display:flex;align-items:center;justify-content:space-between;margin-top:10px;
+  color:rgba(255,255,255,.82);font-size:12px;font-variant-numeric:tabular-nums;}
+.featured-card-meta i{font-style:normal;font-size:20px;line-height:1;color:rgba(255,255,255,.6);}
+.featured-admin{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;}
+.featured-admin-controls{display:flex;gap:2px;}
+@media(max-width:360px){.featured-track{grid-auto-columns:min(90vw,420px);padding-left:16px;padding-right:16px;}
+  .featured-card-title{font-size:19px;}}
+
+/* Селектор формата и выбор фона в редакторе */
+.admin-segments{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.admin-segment{padding:11px 12px;border:1px solid var(--hair-2);border-radius:14px;background:var(--s2);
+  color:var(--ink);font-family:var(--font);text-align:left;cursor:pointer;transition:border-color .16s,background .16s;}
+.admin-segment b{display:block;font-size:14px;font-weight:650;}
+.admin-segment small{display:block;margin-top:3px;color:var(--ink-2);font-size:10.5px;line-height:1.3;}
+.admin-segment.on{border-color:rgba(var(--accent-rgb),.6);background:rgba(var(--accent-rgb),.12);}
+.admin-segment.on b{color:var(--accent-2);}
+.admin-backdrops{display:flex;gap:8px;overflow-x:auto;margin-bottom:10px;padding-bottom:2px;scrollbar-width:none;}
+.admin-backdrops::-webkit-scrollbar{display:none;}
+.admin-backdrop{flex:none;width:96px;height:60px;overflow:hidden;padding:0;border:2px solid transparent;
+  border-radius:10px;background:var(--s3);cursor:pointer;}
+.admin-backdrop img{width:100%;height:100%;object-fit:cover;display:block;}
+.admin-backdrop.on{border-color:var(--accent);}
+.admin-preview{margin-top:2px;}

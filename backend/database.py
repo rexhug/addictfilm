@@ -43,6 +43,7 @@ _SCHEMA_MIGRATION_PAIR_HISTORY = "2026-07-26-pair-history"
 _SCHEMA_MIGRATION_RECOMMENDATIONS = "2026-07-26-recommendations-v1"
 _SCHEMA_MIGRATION_RECOMMENDATION_RESULTS = "2026-07-26-recommendations-v2-results"
 _SCHEMA_MIGRATION_EDITORIAL_COLLECTIONS = "2026-07-27-editorial-collections-v1"
+_SCHEMA_MIGRATION_FEATURED_COLLECTIONS = "2026-07-27-featured-collections-v1"
 _PAIR_INVITE_TTL = timedelta(days=7)
 
 
@@ -578,6 +579,26 @@ async def _apply_editorial_collections_migration() -> None:
             await db.commit()
 
 
+async def _apply_featured_collections_migration() -> None:
+    """Формат отображения подборки: обычная карточка или крупный блок на главной.
+
+    display_type — ТОЛЬКО про представление: он не влияет ни на права, ни на
+    публикацию (черновик остаётся приватным в любом формате). Существующие
+    подборки получают 'standard', то есть внешний вид продакшена не меняется.
+    backdrop_url отдельный: вертикальная обложка в ландшафтном блоке смотрится
+    плохо, поэтому переиспользовать cover_url вслепую нельзя.
+    """
+    await _add_column_if_missing("collections", "display_type TEXT NOT NULL DEFAULT 'standard'")
+    await _add_column_if_missing("collections", "backdrop_url TEXT")
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        # Значение по умолчанию покрывает существующие строки, но добитие делает
+        # миграцию идемпотентной и чинит возможный NULL от ранних попыток.
+        await db.execute("UPDATE collections SET display_type = 'standard' WHERE display_type IS NULL")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_collections_display "
+                         "ON collections(display_type, status, sort_order)")
+        await db.commit()
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -593,6 +614,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_RECOMMENDATIONS, _apply_recommendations_migration),
         (_SCHEMA_MIGRATION_RECOMMENDATION_RESULTS, _apply_recommendation_results_migration),
         (_SCHEMA_MIGRATION_EDITORIAL_COLLECTIONS, _apply_editorial_collections_migration),
+        (_SCHEMA_MIGRATION_FEATURED_COLLECTIONS, _apply_featured_collections_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -3114,13 +3136,15 @@ async def get_user_role(user_id: int) -> str | None:
 # Публичный слой видит ТОЛЬКО published; draft/archived доступны через админские
 # функции. Один канонический status вместо противоречивых булевых флагов.
 COLLECTION_STATUSES = ("draft", "published", "archived")
+COLLECTION_DISPLAY_TYPES = ("standard", "featured")
 COLLECTION_TRANSITIONS: dict[str, frozenset[str]] = {
     "draft": frozenset({"published", "archived"}),
     "published": frozenset({"draft", "archived"}),
     "archived": frozenset({"draft"}),
 }
-_COLLECTION_COLS = ("c.id, c.title, c.description, c.cover_url, c.status, c.sort_order, "
-                    "c.version, c.created_by, c.created_at, c.updated_at, c.published_at")
+_COLLECTION_COLS = ("c.id, c.title, c.description, c.cover_url, c.backdrop_url, c.display_type, "
+                    "c.status, c.sort_order, c.version, c.created_by, c.created_at, "
+                    "c.updated_at, c.published_at")
 
 
 async def list_collections(statuses: tuple[str, ...] = ("published",)) -> list[dict]:
@@ -3134,7 +3158,18 @@ async def list_collections(statuses: tuple[str, ...] = ("published",)) -> list[d
                    (SELECT COUNT(*) FROM collection_films WHERE collection_id = c.id) AS film_count,
                    COALESCE(c.cover_url,
                      (SELECT f.poster_url FROM collection_films cf JOIN films f ON f.id = cf.film_id
-                      WHERE cf.collection_id = c.id ORDER BY cf.position ASC LIMIT 1)) AS cover
+                      WHERE cf.collection_id = c.id ORDER BY cf.position ASC LIMIT 1)) AS cover,
+                   -- Ландшафтная картинка крупного блока. Порядок падения задан
+                   -- один раз здесь, чтобы рендереры его не повторяли:
+                   -- backdrop подборки → backdrop первого фильма → обложка → постер.
+                   COALESCE(c.backdrop_url,
+                     (SELECT f.backdrop_url FROM collection_films cf JOIN films f ON f.id = cf.film_id
+                      WHERE cf.collection_id = c.id AND f.backdrop_url IS NOT NULL
+                      ORDER BY cf.position ASC LIMIT 1),
+                     c.cover_url,
+                     (SELECT f.poster_url FROM collection_films cf JOIN films f ON f.id = cf.film_id
+                      WHERE cf.collection_id = c.id AND f.poster_url IS NOT NULL
+                      ORDER BY cf.position ASC LIMIT 1)) AS backdrop
             FROM collections c
             WHERE c.status IN ({placeholders})
             ORDER BY c.sort_order ASC, c.created_at DESC
@@ -3172,8 +3207,21 @@ async def get_collection(collection_id: int, statuses: tuple[str, ...] | None = 
         params.extend(statuses)
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute(
-            f"SELECT {_COLLECTION_COLS} FROM collections c WHERE c.id = ?{clause}", params)
+        cur = await db.execute(f"""
+            SELECT {_COLLECTION_COLS},
+                   (SELECT COUNT(*) FROM collection_films WHERE collection_id = c.id) AS film_count,
+                   COALESCE(c.cover_url,
+                     (SELECT f.poster_url FROM collection_films cf JOIN films f ON f.id = cf.film_id
+                      WHERE cf.collection_id = c.id ORDER BY cf.position ASC LIMIT 1)) AS cover,
+                   COALESCE(c.backdrop_url,
+                     (SELECT f.backdrop_url FROM collection_films cf JOIN films f ON f.id = cf.film_id
+                      WHERE cf.collection_id = c.id AND f.backdrop_url IS NOT NULL
+                      ORDER BY cf.position ASC LIMIT 1),
+                     c.cover_url,
+                     (SELECT f.poster_url FROM collection_films cf JOIN films f ON f.id = cf.film_id
+                      WHERE cf.collection_id = c.id AND f.poster_url IS NOT NULL
+                      ORDER BY cf.position ASC LIMIT 1)) AS backdrop
+            FROM collections c WHERE c.id = ?{clause}""", params)
         row = await cur.fetchone()
         return dict(row) if row else None
 
@@ -3181,7 +3229,11 @@ async def get_collection(collection_id: int, statuses: tuple[str, ...] | None = 
 async def update_collection(collection_id: int, expected_version: int, actor_id: int,
                             fields: dict) -> dict | None:
     """Оптимистичная блокировка: версия не совпала → None (вызывающий шлёт 409)."""
-    allowed = {k: v for k, v in fields.items() if k in ("title", "description", "cover_url")}
+    # Смена display_type — это только формат подачи: состав фильмов, ID и статус
+    # публикации остаются нетронутыми, backdrop_url сохраняется при возврате в
+    # 'standard' (чтобы повторное переключение не требовало заново искать фон).
+    allowed = {k: v for k, v in fields.items()
+               if k in ("title", "description", "cover_url", "backdrop_url", "display_type")}
     if not allowed:
         return await get_collection(collection_id)
     assignments = ", ".join(f"{k} = ?" for k in allowed)
@@ -3299,6 +3351,26 @@ async def get_collection_films(collection_id: int, user_id: int) -> list[dict]:
             ORDER BY cf.position ASC, cf.added_at ASC
             """, (collection_id, user_id))
         return [_browse_dict(r) for r in await cur.fetchall()]
+
+
+async def reorder_collections(ordered_ids: list[int], actor_id: int) -> bool:
+    """Порядок подборок на главной (sort_order). Одна транзакция: либо
+    переставились все, либо ни одна — частичный порядок недопустим."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        placeholders = ",".join("?" for _ in ordered_ids)
+        cur = await db.execute(
+            f"SELECT id FROM collections WHERE id IN ({placeholders})", ordered_ids)
+        found = {r["id"] for r in await cur.fetchall()}
+        if found != set(ordered_ids):
+            return False
+        now = _now()
+        for index, collection_id in enumerate(ordered_ids):
+            await db.execute(
+                "UPDATE collections SET sort_order = ?, updated_by = ?, updated_at = ?, "
+                "version = version + 1 WHERE id = ?", (index, actor_id, now, collection_id))
+        await db.commit()
+        return True
 
 
 async def write_audit(actor_id: int, actor_role: str, action: str, entity_type: str,

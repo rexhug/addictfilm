@@ -864,7 +864,11 @@ async def genres(user: dict = Depends(current_user)):
 # ── API: подборки (кураторские коллекции — публичный просмотр + in-app админка) ─
 # Публичные ручки отдают ТОЛЬКО published и не раскрывают редакционные поля
 # (created_by/updated_at/version) — для этого отдельный сериализатор.
-_PUBLIC_COLLECTION_FIELDS = ("id", "title", "description", "cover", "film_count")
+# display_type/backdrop нужны публичному рендеру (крупный блок vs обычная
+# карточка), поэтому они в публичном наборе. Редакционные поля (version,
+# created_by, updated_at, status) наружу по-прежнему не выходят.
+_PUBLIC_COLLECTION_FIELDS = ("id", "title", "description", "cover", "backdrop",
+                             "display_type", "film_count")
 
 
 def _public_collection(row: dict) -> dict:
@@ -873,6 +877,8 @@ def _public_collection(row: dict) -> dict:
 
 @app.get("/api/collections")
 async def collections_list(user: dict = Depends(current_user)):
+    """Публичные подборки. Крупные и обычные отдаются одним запросом и
+    разделяются по display_type на клиенте — лишних round-trip'ов на главной нет."""
     return {"items": [_public_collection(c) for c in await db.list_collections(("published",))]}
 
 
@@ -894,6 +900,16 @@ async def _audit(user: dict, action: str, entity_id, details: dict | None = None
     await db.write_audit(user["id"], role, action, "collection", entity_id, details)
 
 
+def _safe_image_url(value: str) -> bool:
+    """Только https и никаких javascript:/data:. Сервер по этим URL сам не ходит
+    (никакого SSRF) — картинка грузится браузером через существующий прокси."""
+    try:
+        parsed = urlparse(str(value).strip())
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and bool(parsed.netloc)
+
+
 def _conflict() -> HTTPException:
     return HTTPException(status_code=409, detail={"code": "COLLECTION_VERSION_CONFLICT",
                                                   "message": "Подборку изменил другой администратор"})
@@ -909,6 +925,8 @@ class CollectionPatchBody(BaseModel):
     title: str | None = Field(default=None, max_length=500)
     description: str | None = Field(default=None, max_length=1000)
     cover_url: str | None = Field(default=None, max_length=2048)
+    backdrop_url: str | None = Field(default=None, max_length=2048)
+    display_type: str | None = None
 
 
 class CollectionStatusBody(BaseModel):
@@ -952,14 +970,34 @@ async def collection_update(collection_id: int, body: CollectionPatchBody,
         fields["title"] = " ".join(str(fields["title"]).split())[:80]
         if not fields["title"]:
             raise HTTPException(status_code=422, detail="Пустое название")
-    if fields.get("cover_url") and not str(fields["cover_url"]).startswith("https://"):
-        raise HTTPException(status_code=422, detail="Обложка: разрешён только https")
-    if not await db.get_collection(collection_id):
+    for url_field in ("cover_url", "backdrop_url"):
+        value = fields.get(url_field)
+        if value and not _safe_image_url(value):
+            raise HTTPException(status_code=422, detail={
+                "code": "IMAGE_URL_NOT_ALLOWED", "message": "Изображение: разрешён только https"})
+    if "display_type" in fields and fields["display_type"] not in db.COLLECTION_DISPLAY_TYPES:
+        raise HTTPException(status_code=422, detail={
+            "code": "INVALID_DISPLAY_TYPE", "message": "Неизвестный формат отображения"})
+    existing = await db.get_collection(collection_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="Подборка не найдена")
+    # Крупный блок без картинки выглядит сломанным, поэтому опубликованную
+    # подборку нельзя перевести в featured, если фон не из чего собрать.
+    if (fields.get("display_type") == "featured" and existing["status"] == "published"
+            and not (fields.get("backdrop_url") or existing.get("backdrop"))):
+        raise HTTPException(status_code=422, detail={
+            "code": "FEATURED_COLLECTION_IMAGE_REQUIRED",
+            "message": "Для большой подборки нужно изображение"})
     updated = await db.update_collection(collection_id, body.version, user["id"], fields)
     if updated is None:
         raise _conflict()
     await _audit(user, "collection.updated", collection_id, {"fields": sorted(fields)})
+    if "display_type" in fields and fields["display_type"] != existing.get("display_type"):
+        await _audit(user, "collection.display_type_changed", collection_id,
+                     {"before": existing.get("display_type"), "after": fields["display_type"]})
+    if "backdrop_url" in fields and fields["backdrop_url"] != existing.get("backdrop_url"):
+        await _audit(user, "collection.backdrop_changed", collection_id,
+                     {"has_backdrop": bool(fields["backdrop_url"])})
     return updated
 
 
@@ -984,6 +1022,13 @@ async def _transition(collection_id: int, new_status: str, version: int, user: d
         if not items:
             raise HTTPException(status_code=422, detail={
                 "code": "COLLECTION_EMPTY", "message": "Нельзя опубликовать пустую подборку"})
+        current = await db.get_collection(collection_id)
+        # Для крупного блока картинка обязательна: пустой чёрный прямоугольник
+        # на главной хуже, чем отсутствие блока.
+        if current and current.get("display_type") == "featured" and not current.get("backdrop"):
+            raise HTTPException(status_code=422, detail={
+                "code": "FEATURED_COLLECTION_IMAGE_REQUIRED",
+                "message": "Для большой подборки нужно изображение"})
     updated = await db.set_collection_status(collection_id, new_status, version, user["id"])
     if updated is None:
         raise _conflict()
@@ -1029,6 +1074,21 @@ async def collection_reorder(collection_id: int, body: CollectionOrderBody,
         raise _conflict()
     await _audit(user, "collection.reordered", collection_id, {"count": len(body.ordered_film_ids)})
     return updated
+
+
+class FeaturedOrderBody(BaseModel):
+    ordered_ids: list[int] = Field(min_length=1, max_length=50)
+
+
+@app.put("/api/admin/collections/featured/order", dependencies=[Depends(require_editor)])
+async def featured_reorder(body: FeaturedOrderBody, user: dict = Depends(current_user)):
+    if len(set(body.ordered_ids)) != len(body.ordered_ids):
+        raise HTTPException(status_code=422, detail="Дубли в списке порядка")
+    if not await db.reorder_collections(body.ordered_ids, user["id"]):
+        raise HTTPException(status_code=404, detail="Подборка не найдена")
+    await _audit(user, "collection.featured_reordered", ",".join(map(str, body.ordered_ids)),
+                 {"count": len(body.ordered_ids)})
+    return {"ok": True}
 
 
 class CollectionAddBody(BaseModel):

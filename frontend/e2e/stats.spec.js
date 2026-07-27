@@ -486,3 +486,87 @@ test("returning from a film keeps list scroll and loaded cards intact", async ({
   await expect(page.locator("#list .sk")).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(savedY);
 });
+
+// ── Крупные (featured) подборки ─────────────────────────────────────────────
+function featuredHarness(page, { isAdmin, collections }) {
+  page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
+  page.addInitScript(() => {
+    window.Telegram = { WebApp: {
+      initData: "test", initDataUnsafe: { user: { id: 1, first_name: "D" } },
+      ready() {}, expand() {}, setHeaderColor() {}, setBackgroundColor() {}, disableVerticalSwipes() {},
+      HapticFeedback: { impactOccurred() {}, notificationOccurred() {}, selectionChanged() {} },
+      showConfirm(_t, cb) { cb(true); }, showAlert() {}, openTelegramLink() {},
+    } };
+    try { localStorage.setItem("addictfilm.adminMode.enabled", "true"); } catch (e) { /* ignore */ }
+  });
+  return page.route("**/api/**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    const json = path === "/api/me" ? { id: 1, label: "D", role: isAdmin ? "admin" : null }
+      : path === "/api/me/capabilities"
+        ? (isAdmin
+          ? { is_admin: true, admin_role: "admin", capabilities: ["collections.read", "collections.write", "content.publish"] }
+          : { is_admin: false, admin_role: null, capabilities: [] })
+      : (path === "/api/collections" || path === "/api/admin/collections") ? { items: collections }
+      : path.startsWith("/api/browse") ? { items: [] }
+      : path === "/api/genres" ? { items: [] }
+      : { items: [] };
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(json) });
+  });
+}
+
+const FEATURED = {
+  id: 501, title: "Большая подборка", description: "Кино на вечер", display_type: "featured",
+  backdrop: "https://img/backdrop.jpg", cover: null, film_count: 9, status: "published",
+};
+const STANDARD = {
+  id: 502, title: "Обычная", description: null, display_type: "standard",
+  cover: "https://img/cover.jpg", backdrop: "https://img/cover.jpg", film_count: 4, status: "published",
+};
+
+test("featured collection renders as a large card and standard stays in the rail", async ({ page }) => {
+  await featuredHarness(page, { isAdmin: false, collections: [FEATURED, STANDARD] });
+  await page.goto("/");
+  const card = page.locator(".featured-card");
+  await expect(card).toHaveCount(1);
+  await expect(card.locator(".featured-card-title")).toHaveText("Большая подборка");
+  await expect(card.locator(".featured-card-desc")).toHaveText("Кино на вечер");
+  await expect(card.locator(".featured-card-meta")).toContainText("9");
+  // Одна подборка живёт ровно в одном формате.
+  await expect(page.locator("#rail-coll .poster")).toHaveCount(1);
+  await expect(page.locator("#rail-coll")).toContainText("Обычная");
+  await expect(page.locator("#rail-coll")).not.toContainText("Большая подборка");
+  // Обычный пользователь не видит админских контролов.
+  await expect(page.locator(".featured-admin")).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+});
+
+test("no featured area is rendered when there are no featured collections", async ({ page }) => {
+  await featuredHarness(page, { isAdmin: false, collections: [STANDARD] });
+  await page.goto("/");
+  await expect(page.locator("#rail-coll .poster")).toHaveCount(1);
+  // Ни секции, ни заголовка, ни пустого места.
+  await expect(page.locator("#sec-featured")).toHaveCount(0);
+  await expect(page.locator(".featured-card")).toHaveCount(0);
+});
+
+test("admin sees featured controls and long titles stay clamped", async ({ page }) => {
+  const longTitle = { ...FEATURED, title: "Очень длинное название подборки ".repeat(4) };
+  await featuredHarness(page, { isAdmin: true, collections: [longTitle] });
+  await page.goto("/");
+  await expect(page.locator(".featured-admin")).toHaveCount(1);
+  await expect(page.locator(".featured-admin .admin-badge")).toHaveText("Опубликовано");
+  // Заголовок обрезается двумя строками и не ломает карточку.
+  const box = await page.locator(".featured-card").boundingBox();
+  const titleBox = await page.locator(".featured-card-title").boundingBox();
+  expect(titleBox.height).toBeLessThan(box.height / 2);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+});
+
+test("featured card survives a broken backdrop image", async ({ page }) => {
+  await featuredHarness(page, { isAdmin: false, collections: [FEATURED] });
+  await page.goto("/");
+  await page.locator(".featured-card-img").evaluate(img => img.dispatchEvent(new Event("error")));
+  // Текст и переход остаются читаемыми поверх тёмной подложки.
+  await expect(page.locator(".featured-card-title")).toBeVisible();
+  await expect(page.locator(".featured-card-meta")).toBeVisible();
+});
