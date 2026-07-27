@@ -1253,6 +1253,72 @@ async def admin_audit_log(limit: int = 50):
     return {"items": await db.list_audit_log(max(1, min(200, limit)))}
 
 
+# ── API: диагностика обогащения (только исключения) ───────────────────────────
+# Владелец не должен просматривать каждый фильм. Сюда попадает только то, с чем
+# автоматика не справилась: низкая уверенность, противоречия, мёртвые задания.
+class ProfileOverrideBody(BaseModel):
+    override: dict
+    reason: str = Field(min_length=3, max_length=200)
+
+
+@app.get("/api/admin/enrichment", dependencies=[Depends(require_editor)])
+async def admin_enrichment_status():
+    from enrichment import queue as enrichment_queue
+    from enrichment import repository as enrichment_repository
+    return {"queue": await enrichment_queue.stats(),
+            "profiles": await enrichment_repository.distribution()}
+
+
+@app.get("/api/admin/enrichment/exceptions", dependencies=[Depends(require_editor)])
+async def admin_enrichment_exceptions(limit: int = 50):
+    """Очередь ручного разбора: только исключения, не весь каталог."""
+    from enrichment import repository as enrichment_repository
+    return {"items": await enrichment_repository.exceptions(max(1, min(200, limit)))}
+
+
+@app.post("/api/admin/enrichment/{film_id}/rebuild")
+async def admin_enrichment_rebuild(film_id: int, user: dict = Depends(require_editor)):
+    from enrichment import service as enrichment_service
+    if not await db.get_film(film_id):
+        raise HTTPException(status_code=404, detail="Фильм не найден")
+    created = await enrichment_service.enqueue_for_film(film_id, priority=20)
+    await db.write_audit(user["id"], "enrichment.rebuild", "film", film_id, {})
+    return {"ok": True, "queued": created}
+
+
+@app.put("/api/admin/enrichment/{film_id}/override")
+async def admin_enrichment_override(film_id: int, body: ProfileOverrideBody,
+                                    user: dict = Depends(require_editor)):
+    """Ручная правка. Переживает любой автоматический пересчёт."""
+    from enrichment import repository as enrichment_repository
+    from enrichment import service as enrichment_service
+    from enrichment.merge import OVERRIDE_ALLOWED_KEYS
+    if not await db.get_film(film_id):
+        raise HTTPException(status_code=404, detail="Фильм не найден")
+    unknown = set(body.override) - OVERRIDE_ALLOWED_KEYS
+    if unknown:
+        # Полезная нагрузка проверяется по белому списку: произвольный JSON от
+        # клиента в профиль не попадает.
+        raise HTTPException(status_code=422, detail=f"Недопустимые поля: {', '.join(sorted(unknown))}")
+    await enrichment_repository.set_override(film_id, body.override, reason=body.reason,
+                                             created_by=user["id"])
+    await enrichment_service.enqueue_for_film(film_id, priority=20)
+    await db.write_audit(user["id"], "enrichment.override", "film", film_id,
+                         {"fields": sorted(body.override)})
+    return {"ok": True}
+
+
+@app.delete("/api/admin/enrichment/{film_id}/override")
+async def admin_enrichment_override_delete(film_id: int, user: dict = Depends(require_editor)):
+    from enrichment import repository as enrichment_repository
+    from enrichment import service as enrichment_service
+    removed = await enrichment_repository.delete_override(film_id)
+    if removed:
+        await enrichment_service.enqueue_for_film(film_id, priority=20)
+        await db.write_audit(user["id"], "enrichment.override_removed", "film", film_id, {})
+    return {"ok": True, "removed": removed}
+
+
 # ── API: пара (партнёрство) ───────────────────────────────────────────────────
 BOT_USERNAME = os.getenv("BOT_USERNAME", "addictfilmbot")
 

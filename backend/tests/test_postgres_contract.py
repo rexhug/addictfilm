@@ -4,6 +4,7 @@ They skip locally unless TEST_DATABASE_URL is supplied. CI provides a disposable
 PostgreSQL service, so SQLite-only tests cannot accidentally mask SQL-dialect or
 transaction regressions in the production path.
 """
+import asyncio
 import os
 import unittest
 
@@ -26,6 +27,8 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
             await conn.execute(
                 "TRUNCATE TABLE notification_deliveries, notifications, pair_event_recipients, pair_events, "
                 "collection_films, collections, partners, partner_invites, "
+                "movie_enrichment_jobs, movie_recommendation_profile_overrides, "
+                "movie_recommendation_profiles, "
                 "user_films, films, users, search_cache, search_budget RESTART IDENTITY CASCADE")
             await conn.commit()
 
@@ -100,3 +103,54 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["status"], "sent")
         self.assertEqual(row["attempts"], 1)
         self.assertIsNotNone(row["sent_at"])
+
+
+    async def test_two_workers_never_claim_the_same_enrichment_job(self):
+        """SKIP LOCKED — единственное, что мешает двум воркерам взять одно задание.
+
+        На SQLite это недоказуемо (там один писатель), поэтому настоящая
+        блокировка проверяется только здесь, на живом PostgreSQL.
+        """
+        from enrichment import queue
+
+        film_ids = [await db.get_or_create_film(f"tt7770{index}", f"Фильм {index}",
+                                                media_type="movie") for index in range(6)]
+        self.assertEqual(len(film_ids), 6)
+
+        first, second = await asyncio.gather(
+            queue.claim("worker-a", batch_size=3),
+            queue.claim("worker-b", batch_size=3),
+        )
+        claimed = [job.id for job in first] + [job.id for job in second]
+        # Ни одно задание не выдано дважды, и оба воркера получили работу.
+        self.assertEqual(len(claimed), len(set(claimed)))
+        self.assertEqual(len(claimed), 6)
+
+    async def test_enqueue_is_idempotent_under_the_partial_unique_index(self):
+        from enrichment import queue
+        from enrichment.taxonomy import MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION
+
+        film_id = await db.get_or_create_film("tt77799", "Фильм", media_type="movie")
+        created = await queue.enqueue(film_id, feature_version=MOVIE_FEATURE_VERSION,
+                                      taxonomy_version=MOVIE_TAXONOMY_VERSION)
+        self.assertFalse(created)      # задание уже поставлено сохранением каталога
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            row = await (await conn.execute(
+                "SELECT COUNT(*) AS n FROM movie_enrichment_jobs WHERE film_id = ?",
+                (film_id,))).fetchone()
+        self.assertEqual(row["n"], 1)
+
+    async def test_profile_check_constraints_reject_out_of_range_values(self):
+        """CHECK в схеме — последняя защита от кривого профиля."""
+        film_id = await db.get_or_create_film("tt77788", "Фильм", media_type="movie")
+        with self.assertRaises(Exception):
+            async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+                await conn.execute(
+                    "INSERT INTO movie_recommendation_profiles (film_id, status, content_type, "
+                    "feature_version, taxonomy_version, extractor_version, source_hash, "
+                    "energy, pace, tension, darkness, humor, emotionality, complexity, realism, "
+                    "confidence, calculated_at, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (film_id, "ready", "movie", "v", "v", "v", "h",
+                     0.5, 0.5, 0.5, 0.5, 9.9, 0.5, 0.5, 0.5, 0.5, "now", "now"))
+                await conn.commit()

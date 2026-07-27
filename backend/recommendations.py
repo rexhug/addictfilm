@@ -285,7 +285,7 @@ def _mood_reason_codes(movie: dict, intent, requirements) -> list[str]:
         if strength <= mood.EVIDENCE_NONE or requirement.code != "DARK_HUMOR":
             continue
         if strength == mood.EVIDENCE_STRONG:
-            codes.append(reason_codes.ABSURD_DARK_HUMOR if "satire" in features.markers
+            codes.append(reason_codes.ABSURD_DARK_HUMOR if "satirical" in features.markers
                          else reason_codes.DARK_COMEDY_TONE)
         else:
             codes.append(reason_codes.SATIRICAL_HUMOR)
@@ -378,6 +378,59 @@ async def _warm_catalog_if_sparse(user_id: int, partner_id: int | None, weights:
     return await db.get_recommendation_candidates(user_id, partner_id)
 
 
+# Профиль обогащения подключается консервативно: он УТОЧНЯЕТ признаки там, где
+# готов и проверен, и молчит везде остальном. Отсутствие профиля не убирает фильм
+# ни из каталога, ни из обычного подбора — доступность в продукте и пригодность
+# для строгого режима это разные вещи.
+_PROFILE_TRUSTED_STATUSES = ("ready",)
+_PROFILE_BROAD_STATUSES = ("ready", "low_confidence")
+
+
+async def _attach_profiles(candidates: list[dict]) -> list[dict]:
+    """Прикрепить готовые профили пачкой (не запрос на фильм) и отсечь записи,
+    которые обогащение признало не фильмом."""
+    if not candidates:
+        return candidates
+    try:
+        from enrichment import repository as enrichment_repository
+        profiles = await enrichment_repository.get_profiles([film["id"] for film in candidates])
+    except Exception:  # noqa: BLE001 — сбой обогащения не должен ронять подбор
+        return candidates
+    if not profiles:
+        return candidates
+    attached = []
+    for film in candidates:
+        profile = profiles.get(film["id"])
+        # Провайдерский тип из профиля сильнее каталожного поля: он посчитан на
+        # полных метаданных, а не на том, что успело сохраниться.
+        if profile and profile["content_type"] in ("tv", "episode", "short"):
+            continue
+        attached.append({**film, "_profile": profile} if profile else film)
+    return attached or candidates
+
+
+def profile_mood_features(movie: dict):
+    """Признаки настроения из профиля обогащения, если он готов и заслуживает
+    доверия. Иначе None — и вызывающий считает по прежнему детерминированному
+    пути, как и до появления обогащения."""
+    profile = movie.get("_profile")
+    if not profile or profile["status"] not in _PROFILE_TRUSTED_STATUSES:
+        return None
+    values = dict(profile["mood"])
+    if not values:
+        return None
+    return mood.MovieMoodFeatures(
+        film_id=int(movie.get("id") or 0),
+        feature_version=profile["feature_version"],
+        values=values,
+        confidence=float(profile["confidence"]),
+        # Тоны канонического словаря переиспользуются как маркеры: составные
+        # требования (например «чёрный юмор») проверяют ровно эти имена.
+        markers=tuple(sorted(profile["tones"])),
+        source_hash=profile["source_hash"],
+    )
+
+
 async def ranked_candidates(user_id: int, *, partner_id: int | None, weights: dict[str, float], filters: dict,
                             context: dict, minimum: int = 18) -> list[dict]:
     candidates = await db.get_recommendation_candidates(user_id, partner_id)
@@ -389,6 +442,7 @@ async def ranked_candidates(user_id: int, *, partner_id: int | None, weights: di
     # Пустой результат означал бы, что тип не проставлен вообще ни у чего, —
     # тогда лучше отдать прежний пул, чем показать человеку пустой экран.
     candidates = movies_only or candidates
+    candidates = await _attach_profiles(candidates)
     # First strict, then gently relaxed so a narrow runtime/year choice never
     # leaves a real user with an empty screen.
     strict = [film for film in candidates if _matches_filters(film, filters)]
@@ -449,7 +503,10 @@ def apply_mood_layer(ranked: list[dict], answers: dict, preferences_count: int) 
     confidence = mood.clamp01(preferences_count / 25.0)
     rescored = []
     for movie in ranked:
-        features = mood.build_movie_features(movie)
+        # Готовый профиль обогащения точнее: он посчитан на полных метаданных
+        # провайдера, а не на том, что успело попасть в каталожную строку.
+        # Если профиля нет — работает прежний детерминированный путь.
+        features = profile_mood_features(movie) or mood.build_movie_features(movie)
         raw = mood.mood_similarity(intent, features)
         adjusted = mood.confidence_adjusted(raw, features.confidence)
         # Нормализуем по СТАБИЛЬНОЙ шкале, а не min-max по текущему пулу:

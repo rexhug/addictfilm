@@ -65,8 +65,8 @@ PLOT_MOOD_DELTAS: dict[str, dict[str, float]] = {
     "feel_good":     {"darkness": -.30, "emotionality": .18, "tension": -.18},
     "friendship":    {"emotionality": .18, "darkness": -.10},
     "family_bond":   {"emotionality": .18, "darkness": -.12},
-    "dark_humor":    {"humor": .22, "darkness": .28, "tension": .08},
-    "satire":        {"humor": .26, "complexity": .16},
+    "dark_comedy":   {"humor": .22, "darkness": .28, "tension": .08},
+    "satirical":     {"humor": .26, "complexity": .16},
     "psychological": {"complexity": .26, "tension": .20, "darkness": .16},
     "slow_burn":     {"pace": -.30, "complexity": .14, "tension": .10},
     "survival":      {"tension": .26, "energy": .14, "darkness": .12},
@@ -92,14 +92,14 @@ PLOT_MARKERS: dict[str, tuple[str, ...]] = {
     "family_bond":   ("семь", "семей", "родител", "отц", "матер", "family", "father", "mother"),
     # ТОЛЬКО полные обороты: подстрока «чёрн»/«черн» ловила «Чернику»,
     # «Черноокую Сьюзан» и «Чёрную птицу» и выдавала их за чёрные комедии.
-    "dark_humor":    ("чёрная комеди", "черная комеди", "чёрной комеди", "черной комеди",
+    "dark_comedy":   ("чёрная комеди", "черная комеди", "чёрной комеди", "черной комеди",
                       "чёрный юмор", "черный юмор", "чёрного юмора", "черного юмора",
                       "чёрным юмором", "черным юмором", "трагикомед",
                       "чёрная сатира", "черная сатира",
                       "жестоким чувством юмора", "жестокое чувство юмора",
                       "жестокий юмор", "злой юмор",
                       "dark comedy", "black comedy", "dark humor", "dark humour", "tragicomed"),
-    "satire":        ("сатир", "пароди", "satire", "satirical", "parody", "высмеива", "гротеск"),
+    "satirical":     ("сатир", "пароди", "satire", "satirical", "parody", "высмеива", "гротеск"),
     "psychological": ("психолог", "рассудок", "psycholog", "sanity"),
     "slow_burn":     ("медленн", "неспешн", "созерцат", "slow burn"),
     "survival":      ("выжив", "катастроф", "спасен", "surviv", "disaster"),
@@ -492,8 +492,8 @@ COMPOUND_REQUIREMENTS: dict[tuple[str, str], CompoundRequirement] = {
         # низкий из-за самого жанра «комедия», и порог по нему отсекал бы как
         # раз то, что искали.
         floors={"humor_min": 0.55, "peak_darkness_min": 0.50},
-        primary_markers=("dark_humor",),
-        support_markers=("satire",),
+        primary_markers=("dark_comedy",),
+        support_markers=("satirical",),
         support_floors={"peak_darkness_min": 0.72},
     ),
 }

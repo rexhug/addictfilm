@@ -45,6 +45,7 @@ _SCHEMA_MIGRATION_RECOMMENDATION_RESULTS = "2026-07-26-recommendations-v2-result
 _SCHEMA_MIGRATION_EDITORIAL_COLLECTIONS = "2026-07-27-editorial-collections-v1"
 _SCHEMA_MIGRATION_FEATURED_COLLECTIONS = "2026-07-27-featured-collections-v1"
 _SCHEMA_MIGRATION_MEDIA_TYPE = "2026-07-27-media-type-v1"
+_SCHEMA_MIGRATION_MOVIE_ENRICHMENT = "2026-07-27-movie-enrichment-v1"
 
 # Значения films.media_type. Дублируются константами, а не импортом media_type,
 # чтобы не затенять одноимённый аргумент get_or_create_film.
@@ -616,6 +617,105 @@ async def _apply_media_type_migration() -> None:
     await _add_column_if_missing("films", "media_type_source TEXT")
 
 
+async def _apply_movie_enrichment_migration() -> None:
+    """Долговечная очередь обогащения и версионированные профили признаков.
+
+    Очередь живёт в БД, а не в BackgroundTasks: веб-процесс может перезапуститься
+    сразу после ответа, и незавершённое обогащение просто исчезло бы. Состояние
+    в таблице переживает и рестарт, и падение воркера.
+
+    Типы намеренно портируемые (TEXT под ISO-время и JSON), как во всей схеме
+    проекта: одна и та же миграция обязана примениться и к SQLite локально, и к
+    Postgres в облаке.
+    """
+    job_id = "BIGSERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute(f"""
+            CREATE TABLE IF NOT EXISTS movie_enrichment_jobs (
+                id             {job_id},
+                film_id        INTEGER NOT NULL REFERENCES films(id) ON DELETE CASCADE,
+                job_type       TEXT NOT NULL DEFAULT 'full_enrichment'
+                               CHECK (job_type IN ('full_enrichment','metadata_refresh','feature_rebuild')),
+                status         TEXT NOT NULL DEFAULT 'pending'
+                               CHECK (status IN ('pending','processing','retry','completed','failed','dead_letter')),
+                priority       INTEGER NOT NULL DEFAULT 0,
+                requested_feature_version  TEXT NOT NULL,
+                requested_taxonomy_version TEXT NOT NULL,
+                expected_source_hash TEXT,
+                attempts       INTEGER NOT NULL DEFAULT 0,
+                max_attempts   INTEGER NOT NULL DEFAULT 6,
+                run_after      TEXT NOT NULL,
+                locked_at      TEXT,
+                locked_by      TEXT,
+                last_error_code    TEXT,
+                last_error_message TEXT,
+                created_at     TEXT NOT NULL,
+                updated_at     TEXT NOT NULL,
+                completed_at   TEXT
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_jobs_claim "
+                         "ON movie_enrichment_jobs(status, run_after, priority DESC, created_at)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_jobs_film "
+                         "ON movie_enrichment_jobs(film_id)")
+        # Частичный уникальный индекс — единственная защита от дублей заданий,
+        # которая работает при нескольких воркерах одновременно.
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_enrichment_active_job "
+            "ON movie_enrichment_jobs(film_id, job_type, requested_feature_version, "
+            "requested_taxonomy_version) WHERE status IN ('pending','processing','retry')")
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS movie_recommendation_profiles (
+                film_id        INTEGER PRIMARY KEY REFERENCES films(id) ON DELETE CASCADE,
+                status         TEXT NOT NULL
+                               CHECK (status IN ('pending','ready','low_confidence','failed','stale')),
+                content_type   TEXT NOT NULL
+                               CHECK (content_type IN ('movie','tv','episode','short','unknown')),
+                feature_version   TEXT NOT NULL,
+                taxonomy_version  TEXT NOT NULL,
+                extractor_version TEXT NOT NULL,
+                semantic_model_version TEXT,
+                source_hash    TEXT NOT NULL,
+                genres         TEXT NOT NULL DEFAULT '[]',
+                themes         TEXT NOT NULL DEFAULT '[]',
+                tones          TEXT NOT NULL DEFAULT '[]',
+                audience_flags TEXT NOT NULL DEFAULT '[]',
+                energy REAL NOT NULL CHECK (energy BETWEEN 0 AND 1),
+                pace   REAL NOT NULL CHECK (pace BETWEEN 0 AND 1),
+                tension REAL NOT NULL CHECK (tension BETWEEN 0 AND 1),
+                darkness REAL NOT NULL CHECK (darkness BETWEEN 0 AND 1),
+                humor REAL NOT NULL CHECK (humor BETWEEN 0 AND 1),
+                emotionality REAL NOT NULL CHECK (emotionality BETWEEN 0 AND 1),
+                complexity REAL NOT NULL CHECK (complexity BETWEEN 0 AND 1),
+                realism REAL NOT NULL CHECK (realism BETWEEN 0 AND 1),
+                peak_darkness REAL NOT NULL DEFAULT 0.5 CHECK (peak_darkness BETWEEN 0 AND 1),
+                confidence REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1),
+                validation_level TEXT NOT NULL DEFAULT 'valid',
+                warnings       TEXT NOT NULL DEFAULT '[]',
+                evidence       TEXT NOT NULL DEFAULT '{}',
+                calculated_at  TEXT NOT NULL,
+                updated_at     TEXT NOT NULL
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_profiles_status "
+                         "ON movie_recommendation_profiles(status, content_type)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_profiles_versions "
+                         "ON movie_recommendation_profiles(feature_version, taxonomy_version)")
+        # Ручная правка живёт отдельно и переживает любой пересчёт: иначе
+        # исправление, сделанное руками, стирается следующим же обогащением.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS movie_recommendation_profile_overrides (
+                film_id       INTEGER PRIMARY KEY REFERENCES films(id) ON DELETE CASCADE,
+                override_data TEXT NOT NULL,
+                reason        TEXT NOT NULL,
+                created_by    BIGINT NOT NULL,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            )
+        """)
+        await db.commit()
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -633,6 +733,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_EDITORIAL_COLLECTIONS, _apply_editorial_collections_migration),
         (_SCHEMA_MIGRATION_FEATURED_COLLECTIONS, _apply_featured_collections_migration),
         (_SCHEMA_MIGRATION_MEDIA_TYPE, _apply_media_type_migration),
+        (_SCHEMA_MIGRATION_MOVIE_ENRICHMENT, _apply_movie_enrichment_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -1116,6 +1217,25 @@ async def get_catalog_item_by_source(src: str, ref: str) -> dict | None:
     return _catalog_item(row) if row else None
 
 
+async def _enqueue_enrichment(db, film_id: int, *, priority: int) -> None:
+    """Поставить фильм в очередь обогащения, не роняя сохранение каталога.
+
+    Импорт локальный: enrichment зависит от database, и модульный импорт наверху
+    замкнул бы цикл. Отказ очереди здесь намеренно проглатывается — фильм должен
+    сохраниться в любом случае, а пропущенное задание доберёт согласование
+    (enrichment/reconciliation.py).
+    """
+    try:
+        from enrichment import queue as enrichment_queue
+        from enrichment.taxonomy import MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION
+        await enrichment_queue.enqueue(
+            film_id, feature_version=MOVIE_FEATURE_VERSION,
+            taxonomy_version=MOVIE_TAXONOMY_VERSION, priority=priority, connection=db)
+    except Exception:  # noqa: BLE001
+        logger.warning("не удалось поставить задание обогащения для film_id=%s", film_id,
+                       exc_info=True)
+
+
 async def get_or_create_film(
     imdb_id: str, title: str, year: str | None = None, genres: str | None = None,
     runtime: str | None = None, imdb_rating: str | None = None, imdb_votes: str | None = None,
@@ -1174,6 +1294,9 @@ async def get_or_create_film(
                  directors_photos, media_type, media_type, row["id"]))
             if merged_genres != row["genres"]:
                 await _set_film_genres(db, row["id"], merged_genres)
+            # Задание на пересчёт признаков ставится в ТОЙ ЖЕ транзакции: иначе
+            # запись обновится, а обогащение потеряется на перезапуске процесса.
+            await _enqueue_enrichment(db, row["id"], priority=0)
             await db.commit()
             if merged_genres != row["genres"]:
                 _invalidate_genres_cache()
@@ -1197,6 +1320,7 @@ async def get_or_create_film(
         inserted = await cur.fetchone()
         if inserted:
             await _set_film_genres(db, inserted["id"], genres)
+            await _enqueue_enrichment(db, inserted["id"], priority=10)
         await db.commit()
         if inserted:
             _invalidate_genres_cache()
