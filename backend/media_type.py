@@ -45,7 +45,15 @@ def normalize(value: object) -> str:
 
 
 def from_kinopoisk(doc: dict) -> str:
-    return _KINOPOISK_TYPES.get(str((doc or {}).get("type") or "").strip().casefold(), UNKNOWN)
+    resolved = _KINOPOISK_TYPES.get(str((doc or {}).get("type") or "").strip().casefold(), UNKNOWN)
+    if resolved is not UNKNOWN:
+        return resolved
+    # Для неоднозначного «anime» у kinopoisk есть прямой булев признак — он и
+    # решает, вместо догадки по длительности.
+    is_series = (doc or {}).get("isSeries")
+    if isinstance(is_series, bool):
+        return SERIES if is_series else MOVIE
+    return UNKNOWN
 
 
 def from_omdb(data: dict) -> str:

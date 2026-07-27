@@ -27,8 +27,12 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(media_type.from_omdb({"Type": "episode"}), media_type.EPISODE)
         self.assertEqual(media_type.from_omdb({"Type": "movie"}), media_type.MOVIE)
 
-    def test_ambiguous_provider_type_stays_unknown(self):
-        """«anime» у kinopoisk — и полный метр, и сериал: гадать нельзя."""
+    def test_ambiguous_anime_is_resolved_by_the_series_flag(self):
+        """«anime» у kinopoisk — и полный метр, и сериал, но есть прямой признак."""
+        self.assertEqual(media_type.from_kinopoisk({"type": "anime", "isSeries": True}), media_type.SERIES)
+        self.assertEqual(media_type.from_kinopoisk({"type": "anime", "isSeries": False}), media_type.MOVIE)
+
+    def test_missing_metadata_stays_unknown_instead_of_guessing(self):
         self.assertEqual(media_type.from_kinopoisk({"type": "anime"}), media_type.UNKNOWN)
         self.assertEqual(media_type.from_kinopoisk({}), media_type.UNKNOWN)
 

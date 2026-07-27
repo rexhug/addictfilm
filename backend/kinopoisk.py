@@ -37,7 +37,7 @@ def _cache_put(kp_id: str, doc: dict) -> None:
 
 # Поля, которые точно нужны — просим только их (меньше трафика).
 _FIELDS = [
-    "id", "name", "alternativeName", "year", "type", "description",
+    "id", "name", "alternativeName", "year", "type", "isSeries", "description",
     "shortDescription", "movieLength", "seriesLength",
     "rating.kp", "rating.imdb", "votes.imdb",
     "poster.url", "poster.previewUrl", "backdrop.url",
