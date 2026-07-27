@@ -28,6 +28,7 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
                 "TRUNCATE TABLE notification_deliveries, notifications, pair_event_recipients, pair_events, "
                 "collection_films, collections, partners, partner_invites, "
                 "movie_enrichment_jobs, movie_recommendation_profile_overrides, "
+                "wishlist_random_picks, wishlist_random_state, recommendation_history, "
                 "movie_recommendation_profiles, "
                 "user_films, films, users, search_cache, search_budget RESTART IDENTITY CASCADE")
             await conn.commit()
@@ -222,3 +223,56 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
         """Веб и воркер стартуют одновременно и оба зовут init_db."""
         results = await asyncio.gather(db.init_db(), db.init_db(), return_exceptions=True)
         self.assertFalse([r for r in results if isinstance(r, BaseException)])
+
+
+    async def test_concurrent_wishlist_roulette_never_repeats_inside_a_cycle(self):
+        """SQLite это недоказуемо: там писатель один. Настоящая гонка — здесь."""
+        await self._add_users(1)
+        film_ids = []
+        for index in range(5):
+            film_id = await db.get_or_create_film(f"tt5550{index}", f"Фильм {index}",
+                                                  media_type="movie")
+            await db.add_to_list(1, film_id, "want_to_watch", None)
+            film_ids.append(film_id)
+
+        results = await asyncio.gather(*[db.pick_random_wishlist_film(1) for _ in range(5)])
+        picked = [movie["id"] for movie in results if movie]
+        self.assertEqual(len(picked), 5)
+        self.assertEqual(sorted(picked), sorted(film_ids))
+        self.assertEqual(len(set(picked)), 5, "фильм выдан дважды в одном круге")
+
+    async def test_concurrent_smart_random_does_not_duplicate_a_show(self):
+        from unittest.mock import patch
+
+        import recommendations as rec
+
+        async def _keep(_user_id, _partner_id, _weights, candidates, _minimum):
+            return candidates
+
+        await self._add_users(1)
+        for index in range(6):
+            await db.get_or_create_film(f"tt5560{index}", f"Кино {index}", genres="драма",
+                                        imdb_rating="7.8", imdb_votes="200000",
+                                        plot="История", media_type="movie",
+                                        poster_url="https://example.test/p.jpg")
+        with patch("recommendations._warm_catalog_if_sparse", new=_keep):
+            items = await asyncio.gather(*[rec.pick_and_record_smart_random(1, "ru")
+                                           for _ in range(4)])
+        picked = [item["id"] for item in items if item]
+        self.assertEqual(len(set(picked)), len(picked), "один фильм показан дважды")
+
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            row = await (await conn.execute(
+                "SELECT COUNT(*) AS n FROM recommendation_history "
+                "WHERE user_id = 1 AND mode = 'random' AND action = 'shown'")).fetchone()
+        self.assertEqual(row["n"], len(picked), "число записей показа не совпало с выдачей")
+
+    async def test_recommendation_pick_lock_is_released(self):
+        async with db.recommendation_pick_lock(1):
+            pass
+        # Повторный захват после освобождения не должен блокироваться.
+        await asyncio.wait_for(self._reacquire_pick_lock(), timeout=5)
+
+    async def _reacquire_pick_lock(self):
+        async with db.recommendation_pick_lock(1):
+            return True

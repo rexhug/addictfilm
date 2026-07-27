@@ -2275,6 +2275,45 @@ async def record_recommendation_history(user_id: int, film_id: int, mode: str, *
         await db.commit()
 
 
+# Ключ пользовательской консультативной блокировки подбора. Постоянный префикс
+# + id пользователя: параллельные запросы ОДНОГО человека выстраиваются в
+# очередь, разные люди друг другу не мешают.
+_RANDOM_PICK_LOCK_NAMESPACE = 0x5241_4E44      # "RAND"
+
+
+@asynccontextmanager
+async def recommendation_pick_lock(user_id: int):
+    """Сериализует «выбрать и записать показ» для одного пользователя.
+
+    Без неё два одновременных запроса видят фильм доступным, оба его выбирают и
+    оба пишут показ: человек получает одно и то же дважды, а анти-повтор,
+    построенный на истории показов, обойдён.
+    """
+    if not _PG:
+        yield          # SQLite: писатель один, дополнительная блокировка не нужна
+        return
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as lock_conn:
+        await lock_conn.execute("SELECT pg_advisory_lock(?, ?)",
+                                (_RANDOM_PICK_LOCK_NAMESPACE, int(user_id) % (2 ** 31)))
+        try:
+            yield
+        finally:
+            await lock_conn.execute("SELECT pg_advisory_unlock(?, ?)",
+                                    (_RANDOM_PICK_LOCK_NAMESPACE, int(user_id) % (2 ** 31)))
+
+
+async def get_recommendation_shown(user_id: int, film_id: int, mode: str) -> dict | None:
+    """Последняя запись показа: сервер помнит, с какой ролью и счётом он сам
+    показал фильм. Значения из клиента для аналитики не годятся."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        row = await (await db.execute(
+            "SELECT role, score FROM recommendation_history WHERE user_id=? AND film_id=? "
+            "AND mode=? AND action='shown' ORDER BY created_at DESC, id DESC LIMIT 1",
+            (user_id, film_id, mode))).fetchone()
+    return {"role": row["role"], "score": row["score"]} if row else None
+
+
 async def get_unrated_watched(user_id: int, since_days: int = 30, limit: int = 10) -> list[dict]:
     """Просмотренные за N дней, не оценённые пользователем (для напоминаний ботом)."""
     cutoff = (datetime.now(UTC) - timedelta(days=since_days)).isoformat()

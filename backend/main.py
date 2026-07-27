@@ -723,13 +723,18 @@ class RandomRecommendationBody(RecommendationStartBody):
 
 class RecommendationReplaceBody(RecommendationStartBody):
     film_id: int
-    role: str = Field(min_length=1, max_length=24)
+    # Роль сервер определяет сам по сохранённой подборке. Поле оставлено
+    # необязательным ради уже установленных клиентов и только сверяется.
+    role: str | None = Field(default=None, max_length=24)
 
 
 class RecommendationFeedbackBody(BaseModel):
     action: str = Field(min_length=1, max_length=24)
     mode: str = Field(default="random", max_length=16)
     session_id: str | None = Field(default=None, max_length=96)
+    # role и score сохранены в контракте ради установленных клиентов, но сервер
+    # их ИГНОРИРУЕТ и берёт свои: иначе в аналитику подбора попадает всё, что
+    # угодно прислать фронтенду.
     role: str | None = Field(default=None, max_length=24)
     score: float | None = None
 
@@ -766,10 +771,9 @@ async def recommendation_random(body: RandomRecommendationBody, user: dict = Dep
     if body.context not in {"solo", "pair"}:
         raise HTTPException(status_code=422, detail="Неизвестный контекст просмотра")
     partner_id = await _active_partner_for_recommendation(user["id"], body.context)
-    item = await recommendations.random_recommendation(user["id"], language, partner_id)
+    item = await recommendations.pick_and_record_smart_random(user["id"], language, partner_id)
     if not item:
         raise HTTPException(status_code=404, detail="Пока недостаточно фильмов для подбора")
-    await db.record_recommendation_history(user["id"], item["id"], "random", role="random", score=item["score"])
     return {"item": item, "context": body.context}
 
 
@@ -880,8 +884,16 @@ async def recommendation_quiz_replace(session_id: str, body: RecommendationRepla
     if session["state"] != "complete":
         raise HTTPException(status_code=409, detail="Сначала завершите опрос")
     current = list(session.get("results") or [])
-    if not any(int(item.get("id") or 0) == body.film_id for item in current):
+    rejected = next((item for item in current if int(item.get("id") or 0) == body.film_id), None)
+    if rejected is None:
         raise HTTPException(status_code=404, detail="Этот вариант не из текущей подборки")
+    # Роль берётся ИЗ СОХРАНЁННОЙ подборки, а не из тела запроса. Клиент мог
+    # прислать чужую роль, и она молча уходила и в карточку, и в историю
+    # рекомендаций, портя аналитику. body.role остаётся в контракте ради
+    # установленных клиентов, но расхождение — это ошибка, а не подсказка.
+    server_role = str(rejected.get("role") or "")
+    if body.role and body.role != server_role:
+        raise HTTPException(status_code=422, detail="Роль не совпадает с текущей подборкой")
     answers = session.get("answers") or {}
     partner_id = await _active_partner_for_recommendation(user["id"], "pair") if answers.get("c4") == "pair" else None
     is_admin = (await _effective_role(user["id"])) in ("editor", "admin")
@@ -890,10 +902,10 @@ async def recommendation_quiz_replace(session_id: str, body: RecommendationRepla
     # поэтому пересчёт не может вернуть их обратно.
     fresh = await recommendations.quiz_results(user["id"], answers, locale, partner_id, is_admin=is_admin)
     candidates = [item for item in fresh if int(item["id"]) not in kept_ids]
-    replacement = next((item for item in candidates if item.get("role") == body.role), None) \
+    replacement = next((item for item in candidates if item.get("role") == server_role), None) \
         or (candidates[0] if candidates else None)
     if replacement is not None:
-        replacement = {**replacement, "role": body.role}
+        replacement = {**replacement, "role": server_role}
     updated = [item for item in current if int(item["id"]) != body.film_id]
     if replacement is not None:
         # Позиция роли сохраняется: карточка меняется на месте, экран не прыгает.
@@ -902,7 +914,7 @@ async def recommendation_quiz_replace(session_id: str, body: RecommendationRepla
     await db.save_recommendation_session_results(user["id"], session_id, updated)
     if replacement is not None:
         await db.record_recommendation_history(user["id"], replacement["id"], "quiz", session_id=session_id,
-                                               role=body.role, score=replacement["score"])
+                                               role=server_role, score=replacement["score"])
     return {"id": session_id, "items": updated, "replacement": replacement,
             "context": "pair" if partner_id else "solo"}
 
@@ -918,9 +930,30 @@ async def recommendation_feedback(film_id: int, body: RecommendationFeedbackBody
         raise HTTPException(status_code=404, detail="Опрос не найден")
     if not await db.get_film(film_id):
         raise HTTPException(status_code=404, detail="Фильм не найден")
+    # Роль и счёт берём из СВОИХ данных, а не из тела запроса: клиент мог
+    # прислать любые значения и засорить аналитику подбора. Для квиза источник
+    # правды — сохранённые карточки сессии, для случайного режима — запись
+    # показа в истории.
+    role, score = await _server_recommendation_metadata(
+        user["id"], film_id, body.mode, body.session_id)
     await db.record_recommendation_history(user["id"], film_id, body.mode, session_id=body.session_id,
-                                           role=body.role, score=body.score, action=body.action)
+                                           role=role, score=score, action=body.action)
     return {"ok": True}
+
+
+async def _server_recommendation_metadata(user_id: int, film_id: int, mode: str,
+                                          session_id: str | None) -> tuple[str | None, float | None]:
+    if mode == "quiz" and session_id:
+        session = await db.get_recommendation_session(user_id, session_id)
+        for item in (session or {}).get("results") or []:
+            if int(item.get("id") or 0) == film_id:
+                score = item.get("score")
+                return item.get("role"), (float(score) if score is not None else None)
+    shown = await db.get_recommendation_shown(user_id, film_id, mode)
+    if shown:
+        score = shown.get("score")
+        return shown.get("role"), (float(score) if score is not None else None)
+    return None, None
 
 
 # ── API: discovery (публичный каталог) ────────────────────────────────────────

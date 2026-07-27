@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import secrets
 
 import database as db
 import media_type
@@ -506,6 +507,12 @@ MOOD_LAYER_ENABLED = os.getenv("MOOD_LAYER_ENABLED", "").strip().lower() in ("1"
 # сервера (см. main._effective_role) — клиент на это влиять не может.
 MOOD_LAYER_ADMIN_PREVIEW = os.getenv("MOOD_LAYER_ADMIN_PREVIEW", "").strip().lower() in ("1", "true", "yes")
 
+# Стратегии умного случайного выбора включены по умолчанию, но выключаются
+# одной переменной окружения: SMART_RANDOM_STRATEGIES=0 возвращает прежнюю
+# взвешенную лотерею. Откат не должен требовать revert и повторного деплоя.
+SMART_RANDOM_STRATEGIES = os.getenv("SMART_RANDOM_STRATEGIES", "1").strip().lower() \
+    not in ("0", "false", "no", "off")
+
 
 def mood_layer_active(*, is_admin: bool = False) -> bool:
     return MOOD_LAYER_ENABLED or (MOOD_LAYER_ADMIN_PREVIEW and is_admin)
@@ -677,16 +684,48 @@ async def quiz_results(user_id: int, answers: dict[str, str], language: str,
     return results
 
 
+async def pick_and_record_smart_random(user_id: int, language: str,
+                                       partner_id: int | None = None) -> dict | None:
+    """Выбрать фильм И записать показ как ОДНУ операцию.
+
+    Раньше выбор жил в этой функции, а запись показа — в обработчике маршрута.
+    Между ними помещался второй запрос: оба видели фильм доступным, оба его
+    выбирали, и анти-повтор, построенный на истории показов, обходился.
+    """
+    async with db.recommendation_pick_lock(user_id):
+        item = await random_recommendation(user_id, language, partner_id)
+        if item is None:
+            return None
+        await db.record_recommendation_history(user_id, item["id"], "random",
+                                               role="random", score=item["score"])
+        return item
+
+
+def _legacy_random_pick(ranked: list[dict], language: str, partner_id: int | None) -> dict:
+    """Прежняя взвешенная лотерея — путь отката по SMART_RANDOM_STRATEGIES=0."""
+    qualified = [movie for movie in ranked if movie.get("_quality", 0.0) >= 6.5]
+    pool = qualified or [movie for movie in ranked if movie.get("_quality", 0.0) >= 6.0] or ranked
+    weights = [max(0.1, (movie.get("_quality", 0.0) - 5.2) ** 2 + movie.get("_novelty", 0.0))
+               for movie in pool[:80]]
+    movie = secrets.SystemRandom().choices(pool[:80], weights=weights, k=1)[0]
+    codes = [reason_codes.UNSEEN_PICK, *build_reasons(
+        movie, pair=partner_id is not None, fallback=reason_codes.HIGH_QUALITY)]
+    return public_movie(movie, role="random", codes=codes, language=language)
+
+
 async def random_recommendation(user_id: int, language: str, partner_id: int | None = None) -> dict | None:
     """Умный случайный выбор: сначала стратегия, потом фильм внутри неё.
 
     Режим намеренно не выдумывает настроение, которого человек не называл, —
-    поэтому и причины здесь только фактические.
+    поэтому и причины здесь только фактические. Запись показа — в
+    pick_and_record_smart_random, чтобы выбор и учёт были атомарны.
     """
     ranked = await ranked_candidates(user_id, partner_id=partner_id, weights={}, filters={},
                                      context={"risk": "medium"}, minimum=12)
     if not ranked:
         return None
+    if not SMART_RANDOM_STRATEGIES:
+        return _legacy_random_pick(ranked, language, partner_id)
     preferences = await db.get_recommendation_preferences(user_id)
     confidence = profile_confidence(preferences)
     movie, strategy, used_fallback = smart_random.select(ranked, profile_confidence=confidence)
