@@ -7,10 +7,12 @@ module is intentionally small enough to unit-test with a handful of films.
 from __future__ import annotations
 
 import math
+import os
 import re
 import secrets
 
 import database as db
+import mood
 import search
 from recommendation_questions import answer_reasons, answer_state
 
@@ -346,11 +348,55 @@ async def ranked_candidates(user_id: int, *, partner_id: int | None, weights: di
     return sorted(ranked, key=lambda movie: (-movie["_score"], str(movie.get("title") or ""), movie["id"]))
 
 
+# Слой настроения выключён по умолчанию. Признаки фильмов прошли ручной обзор
+# на реальном каталоге, но в обзоре сценариев блокбастеры с высоким базовым
+# счётом всё ещё вытесняют более подходящие по настроению фильмы. Включаем
+# только после подтверждения на живых сценариях: MOOD_LAYER_ENABLED=1.
+MOOD_LAYER_ENABLED = os.getenv("MOOD_LAYER_ENABLED", "").strip().lower() in ("1", "true", "yes")
+
+# Потолок базового счёта: match(38) + quality(25) + affinity(17) + wishlist(5)
+# + novelty(5). Используется только для перевода в 0…1 и обратно.
+_MAX_BASE_SCORE = 90.0
+
+
+def apply_mood_layer(ranked: list[dict], answers: dict, preferences_count: int) -> list[dict]:
+    """Переранжирование по близости к запросу настроения.
+
+    Базовый _score (качество, вкусы, отрицательные сигналы, честность к паре)
+    НЕ пересчитывается — он нормализуется и смешивается с настроением. Вес
+    настроения зависит от того, сколько мы знаем о человеке: новичку важнее то,
+    что он выбрал сейчас, «старожилу» — ещё и его история.
+    """
+    intent = mood.build_mood_intent(answers)
+    if not intent.targets:
+        return ranked          # анкета ничего не уточнила — базовый порядок
+    confidence = mood.clamp01(preferences_count / 25.0)
+    rescored = []
+    for movie in ranked:
+        features = mood.build_movie_features(movie)
+        raw = mood.mood_similarity(intent, features)
+        adjusted = mood.confidence_adjusted(raw, features.confidence)
+        # Нормализуем по СТАБИЛЬНОЙ шкале, а не min-max по текущему пулу:
+        # иначе разрыв в пару баллов между двумя кандидатами растягивался бы на
+        # всю шкалу, и порядок менялся бы от состава выборки.
+        base_normalized = mood.clamp01(movie["_score"] / _MAX_BASE_SCORE)
+        combined = mood.combine_scores(base_score=base_normalized, mood_score=adjusted,
+                                       profile_confidence=confidence)
+        rescored.append({**movie, "_mood": round(adjusted, 4), "_mood_raw": round(raw, 4),
+                         "_mood_confidence": features.confidence,
+                         "_base_score": movie["_score"],
+                         "_score": round(combined * _MAX_BASE_SCORE, 3)})
+    return sorted(rescored, key=lambda m: (-m["_score"], str(m.get("title") or ""), m["id"]))
+
+
 async def quiz_results(user_id: int, answers: dict[str, str], language: str, partner_id: int | None = None) -> list[dict]:
     weights, filters, context = answer_state(answers)
     ranked = await ranked_candidates(user_id, partner_id=partner_id, weights=weights, filters=filters, context=context)
     if not ranked:
         return []
+    if MOOD_LAYER_ENABLED:
+        preferences = await db.get_recommendation_preferences(user_id)
+        ranked = apply_mood_layer(ranked, answers, int(preferences.get("count", 0) or 0))
     best = _select_distinct(ranked, [], "_score")
     reliable_ranked = [{**movie, "_reliable": movie["_score"] + movie["_quality"] * 2.2 - movie["_novelty"]} for movie in ranked]
     reliable = _select_distinct(reliable_ranked, [best] if best else [], "_reliable")
