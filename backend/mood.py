@@ -90,8 +90,16 @@ PLOT_MARKERS: dict[str, tuple[str, ...]] = {
     "feel_good":     ("добр", "тёпл", "тепл", "уютн", "feel-good", "heartwarming"),
     "friendship":    ("друж", "товарищ", "friendship"),
     "family_bond":   ("семь", "семей", "родител", "отц", "матер", "family", "father", "mother"),
-    "dark_humor":    ("чёрн", "черн", "dark comedy"),
-    "satire":        ("сатир", "пароди", "satire"),
+    # ТОЛЬКО полные обороты: подстрока «чёрн»/«черн» ловила «Чернику»,
+    # «Черноокую Сьюзан» и «Чёрную птицу» и выдавала их за чёрные комедии.
+    "dark_humor":    ("чёрная комеди", "черная комеди", "чёрной комеди", "черной комеди",
+                      "чёрный юмор", "черный юмор", "чёрного юмора", "черного юмора",
+                      "чёрным юмором", "черным юмором", "трагикомед",
+                      "чёрная сатира", "черная сатира",
+                      "жестоким чувством юмора", "жестокое чувство юмора",
+                      "жестокий юмор", "злой юмор",
+                      "dark comedy", "black comedy", "dark humor", "dark humour", "tragicomed"),
+    "satire":        ("сатир", "пароди", "satire", "satirical", "parody", "высмеива", "гротеск"),
     "psychological": ("психолог", "рассудок", "psycholog", "sanity"),
     "slow_burn":     ("медленн", "неспешн", "созерцат", "slow burn"),
     "survival":      ("выжив", "катастроф", "спасен", "surviv", "disaster"),
@@ -240,11 +248,17 @@ def build_movie_features(film: dict) -> MovieMoodFeatures:
         + (0.10 if runtime else 0.0)
         + (0.05 if len(genres) >= 2 else 0.0)
     )
+    # Самый мрачный жанр в наборе — отдельно от усреднённого тона. Для «есть ли
+    # у фильма по-настоящему мрачная составляющая» среднее не годится: у любой
+    # чёрной комедии жанр «комедия» тянет darkness вниз, и вопрос «мрачно ли
+    # тут вообще» остаётся без ответа.
+    peak_darkness = max((GENRE_MOOD_BASE[g]["darkness"] for g in genres), default=0.5)
     payload = f"{sorted(genres)}|{sorted(markers)}|{runtime}|{MOVIE_MOOD_FEATURE_VERSION}"
     return MovieMoodFeatures(
         film_id=int(film.get("id") or 0),
         feature_version=MOVIE_MOOD_FEATURE_VERSION,
-        values={dim: round(values[dim], 4) for dim in MOOD_DIMENSIONS},
+        values={**{dim: round(values[dim], 4) for dim in MOOD_DIMENSIONS},
+                "peak_darkness": round(clamp01(max(values["darkness"], peak_darkness)), 4)},
         confidence=round(confidence, 4),
         markers=markers,
         source_hash=hashlib.sha1(payload.encode()).hexdigest()[:16],
@@ -450,6 +464,80 @@ DIMENSION_FLOORS: dict[tuple[str, str], dict[str, float]] = {
     ("u1", "reality"):     {"realism_max": 0.55},
     ("u3", "dream"):       {"realism_max": 0.60},
 }
+
+
+# ── Составные требования: одного измерения мало ──────────────────────────────
+# «Чёрный юмор» — не «есть юмор» и не «есть мрачность» по отдельности, а именно
+# их сочетание с подтверждением. Иначе в выдачу проходит любая комедия с
+# криминальной линией: боевик «К-9: Собачья работа» формально имел и юмор, и
+# преступников, но чёрной комедией не является. Поэтому кроме порогов по
+# измерениям нужно ПРОВЕРЕННОЕ доказательство: либо прямой маркер чёрной
+# комедии/трагикомедии в описании, либо сатира вместе с действительно мрачным
+# тоном. Ни жанр «комедия», ни абсурд, ни мультипликация доказательством не
+# считаются.
+@dataclass(frozen=True)
+class CompoundRequirement:
+    """Требование, которое нельзя проверить одним измерением."""
+    code: str                                   # публичный код причины
+    floors: dict[str, float]                    # обязательные пороги измерений
+    primary_markers: tuple[str, ...]            # проверенный маркер — сильное доказательство
+    support_markers: tuple[str, ...] = ()       # слабее: засчитывается только с доп. порогами
+    support_floors: dict[str, float] = field(default_factory=dict)
+
+
+COMPOUND_REQUIREMENTS: dict[tuple[str, str], CompoundRequirement] = {
+    ("h1", "dark"): CompoundRequirement(
+        code="DARK_HUMOR",
+        # peak_darkness, а не darkness: усреднённый тон чёрной комедии всегда
+        # низкий из-за самого жанра «комедия», и порог по нему отсекал бы как
+        # раз то, что искали.
+        floors={"humor_min": 0.55, "peak_darkness_min": 0.50},
+        primary_markers=("dark_humor",),
+        support_markers=("satire",),
+        support_floors={"peak_darkness_min": 0.72},
+    ),
+}
+
+EVIDENCE_STRONG, EVIDENCE_SUPPORTED, EVIDENCE_NONE = 2, 1, 0
+
+
+def collect_compound_requirements(answers: dict) -> tuple[CompoundRequirement, ...]:
+    found: list[CompoundRequirement] = []
+    for question_id, answer in (answers or {}).items():
+        values = answer if isinstance(answer, list) else [answer]
+        for answer_id in values:
+            requirement = COMPOUND_REQUIREMENTS.get((str(question_id), str(answer_id)))
+            if requirement is not None and requirement not in found:
+                found.append(requirement)
+    return tuple(found)
+
+
+def compound_evidence(requirement: CompoundRequirement, features: "MovieMoodFeatures") -> int:
+    """0 — доказательств нет, 1 — косвенное, 2 — прямой проверенный маркер."""
+    if not passes_dimension_floors(features, requirement.floors):
+        return EVIDENCE_NONE
+    if any(marker in features.markers for marker in requirement.primary_markers):
+        return EVIDENCE_STRONG
+    if any(marker in features.markers for marker in requirement.support_markers) \
+            and passes_dimension_floors(features, requirement.support_floors):
+        return EVIDENCE_SUPPORTED
+    return EVIDENCE_NONE
+
+
+def passes_compound_requirements(features: "MovieMoodFeatures",
+                                 requirements: tuple[CompoundRequirement, ...]) -> bool:
+    """Составные требования не ослабляются на fallback-уровнях: это ровно то,
+    что человек назвал прямым текстом."""
+    return all(compound_evidence(req, features) > EVIDENCE_NONE for req in requirements)
+
+
+def compound_evidence_strength(features: "MovieMoodFeatures",
+                               requirements: tuple[CompoundRequirement, ...]) -> int:
+    """Сила самого слабого из выполненных требований — по ней «лучшее
+    совпадение» выбирает подтверждённый фильм, а не просто более рейтинговый."""
+    if not requirements:
+        return EVIDENCE_NONE
+    return min(compound_evidence(req, features) for req in requirements)
 
 
 def collect_dimension_floors(answers: dict) -> dict[str, float]:

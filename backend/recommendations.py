@@ -12,9 +12,11 @@ import re
 import secrets
 
 import database as db
+import media_type
 import mood
+import reasons as reason_codes
 import search
-from recommendation_questions import answer_reasons, answer_state
+from recommendation_questions import answer_state
 
 TAG_VERSION = "v1"
 
@@ -253,27 +255,87 @@ def _select_distinct(ranked: list[dict], selected: list[dict], key: str,
     return max(pool, key=lambda movie: (mmr(movie), -movie["id"]))
 
 
-def _explanation(answers: dict, film: dict, language: str) -> str:
-    selected = answer_reasons(answers, language)
-    # Only retain answer reasons which have a matching metadata signal where
-    # possible. If metadata is sparse, it stays honest and talks about the
-    # selection rather than inventing a plot fact.
-    matching = selected[:]
-    if language == "en":
-        body = ", ".join(matching[:4]) or "your current preferences"
-        return f"Matches: {body}."
-    body = ", ".join(matching[:4]) or "ваш текущий запрос"
-    return f"Подходит по запросу: {body}."
+# Измерение → код причины и направление, в котором оно должно быть выражено.
+# Причина ставится, только если человек САМ назвал это измерение главным и фильм
+# действительно попадает в нужную сторону — иначе она ничего не доказывает.
+_DIMENSION_REASONS: dict[str, tuple[str, str, float]] = {
+    "tension":      (reason_codes.HIGH_TENSION, "high", 0.66),
+    "complexity":   (reason_codes.INTELLECTUAL, "high", 0.66),
+    "emotionality": (reason_codes.EMOTIONAL_STORY, "high", 0.66),
+    "humor":        (reason_codes.LIGHT_HUMOR, "high", 0.66),
+    "pace":         (reason_codes.FAST_PACE, "high", 0.68),
+    "realism":      (reason_codes.GROUNDED_STORY, "high", 0.70),
+}
+_LOW_DIMENSION_REASONS: dict[str, str] = {
+    "pace": reason_codes.SLOW_ATMOSPHERE,
+    "realism": reason_codes.UNREAL_WORLD,
+}
+_HIGH_QUALITY_REASON_FLOOR = 7.4
+_HIDDEN_GEM_VOTES = 40000
 
 
-def public_movie(movie: dict, *, role: str, explanation: str) -> dict:
+def _mood_reason_codes(movie: dict, intent, requirements) -> list[str]:
+    """Доказательства именно для ЭТОГО фильма, а не пересказ анкеты."""
+    features = movie.get("_mood_features")
+    if features is None:
+        return []
+    codes: list[str] = []
+    for requirement in requirements:
+        strength = mood.compound_evidence(requirement, features)
+        if strength <= mood.EVIDENCE_NONE or requirement.code != "DARK_HUMOR":
+            continue
+        if strength == mood.EVIDENCE_STRONG:
+            codes.append(reason_codes.ABSURD_DARK_HUMOR if "satire" in features.markers
+                         else reason_codes.DARK_COMEDY_TONE)
+        else:
+            codes.append(reason_codes.SATIRICAL_HUMOR)
+    for dimension in mood.primary_intent_dimensions(intent):
+        target = float(intent.targets.get(dimension, 0.5))
+        value = features.get(dimension)
+        mapping = _DIMENSION_REASONS.get(dimension)
+        if mapping and target >= 0.6 and value >= mapping[2]:
+            codes.append(mapping[0])
+        elif dimension in _LOW_DIMENSION_REASONS and target <= 0.35 and value <= 0.35:
+            codes.append(_LOW_DIMENSION_REASONS[dimension])
+    # «Спокойный тон» — утверждение сразу про два измерения: боевик с невысокой
+    # мрачностью спокойным не становится.
+    if float(intent.targets.get("darkness", 1.0)) <= 0.4 \
+            and features.get("darkness") <= 0.30 and features.get("tension") <= 0.40:
+        codes.append(reason_codes.COZY_TONE)
+    return codes
+
+
+def build_reasons(movie: dict, *, intent=None, requirements=(), pair: bool = False,
+                  mood_threshold: float = 0.7, fallback: str = reason_codes.MATCHES_MOOD) -> list[str]:
+    """До трёх кодов: сначала смысл запроса, потом вкусы и качество."""
+    codes = _mood_reason_codes(movie, intent, requirements) if intent is not None else []
+    if not codes and intent is not None and float(movie.get("_mood") or 0) >= mood_threshold:
+        codes.append(reason_codes.MATCHES_MOOD)
+    if float(movie.get("_affinity") or 0) > 0:
+        codes.append(reason_codes.MATCHES_USER_TASTE)
+    if pair:
+        codes.append(reason_codes.PAIR_FRIENDLY)
+    if float(movie.get("_quality") or 0) >= _HIGH_QUALITY_REASON_FLOOR:
+        codes.append(reason_codes.HIGH_QUALITY)
+    if _num(movie.get("imdb_votes")) and _num(movie.get("imdb_votes")) < _HIDDEN_GEM_VOTES:
+        codes.append(reason_codes.HIDDEN_GEM)
+    if movie.get("in_wishlist"):
+        codes.append(reason_codes.IN_WISHLIST)
+    return reason_codes.sanitize(codes) or [fallback]
+
+
+def public_movie(movie: dict, *, role: str, codes: list[str], language: str) -> dict:
+    clean = reason_codes.sanitize(codes)
     return {
         "id": movie["id"], "imdb_id": movie.get("imdb_id"), "kp_id": movie.get("kp_id"),
         "title": movie.get("title"), "title_original": movie.get("title_original"),
         "year": movie.get("year"), "runtime": movie.get("runtime"), "genres": movie.get("genres"),
         "rating": _display_rating(movie),
         "plot": movie.get("plot"), "poster_url": movie.get("poster_url"), "backdrop_url": movie.get("backdrop_url"),
-        "role": role, "score": round(float(movie.get("_score") or 0), 1), "explanation": explanation,
+        "role": role, "score": round(float(movie.get("_score") or 0), 1),
+        # reasons — источник правды для интерфейса; explanation остаётся строкой
+        # для клиентов, которые ещё не умеют в коды, и собирается из тех же кодов.
+        "reasons": clean, "explanation": reason_codes.describe(clean, language),
     }
 
 
@@ -320,6 +382,13 @@ async def ranked_candidates(user_id: int, *, partner_id: int | None, weights: di
                             context: dict, minimum: int = 18) -> list[dict]:
     candidates = await db.get_recommendation_candidates(user_id, partner_id)
     candidates = await _warm_catalog_if_sparse(user_id, partner_id, weights, candidates, minimum)
+    # Подбор ФИЛЬМОВ: сериалы, эпизоды и короткий метр здесь неуместны, каким бы
+    # высоким ни был их рейтинг. Тип берётся из метаданных провайдера, а не из
+    # длительности (22 минуты — это и мультсериал, и короткометражка).
+    movies_only = [film for film in candidates if media_type.is_movie_flow_eligible(film)]
+    # Пустой результат означал бы, что тип не проставлен вообще ни у чего, —
+    # тогда лучше отдать прежний пул, чем показать человеку пустой экран.
+    candidates = movies_only or candidates
     # First strict, then gently relaxed so a narrow runtime/year choice never
     # leaves a real user with an empty screen.
     strict = [film for film in candidates if _matches_filters(film, filters)]
@@ -398,7 +467,7 @@ def apply_mood_layer(ranked: list[dict], answers: dict, preferences_count: int) 
 
 
 def mood_eligible(ranked: list[dict], intent, floors: dict, role: str,
-                  *, fallback_level: int = 0) -> list[dict]:
+                  *, fallback_level: int = 0, requirements: tuple = ()) -> list[dict]:
     """Кто ВООБЩЕ уместен для этого запроса. Высокий базовый счёт здесь не
     помогает: сначала уместность, потом уже качество и вкусы."""
     threshold = mood.resolve_mood_threshold(role, intent, fallback_level=fallback_level)
@@ -408,6 +477,11 @@ def mood_eligible(ranked: list[dict], intent, floors: dict, role: str,
     for movie in ranked:
         features = movie.get("_mood_features")
         if features is None:
+            continue
+        # Составные требования проверяем ПЕРВЫМИ и не ослабляем никогда: «чёрный
+        # юмор» — это подтверждённое сочетание юмора и мрачности, а не «в фильме
+        # есть комедия».
+        if not mood.passes_compound_requirements(features, requirements):
             continue
         if movie.get("_mood", 0.0) < threshold:
             continue
@@ -434,14 +508,28 @@ def mood_eligible(ranked: list[dict], intent, floors: dict, role: str,
 
 
 def select_mood_role(ranked: list[dict], intent, floors: dict, role: str,
-                     selected: list[dict], key: str) -> tuple[dict | None, int]:
+                     selected: list[dict], key: str, *, requirements: tuple = (),
+                     evidence_first: bool = False) -> tuple[dict | None, int]:
     """Подбираем роль, постепенно ослабляя ТОЛЬКО второстепенное. Требования по
-    явным ответам и грубые противоречия не ослабляются на любом уровне."""
+    явным ответам и грубые противоречия не ослабляются на любом уровне.
+
+    evidence_first — для «лучшего совпадения»: сначала берём фильмы с прямым
+    подтверждением запроса и только потом косвенные, чтобы роль доставалась
+    самому доказанному варианту, а не самому рейтинговому.
+    """
     for level in sorted(mood.FALLBACK_THRESHOLD_ADJUSTMENTS):
-        pool = mood_eligible(ranked, intent, floors, role, fallback_level=level)
-        pick = _select_distinct(pool, selected, key)
-        if pick is not None:
-            return pick, level
+        pool = mood_eligible(ranked, intent, floors, role, fallback_level=level,
+                             requirements=requirements)
+        tiers = [pool]
+        if evidence_first and requirements:
+            strong = [m for m in pool
+                      if mood.compound_evidence_strength(m["_mood_features"], requirements)
+                      == mood.EVIDENCE_STRONG]
+            tiers = [strong, pool] if strong else [pool]
+        for tier in tiers:
+            pick = _select_distinct(tier, selected, key)
+            if pick is not None:
+                return pick, level
     return None, len(mood.FALLBACK_THRESHOLD_ADJUSTMENTS) - 1
 
 
@@ -455,21 +543,26 @@ async def quiz_results(user_id: int, answers: dict[str, str], language: str,
     if mood_on:
         preferences = await db.get_recommendation_preferences(user_id)
         ranked = apply_mood_layer(ranked, answers, int(preferences.get("count", 0) or 0))
+    intent = None
+    requirements: tuple = ()
     if mood_on and ranked and "_mood" in ranked[0]:
         # Двухэтапно: настроение решает, кто уместен; базовый движок — порядок.
         intent = mood.build_mood_intent(answers)
         floors = mood.collect_dimension_floors(answers)
+        requirements = mood.collect_compound_requirements(answers)
         # У «лучшего совпадения» настроение весит больше базового счёта.
         best_ranked = [{**m, "_best": 0.58 * m["_mood"] + 0.42 * (m["_score"] / _MAX_BASE_SCORE)} for m in ranked]
-        best, _ = select_mood_role(best_ranked, intent, floors, "best", [], "_best")
+        best, _ = select_mood_role(best_ranked, intent, floors, "best", [], "_best",
+                                   requirements=requirements, evidence_first=True)
         # У «надёжного» — наоборот, но только среди уместных по настроению.
         reliable_ranked = [{**m, "_reliable": 0.38 * m["_mood"] + 0.62 * (m["_score"] / _MAX_BASE_SCORE)} for m in ranked]
         reliable, _ = select_mood_role(reliable_ranked, intent, floors, "reliable",
-                                       [best] if best else [], "_reliable")
+                                       [best] if best else [], "_reliable", requirements=requirements)
         unexpected_ranked = [{**m, "_unexpected": 0.50 * m["_mood"] + 0.28 * (m["_novelty"] / 5.0)
                               + 0.22 * (m["_score"] / _MAX_BASE_SCORE)} for m in ranked]
         unexpected, _ = select_mood_role(unexpected_ranked, intent, floors, "unexpected",
-                                         [i for i in (best, reliable) if i], "_unexpected")
+                                         [i for i in (best, reliable) if i], "_unexpected",
+                                         requirements=requirements)
     else:
         best = _select_distinct(ranked, [], "_score")
         reliable_ranked = [{**movie, "_reliable": movie["_score"] + movie["_quality"] * 2.2 - movie["_novelty"]} for movie in ranked]
@@ -477,7 +570,10 @@ async def quiz_results(user_id: int, answers: dict[str, str], language: str,
         unexpected_ranked = [{**movie, "_unexpected": movie["_score"] * 0.72 + movie["_novelty"] * 5.2} for movie in ranked]
         unexpected = _select_distinct(unexpected_ranked, [item for item in (best, reliable) if item], "_unexpected")
     labelled = (("best", best), ("reliable", reliable), ("unexpected", unexpected))
-    results = [public_movie(movie, role=role, explanation=_explanation(answers, movie, language)) for role, movie in labelled if movie]
+    results = [public_movie(movie, role=role, language=language,
+                            codes=build_reasons(movie, intent=intent, requirements=requirements,
+                                                pair=partner_id is not None))
+               for role, movie in labelled if movie]
     for movie in (best, reliable, unexpected):
         if movie:
             await db.save_recommendation_tags(movie["id"], movie["_tags"], version=TAG_VERSION)
@@ -497,8 +593,8 @@ async def random_recommendation(user_id: int, language: str, partner_id: int | N
     weights = [max(0.1, (_quality(movie) - 5.2) ** 2 + movie.get("_novelty", 0.0)) for movie in pool[:80]]
     movie = secrets.SystemRandom().choices(pool[:80], weights=weights, k=1)[0]
     await db.save_recommendation_tags(movie["id"], movie["_tags"], version=TAG_VERSION)
-    if language == "en":
-        explanation = "A quality pick from your unseen catalog."
-    else:
-        explanation = "Качественный вариант из фильмов, которых вы ещё не смотрели."
-    return public_movie(movie, role="random", explanation=explanation)
+    # Случайный режим намеренно не выдумывает настроение, которого человек не
+    # называл, — поэтому и причины здесь только фактические.
+    codes = [reason_codes.UNSEEN_PICK] + build_reasons(
+        movie, pair=partner_id is not None, fallback=reason_codes.HIGH_QUALITY)
+    return public_movie(movie, role="random", codes=codes, language=language)

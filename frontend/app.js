@@ -67,6 +67,18 @@ const DICT = {
     see_all: "Смотреть все",
     reco_title: "Не знаешь, что включить?", reco_sub: "Подберём фильм под твоё настроение", reco_cta: "Подобрать",
     pick_tab: "Подбор", pick_title: "Что посмотреть?", pick_sub: "Быстрый вариант или подборка по настроению.", pick_random_title: "Случайный фильм", pick_random_sub: "Из каталога, который ты ещё не смотрел", pick_quiz_title: "Подбор по настроению", pick_quiz_sub: "7–8 коротких вопросов — и три варианта на вечер", pick_start: "Начать", pick_loading: "Подбираю фильм…", pick_another: "Другой вариант", pick_not_suggest: "Не предлагать", pick_open: "Открыть фильм", pick_want: "В «Хочу»", pick_watched: "Уже смотрел", pick_back: "Назад", pick_restart: "Начать заново", pick_progress: (n, total) => `${n} из ${total}`, pick_best: "Лучший выбор", pick_reliable: "Надёжный вариант", pick_unexpected: "Неожиданный вариант", pick_best_sub: "Максимально совпадает с твоим запросом", pick_reliable_sub: "Высокий рейтинг и уверенный выбор", pick_unexpected_sub: "Чуть необычнее, но может приятно удивить", pick_empty: "Пока не хватает фильмов для подбора", pick_empty_sub: "Добавь несколько фильмов через поиск — каталог будет расти вместе с приложением.", pick_pair: "Смотреть с партнёром", pick_solo: "Смотреть одному", pick_pair_unavailable: "Пара сейчас не подключена",
+    pick_partial: "Под такой запрос в каталоге нашлось меньше вариантов, чем обычно — показываем только то, что действительно подходит.",
+    pick_rejected: "Больше не предложим",
+    reason_DARK_COMEDY_TONE: "Чёрный юмор и мрачный тон", reason_SATIRICAL_HUMOR: "Сатира на серьёзные темы",
+    reason_ABSURD_DARK_HUMOR: "Абсурдная комедия с мрачной подачей", reason_HIGH_TENSION: "Держит в напряжении",
+    reason_INTELLECTUAL: "Требует внимания и размышления", reason_COZY_TONE: "Спокойный и светлый тон",
+    reason_EMOTIONAL_STORY: "Сильная эмоциональная история", reason_LIGHT_HUMOR: "Много юмора",
+    reason_FAST_PACE: "Быстрый темп с самого начала", reason_SLOW_ATMOSPHERE: "Медленная, атмосферная подача",
+    reason_UNREAL_WORLD: "Придуманный, ненастоящий мир", reason_GROUNDED_STORY: "Достоверная, приземлённая история",
+    reason_MATCHES_MOOD: "Совпадает с твоим запросом", reason_MATCHES_USER_TASTE: "Похож на то, что тебе нравится",
+    reason_HIGH_QUALITY: "Высокая оценка зрителей", reason_HIDDEN_GEM: "Не на слуху, но крепкий",
+    reason_IN_WISHLIST: "Уже в твоём списке «Хочу посмотреть»", reason_PAIR_FRIENDLY: "Подходит вам обоим",
+    reason_UNSEEN_PICK: "Из фильмов, которых ты ещё не видел",
     notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся важные события вашей пары", notif_mark_all: "Прочитать все", notif_load_more: "Показать ещё", notif_loading: "Загружаю уведомления…", notif_error: "Не удалось загрузить уведомления", notif_retry: "Повторить", notif_now: "только что", notif_min_ago: (n) => `${n} мин назад`, notif_hour_ago: (n) => `${n} ч назад`, notif_day_ago: (n) => `${n} дн назад`, notif_inapp: "В приложении", notif_telegram: "В Telegram", notif_telegram_hint: "События пары от бота Addict Film", notif_telegram_unavailable: "Бот сейчас недоступен", notif_browser: "В браузере", notif_browser_hint: "Локальные напоминания на этом устройстве",
     back: "Назад", settings_title: "Настройки", settings_loading: "Загружаю настройки…",
     settings_notifications: "Уведомления", settings_notifications_hint: "Важные события пары всегда видны в приложении", settings_notifications_on: "Включены", settings_notifications_off: "Выключены", settings_notifications_permission: "Нужно разрешение", settings_notifications_denied: "Разрешения отключены в Telegram или браузере", settings_notifications_unavailable: "Недоступны на этом устройстве", settings_notifications_error: "Не удалось запросить разрешение",
@@ -181,6 +193,18 @@ const DICT = {
     see_all: "See all",
     reco_title: "Not sure what to watch?", reco_sub: "We'll find a film for your current mood", reco_cta: "Find a film",
     pick_tab: "Pick", pick_title: "What should we watch?", pick_sub: "A quick pick or a mood-based selection.", pick_random_title: "Random film", pick_random_sub: "From films you have not watched yet", pick_quiz_title: "Pick by mood", pick_quiz_sub: "7–8 quick questions, then three options for tonight", pick_start: "Start", pick_loading: "Finding a film…", pick_another: "Another option", pick_not_suggest: "Don't suggest", pick_open: "Open film", pick_want: "Add to wishlist", pick_watched: "Already watched", pick_back: "Back", pick_restart: "Start over", pick_progress: (n, total) => `${n} of ${total}`, pick_best: "Best match", pick_reliable: "Reliable choice", pick_unexpected: "Unexpected choice", pick_best_sub: "The closest match for your request", pick_reliable_sub: "A highly rated, confident pick", pick_unexpected_sub: "A little more unusual, potentially rewarding", pick_empty: "There are not enough films to recommend yet", pick_empty_sub: "Add a few films through search — the catalog grows with the app.", pick_pair: "Watch with partner", pick_solo: "Watch alone", pick_pair_unavailable: "Your pair is not connected right now",
+    pick_partial: "This request has fewer good matches in the catalog than usual — we only show what genuinely fits.",
+    pick_rejected: "We won't suggest it again",
+    reason_DARK_COMEDY_TONE: "Dark humour with a grim tone", reason_SATIRICAL_HUMOR: "Satire about serious things",
+    reason_ABSURD_DARK_HUMOR: "Absurd comedy, grim delivery", reason_HIGH_TENSION: "Keeps the tension up",
+    reason_INTELLECTUAL: "Asks for attention and thought", reason_COZY_TONE: "Calm, light tone",
+    reason_EMOTIONAL_STORY: "A strong emotional story", reason_LIGHT_HUMOR: "Plenty of humour",
+    reason_FAST_PACE: "Fast from the first minute", reason_SLOW_ATMOSPHERE: "Slow, atmospheric pacing",
+    reason_UNREAL_WORLD: "An invented, unreal world", reason_GROUNDED_STORY: "A grounded, believable story",
+    reason_MATCHES_MOOD: "Matches what you asked for", reason_MATCHES_USER_TASTE: "Close to what you usually like",
+    reason_HIGH_QUALITY: "Highly rated by viewers", reason_HIDDEN_GEM: "Not well known, but solid",
+    reason_IN_WISHLIST: "Already on your watchlist", reason_PAIR_FRIENDLY: "Works for both of you",
+    reason_UNSEEN_PICK: "From films you have not seen yet",
     notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "Important pair events will appear here", notif_mark_all: "Mark all read", notif_load_more: "Show more", notif_loading: "Loading notifications…", notif_error: "Couldn't load notifications", notif_retry: "Try again", notif_now: "just now", notif_min_ago: (n) => `${n}m ago`, notif_hour_ago: (n) => `${n}h ago`, notif_day_ago: (n) => `${n}d ago`, notif_inapp: "In app", notif_telegram: "In Telegram", notif_telegram_hint: "Pair events from the Addict Film bot", notif_telegram_unavailable: "The bot is unavailable right now", notif_browser: "In browser", notif_browser_hint: "Local reminders on this device",
     back: "Back", settings_title: "Settings", settings_loading: "Loading settings…",
     settings_notifications: "Notifications", settings_notifications_hint: "Important pair events are always shown in the app", settings_notifications_on: "On", settings_notifications_off: "Off", settings_notifications_permission: "Permission needed", settings_notifications_denied: "Notifications are blocked in Telegram or your browser", settings_notifications_unavailable: "Unavailable on this device", settings_notifications_error: "Couldn't request permission",
@@ -799,6 +823,14 @@ async function showPicker() {
   document.getElementById("pick-quiz").onclick = () => startRecommendationQuiz();
 }
 
+// Причины приходят кодами и переводятся здесь. Сырые внутренние теги в интерфейс
+// не попадают: незнакомый код просто пропускается, а не печатается как есть.
+function recommendationReasons(item) {
+  const codes = Array.isArray(item.reasons) ? item.reasons : [];
+  const phrases = codes.map(code => t(`reason_${code}`)).filter(text => text && !text.startsWith("reason_"));
+  return phrases.length ? phrases.join(" · ") : "";
+}
+
 function recommendationMovieCard(item, { sessionId = null, onAnother = null } = {}) {
   const poster = item.poster_url ? `<img src="${posterSrc(item.poster_url, true)}" alt="${esc(item.title)}" loading="eager" decoding="async" data-img-retry>` : `<span class="picker-poster-fallback">${esc((item.title || "?").slice(0, 1))}</span>`;
   const years = [item.year, item.runtime].filter(Boolean).join(" · ");
@@ -809,13 +841,13 @@ function recommendationMovieCard(item, { sessionId = null, onAnother = null } = 
       ${item.title_original ? `<p class="recommendation-original">${esc(item.title_original)}</p>` : ""}
       ${years ? `<p class="recommendation-meta">${esc(years)}</p>` : ""}${genres ? `<p class="recommendation-meta">${esc(genres)}</p>` : ""}
       ${item.rating ? `<span class="recommendation-rating">★ ${esc(item.rating)}</span>` : ""}
-      <p class="recommendation-explanation">${esc(item.explanation || "")}</p>
+      <p class="recommendation-explanation">${esc(recommendationReasons(item))}</p>
     </div>
     <div class="recommendation-actions"><button type="button" class="picker-primary" data-pick-open>${esc(t("pick_open"))}</button><button type="button" class="picker-secondary" data-pick-want>${esc(t("pick_want"))}</button><button type="button" class="picker-secondary" data-pick-watched>${esc(t("pick_watched"))}</button>${onAnother ? `<button type="button" class="picker-text" data-pick-another>${esc(t("pick_another"))}</button>` : ""}<button type="button" class="picker-text danger" data-pick-reject>${esc(t("pick_not_suggest"))}</button></div>
   </article>`;
 }
 
-function wireRecommendationMovie(container, item, { mode, sessionId = null, role = null, onAnother = null, returnTo = showPicker } = {}) {
+function wireRecommendationMovie(container, item, { mode, sessionId = null, role = null, onAnother = null, onReject = null, returnTo = showPicker } = {}) {
   const feedback = action => api(`/api/recommendations/${item.id}/feedback`, { method: "POST", body: JSON.stringify({ action, mode, session_id: sessionId, role: role || item.role, score: item.score }) }).catch(() => {});
   container.querySelectorAll("[data-pick-open]").forEach(button => button.onclick = () => {
     feedback("opened");
@@ -846,7 +878,11 @@ function wireRecommendationMovie(container, item, { mode, sessionId = null, role
   if (reject) reject.onclick = async () => {
     reject.disabled = true;
     await feedback("rejected");
-    if (onAnother) onAnother(); else showPicker();
+    // «Не предлагать» — это про один фильм, а не про весь подбор: раньше отсюда
+    // выбрасывало на стартовый экран, и человек терял пройденную анкету.
+    if (onAnother) { onAnother(); return; }
+    if (onReject) { await onReject(); return; }
+    showPicker();
   };
   const another = container.querySelector("[data-pick-another]");
   if (another) another.onclick = async () => { await feedback("another"); onAnother?.(); };
@@ -901,15 +937,37 @@ function showQuizQuestion(data) {
   });
 }
 
+const QUIZ_ROLE_LABELS = { best: ["pick_best", "pick_best_sub"], reliable: ["pick_reliable", "pick_reliable_sub"], unexpected: ["pick_unexpected", "pick_unexpected_sub"] };
+
+function quizResultsHTML(items) {
+  if (!items.length) return `${pickerError(t("pick_empty"))}<p class="picker-empty-copy">${esc(t("pick_empty_sub"))}</p>`;
+  // Неполная тройка — не ошибка: под узкий запрос честнее показать меньше
+  // вариантов, чем добрать случайными фильмами «чтобы было три».
+  const note = items.length < 3 ? `<p class="picker-empty-copy picker-partial">${esc(t("pick_partial"))}</p>` : "";
+  return items.map(item => {
+    const [title, subtitle] = QUIZ_ROLE_LABELS[item.role] || QUIZ_ROLE_LABELS.best;
+    return `<section class="picker-role" data-role="${esc(item.role)}"><header><span>${esc(t(title))}</span><small>${esc(t(subtitle))}</small></header>${recommendationMovieCard(item)}</section>`;
+  }).join("") + note;
+}
+
 async function showQuizResults(sessionId) {
   screen.innerHTML = `<main class="picker-quiz picker-results"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
   try {
     const { items } = await api(`/api/recommendations/quiz/${encodeURIComponent(sessionId)}/results?language=${encodeURIComponent(lang)}`);
     pickerMode(false);
-    const labels = { best: ["pick_best", "pick_best_sub"], reliable: ["pick_reliable", "pick_reliable_sub"], unexpected: ["pick_unexpected", "pick_unexpected_sub"] };
-    screen.innerHTML = `${pickerHeader()}<main class="picker-results rise d1">${items.length ? items.map(item => { const [title, subtitle] = labels[item.role] || labels.best; return `<section class="picker-role"><header><span>${esc(t(title))}</span><small>${esc(t(subtitle))}</small></header>${recommendationMovieCard(item)}</section>`; }).join("") : `${pickerError(t("pick_empty"))}<p class="picker-empty-copy">${esc(t("pick_empty_sub"))}</p>`}<button class="picker-restart" id="picker-restart" type="button">${esc(t("pick_restart"))}</button></main>`;
+    let current = items;
+    const renderResults = () => {
+      const box = screen.querySelector(".picker-results-list");
+      box.innerHTML = quizResultsHTML(current);
+      box.querySelectorAll(".picker-role").forEach((section, index) => wireRecommendationMovie(section, current[index], {
+        mode: "quiz", sessionId, role: current[index].role,
+        returnTo: () => showQuizResults(sessionId),
+        onReject: () => replaceQuizPick(sessionId, current[index], updated => { current = updated; renderResults(); }),
+      }));
+    };
+    screen.innerHTML = `${pickerHeader()}<main class="picker-results rise d1"><div class="picker-results-list"></div><button class="picker-restart" id="picker-restart" type="button">${esc(t("pick_restart"))}</button></main>`;
+    renderResults();
     wireBack(showPicker);
-    screen.querySelectorAll(".picker-role").forEach((section, index) => wireRecommendationMovie(section, items[index], { mode: "quiz", sessionId, role: items[index].role, returnTo: () => showQuizResults(sessionId) }));
     document.getElementById("picker-restart").onclick = async () => {
       try {
         pickerMode(true);
@@ -920,6 +978,19 @@ async function showQuizResults(sessionId) {
   } catch (error) {
     pickerMode(false);
     showPicker();
+    tg?.showAlert?.(String(error.message || t("load_err")));
+  }
+}
+
+// Заменяем только отклонённую карточку: анкета и два других варианта остаются.
+async function replaceQuizPick(sessionId, item, apply) {
+  try {
+    const data = await api(`/api/recommendations/quiz/${encodeURIComponent(sessionId)}/replace`, {
+      method: "POST", body: JSON.stringify({ language: lang, film_id: item.id, role: item.role }),
+    });
+    apply(data.items || []);
+    if (!data.replacement) tg?.showAlert?.(String(t("pick_rejected")));
+  } catch (error) {
     tg?.showAlert?.(String(error.message || t("load_err")));
   }
 }
@@ -1261,6 +1332,9 @@ const AdminMode = {
   },
   renderIndicator() {
     document.getElementById("admin-indicator")?.remove();
+    // Плашка висит поверх контента, поэтому о её высоте должна знать вёрстка:
+    // иначе она накрывает последнюю карточку на экранах со списками.
+    document.body.classList.toggle("admin-indicator-on", !!this.active("collections.read"));
     if (!this.active("collections.read")) return;
     const bar = document.createElement("button");
     bar.id = "admin-indicator";

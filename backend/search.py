@@ -16,6 +16,7 @@ import time
 
 import database as db
 import kinopoisk
+import media_type
 import omdb
 import posters
 import ratelimit
@@ -100,6 +101,9 @@ def _kp_details(doc: dict) -> dict:
         "age_rating": kinopoisk.age_rating_of(doc),
         "actors_photos": json.dumps(photos, ensure_ascii=False) if photos else None,
         "directors_photos": json.dumps(director_photos, ensure_ascii=False) if director_photos else None,
+        # Тип записи сохраняем сразу: без него сериал неотличим от фильма и
+        # попадает в подбор ФИЛЬМОВ (см. media_type.py).
+        "media_type": media_type.from_kinopoisk(doc),
     }
 
 
@@ -199,6 +203,7 @@ def _omdb_catalog_details(data: dict, title: str, poster_url: str | None) -> dic
         "imdb_votes": _clean(data.get("imdbVotes")),
         "plot": _clean(data.get("Plot")),
         "poster_url": poster_url,
+        "media_type": media_type.from_omdb(data),
     }
 
 
@@ -355,4 +360,5 @@ async def fetch_details(src: str, ref: str) -> dict | None:
         "poster_url": poster_url,
         "backdrop_url": backdrop_url,
         "age_rating": age_rating,
+        "media_type": media_type.from_omdb(data),
     }

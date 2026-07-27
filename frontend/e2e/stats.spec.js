@@ -37,8 +37,14 @@ async function openStats(page, paired = false, options = {}) {
   const recommendationMovie = {
     id: 1, title: "The Last of Us", title_original: "The Last of Us", year: "2023",
     runtime: "81 min", genres: "Drama, Thriller", rating: 8.5, poster_url: null,
-    explanation: "Подходит по запросу: комфорт, тёплая история.", role: "best", score: 72,
+    reasons: ["COZY_TONE", "HIGH_QUALITY"],
+    explanation: "Спокойный и светлый тон · Высокая оценка зрителей", role: "best", score: 72,
   };
+  let quizItems = [
+    recommendationMovie,
+    { ...recommendationMovie, id: 3, title: "Inception", role: "reliable", reasons: ["INTELLECTUAL"] },
+    { ...recommendationMovie, id: 4, title: "The Hunger Games", role: "unexpected", reasons: ["HIDDEN_GEM"] },
+  ];
   const recommendationQuestions = [
     ["q1", "Что тебе сейчас больше всего хочется?", "relax", "Отключить голову и расслабиться"],
     ["r1", "Как именно ты хочешь отдохнуть?", "warm", "Уютная и добрая история"],
@@ -98,7 +104,7 @@ async function openStats(page, paired = false, options = {}) {
     const json = path === "/api/me"
       ? { id: 1, label: "Denys", username: "denys", role: null }
       : path === "/api/recommendations/random"
-        ? { item: { ...recommendationMovie, role: "random", explanation: "Качественный вариант из фильмов, которых вы ещё не смотрели." }, context: "solo" }
+        ? { item: { ...recommendationMovie, role: "random", reasons: ["UNSEEN_PICK", "HIGH_QUALITY"] }, context: "solo" }
       : path === "/api/recommendations/quiz/start"
         ? recommendationPayload()
       : path.endsWith("/answer") && path.startsWith("/api/recommendations/quiz/")
@@ -108,11 +114,14 @@ async function openStats(page, paired = false, options = {}) {
       : path.endsWith("/restart") && path.startsWith("/api/recommendations/quiz/")
         ? (() => { recommendationStep = 0; return recommendationPayload(); })()
       : path.endsWith("/results") && path.startsWith("/api/recommendations/quiz/")
-        ? { id: "quiz_test", items: [
-          recommendationMovie,
-          { ...recommendationMovie, id: 3, title: "Inception", role: "reliable", explanation: "Подходит по запросу: ровный темп." },
-          { ...recommendationMovie, id: 4, title: "The Hunger Games", role: "unexpected", explanation: "Чуть необычнее, но в рамках запроса." },
-        ], context: "solo" }
+        ? { id: "quiz_test", items: quizItems, context: "solo" }
+      : path.endsWith("/replace") && path.startsWith("/api/recommendations/quiz/")
+        ? (() => {
+          const body = JSON.parse(route.request().postData() || "{}");
+          const replacement = { ...recommendationMovie, id: 9, title: "Fresh Pick", role: body.role, reasons: ["MATCHES_MOOD"] };
+          quizItems = quizItems.map(item => (item.id === body.film_id ? replacement : item));
+          return { id: "quiz_test", items: quizItems, replacement, context: "solo" };
+        })()
       : /^\/api\/recommendations\/\d+\/feedback$/.test(path)
         ? { ok: true }
       : path === "/api/movie/1/status"
@@ -192,7 +201,7 @@ test("adaptive picker completes a mobile-safe eight-question flow without old to
   await expect(page.getByText("Мой топ")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Случайный фильм" }).click();
-  await expect(page.getByText("Качественный вариант из фильмов, которых вы ещё не смотрели.")).toBeVisible();
+  await expect(page.getByText("Из фильмов, которых ты ещё не видел · Высокая оценка зрителей")).toBeVisible();
   await expect(page.getByRole("button", { name: "Уже смотрел" })).toBeVisible();
   await page.getByRole("button", { name: "Другой вариант" }).click();
   await expect(page.locator(".recommendation-film")).toHaveCount(1);
@@ -210,6 +219,63 @@ test("adaptive picker completes a mobile-safe eight-question flow without old to
 
   await page.setViewportSize({ width: 320, height: 568 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+});
+
+test("recommendation cards show localized reason phrases, never raw tags", async ({ page }) => {
+  await openStats(page);
+  await page.getByRole("button", { name: "Подбор" }).click();
+  await page.getByRole("button", { name: "Подбор по настроению" }).click();
+  for (let index = 0; index < 8; index += 1) await page.locator(".picker-option").first().click();
+
+  await expect(page.locator(".recommendation-explanation").first())
+    .toHaveText("Спокойный и светлый тон · Высокая оценка зрителей");
+  await expect(page.locator(".recommendation-explanation").nth(1)).toHaveText("Требует внимания и размышления");
+  // Внутренние теги и английский текст в русском интерфейсе — ровно тот дефект,
+  // который чинился: «юмор, абсурд, сатира, a flawed lead».
+  const explanations = await page.locator(".recommendation-explanation").allTextContents();
+  for (const text of explanations) {
+    expect(text).not.toMatch(/[A-Za-z_]{4,}/);
+  }
+});
+
+test("hiding one recommendation replaces it in place instead of leaving the results", async ({ page }) => {
+  await openStats(page);
+  await page.getByRole("button", { name: "Подбор" }).click();
+  await page.getByRole("button", { name: "Подбор по настроению" }).click();
+  for (let index = 0; index < 8; index += 1) await page.locator(".picker-option").first().click();
+  await expect(page.locator(".recommendation-film")).toHaveCount(3);
+
+  await page.getByRole("button", { name: "Не предлагать" }).first().click();
+  // Человек остаётся на результатах: заменилась одна карточка, анкета не потеряна.
+  await expect(page.getByText("Лучший выбор")).toBeVisible();
+  await expect(page.locator(".recommendation-film")).toHaveCount(3);
+  await expect(page.locator(".recommendation-film-copy h2", { hasText: "Fresh Pick" })).toBeVisible();
+  await expect(page.locator(".recommendation-film-copy h2", { hasText: "The Last of Us" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Что посмотреть?" })).toHaveCount(0);
+});
+
+test("bottom navigation never covers the last recommendation", async ({ page }) => {
+  await openStats(page);
+  await page.getByRole("button", { name: "Подбор" }).click();
+  await page.getByRole("button", { name: "Подбор по настроению" }).click();
+  for (let index = 0; index < 8; index += 1) await page.locator(".picker-option").first().click();
+
+  for (const width of [320, 375, 390, 430]) {
+    await page.setViewportSize({ width, height: 700 });
+    // Ждём, пока раскладка после смены ширины устаканится, иначе меряем прошлый кадр.
+    await page.waitForFunction(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+      return Math.abs(window.scrollY + window.innerHeight - document.documentElement.scrollHeight) < 2;
+    });
+    const clearance = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll(".recommendation-film")];
+      const last = cards[cards.length - 1].getBoundingClientRect();
+      const bar = document.getElementById("tabbar").getBoundingClientRect();
+      return { gap: bar.top - last.bottom, horizontal: document.documentElement.scrollWidth <= window.innerWidth };
+    });
+    expect(clearance.gap, `таббар накрывает карточку при ${width}px`).toBeGreaterThan(0);
+    expect(clearance.horizontal).toBeTruthy();
+  }
 });
 
 test("personal profile fits a 390px phone without a hidden final card", async ({ page }) => {

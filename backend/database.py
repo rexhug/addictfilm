@@ -44,6 +44,11 @@ _SCHEMA_MIGRATION_RECOMMENDATIONS = "2026-07-26-recommendations-v1"
 _SCHEMA_MIGRATION_RECOMMENDATION_RESULTS = "2026-07-26-recommendations-v2-results"
 _SCHEMA_MIGRATION_EDITORIAL_COLLECTIONS = "2026-07-27-editorial-collections-v1"
 _SCHEMA_MIGRATION_FEATURED_COLLECTIONS = "2026-07-27-featured-collections-v1"
+_SCHEMA_MIGRATION_MEDIA_TYPE = "2026-07-27-media-type-v1"
+
+# Значения films.media_type. Дублируются константами, а не импортом media_type,
+# чтобы не затенять одноимённый аргумент get_or_create_film.
+_MEDIA_MOVIE, _MEDIA_SERIES, _MEDIA_EPISODE, _MEDIA_SHORT = "movie", "series", "episode", "short"
 _PAIR_INVITE_TTL = timedelta(days=7)
 
 
@@ -599,6 +604,18 @@ async def _apply_featured_collections_migration() -> None:
         await db.commit()
 
 
+async def _apply_media_type_migration() -> None:
+    """Тип записи каталога отдельной колонкой: фильм, сериал, эпизод, короткометражка.
+
+    Раньше признак приходил от провайдера и выбрасывался, из-за чего в подбор
+    ФИЛЬМОВ попадали сериалы (22-минутный мультсериал предлагался как фильм).
+    Колонка заполняется провайдером при сохранении и разово добивается скриптом
+    scripts/backfill_media_type.py; NULL означает «нет данных», а не «фильм».
+    """
+    await _add_column_if_missing("films", "media_type TEXT")
+    await _add_column_if_missing("films", "media_type_source TEXT")
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -615,6 +632,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_RECOMMENDATION_RESULTS, _apply_recommendation_results_migration),
         (_SCHEMA_MIGRATION_EDITORIAL_COLLECTIONS, _apply_editorial_collections_migration),
         (_SCHEMA_MIGRATION_FEATURED_COLLECTIONS, _apply_featured_collections_migration),
+        (_SCHEMA_MIGRATION_MEDIA_TYPE, _apply_media_type_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -663,6 +681,8 @@ async def init_db() -> None:
                 poster_url     TEXT,
                 backdrop_url   TEXT,
                 age_rating     TEXT,
+                media_type     TEXT,   -- movie/series/episode/short от провайдера; NULL = нет данных
+                media_type_source TEXT,
                 actors_photos  TEXT,   -- JSON-массив name/photo_url под тех же актёров, что в actors
                 directors_photos TEXT, -- JSON-массив name/photo_url под тех же режиссёров, что в directors
                 search_text    TEXT NOT NULL DEFAULT '',
@@ -1103,10 +1123,14 @@ async def get_or_create_film(
     kp_rating: str | None = None, directors: str | None = None, actors: str | None = None,
     backdrop_url: str | None = None, age_rating: str | None = None, actors_photos: str | None = None,
     directors_photos: str | None = None, kp_id: str | None = None,
+    media_type: str | None = None,
 ) -> int:
     """Возвращает id фильма в общем каталоге, создавая запись при первом появлении
     (dedup по imdb_id/kp_id). Идемпотентно — один фильм на всех пользователей."""
     kp_id = str(kp_id).strip() if kp_id else None
+    # Тип записи от провайдера: 'unknown' не сохраняем, чтобы бэкфил потом мог
+    # доопределить его, а не считал колонку уже заполненной.
+    media_type = media_type if media_type in (_MEDIA_MOVIE, _MEDIA_SERIES, _MEDIA_EPISODE, _MEDIA_SHORT) else None
     search_text = _catalog_search_text(title, title_original, actors, directors, imdb_id, kp_id)
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
@@ -1139,12 +1163,15 @@ async def get_or_create_film(
                 "backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
                 "age_rating = COALESCE(age_rating, ?), "
                 "actors_photos = COALESCE(NULLIF(actors_photos, ''), ?), "
-                "directors_photos = COALESCE(NULLIF(directors_photos, ''), ?) "
+                "directors_photos = COALESCE(NULLIF(directors_photos, ''), ?), "
+                "media_type = COALESCE(NULLIF(media_type, ''), ?), "
+                "media_type_source = CASE WHEN COALESCE(NULLIF(media_type, ''), ?) IS NULL "
+                "THEN media_type_source ELSE COALESCE(media_type_source, 'provider') END "
                 "WHERE id = ?",
                 (merged_title, merged_original, merged_year, merged_genres, merged_directors, merged_actors,
                  merged_runtime, merged_imdb_rating, merged_kp_rating, merged_imdb_votes, merged_plot,
                  merged_kp_id, merged_search_text, poster_url, backdrop_url, age_rating, actors_photos,
-                 directors_photos, row["id"]))
+                 directors_photos, media_type, media_type, row["id"]))
             if merged_genres != row["genres"]:
                 await _set_film_genres(db, row["id"], merged_genres)
             await db.commit()
@@ -1157,14 +1184,15 @@ async def get_or_create_film(
             INSERT INTO films
                 (imdb_id, kp_id, title, title_original, year, genres, directors, actors, runtime,
                  imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
-                 actors_photos, directors_photos, search_text, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 actors_photos, directors_photos, search_text, media_type, media_type_source, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT DO NOTHING
             RETURNING id
             """,
             (imdb_id, kp_id, title, title_original, year, genres, directors, actors, runtime,
              imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
-             actors_photos, directors_photos, search_text, _now()),
+             actors_photos, directors_photos, search_text, media_type,
+             "provider" if media_type else None, _now()),
         )
         inserted = await cur.fetchone()
         if inserted:

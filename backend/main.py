@@ -692,6 +692,11 @@ class RandomRecommendationBody(RecommendationStartBody):
     context: str = Field(default="solo", max_length=16)
 
 
+class RecommendationReplaceBody(RecommendationStartBody):
+    film_id: int
+    role: str = Field(min_length=1, max_length=24)
+
+
 class RecommendationFeedbackBody(BaseModel):
     action: str = Field(min_length=1, max_length=24)
     mode: str = Field(default="random", max_length=16)
@@ -828,6 +833,49 @@ async def recommendation_quiz_results(session_id: str, language: str = "ru", use
         await db.record_recommendation_history(user["id"], item["id"], "quiz", session_id=session_id,
                                                role=item["role"], score=item["score"])
     return {"id": session_id, "items": items, "context": "pair" if partner_id else "solo"}
+
+
+@app.post("/api/recommendations/quiz/{session_id}/replace")
+async def recommendation_quiz_replace(session_id: str, body: RecommendationReplaceBody,
+                                      user: dict = Depends(current_user)):
+    """Заменить один отклонённый вариант, не трогая остальные.
+
+    Раньше «не предлагать» выбрасывало человека на стартовый экран подбора: он
+    терял и результаты, и пройденную анкету. Теперь отклонённый фильм меняется
+    на месте, а два оставшихся сохраняются как есть.
+    """
+    locale = _recommendation_language(body.language)
+    session = await db.get_recommendation_session(user["id"], session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Опрос не найден")
+    if session["state"] != "complete":
+        raise HTTPException(status_code=409, detail="Сначала завершите опрос")
+    current = list(session.get("results") or [])
+    if not any(int(item.get("id") or 0) == body.film_id for item in current):
+        raise HTTPException(status_code=404, detail="Этот вариант не из текущей подборки")
+    answers = session.get("answers") or {}
+    partner_id = await _active_partner_for_recommendation(user["id"], "pair") if answers.get("c4") == "pair" else None
+    is_admin = (await _effective_role(user["id"])) in ("editor", "admin")
+    kept_ids = {int(item["id"]) for item in current if int(item["id"]) != body.film_id}
+    # Отклонённый и уже показанные исключены на уровне SQL (rejected + cooldown),
+    # поэтому пересчёт не может вернуть их обратно.
+    fresh = await recommendations.quiz_results(user["id"], answers, locale, partner_id, is_admin=is_admin)
+    candidates = [item for item in fresh if int(item["id"]) not in kept_ids]
+    replacement = next((item for item in candidates if item.get("role") == body.role), None) \
+        or (candidates[0] if candidates else None)
+    if replacement is not None:
+        replacement = {**replacement, "role": body.role}
+    updated = [item for item in current if int(item["id"]) != body.film_id]
+    if replacement is not None:
+        # Позиция роли сохраняется: карточка меняется на месте, экран не прыгает.
+        position = next((i for i, item in enumerate(current) if int(item["id"]) == body.film_id), len(updated))
+        updated.insert(position, replacement)
+    await db.save_recommendation_session_results(user["id"], session_id, updated)
+    if replacement is not None:
+        await db.record_recommendation_history(user["id"], replacement["id"], "quiz", session_id=session_id,
+                                               role=body.role, score=replacement["score"])
+    return {"id": session_id, "items": updated, "replacement": replacement,
+            "context": "pair" if partner_id else "solo"}
 
 
 @app.post("/api/recommendations/{film_id}/feedback")

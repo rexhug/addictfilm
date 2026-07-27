@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import database as db
 import main
+import reasons
 import recommendations
 from recommendation_questions import next_question_id, public_question
 
@@ -80,7 +81,10 @@ class RecommendationTests(unittest.IsolatedAsyncioTestCase):
             items = await recommendations.quiz_results(1, answers, "ru")
         self.assertEqual([item["role"] for item in items], ["best", "reliable", "unexpected"])
         self.assertEqual(len({item["id"] for item in items}), 3)
-        self.assertTrue(all(item["explanation"].startswith("Подходит по запросу:") for item in items))
+        # Причины — стабильные коды, а не пересказ анкеты и не внутренние теги.
+        self.assertTrue(all(item["reasons"] for item in items))
+        self.assertTrue(all(set(item["reasons"]) <= reasons.KNOWN_CODES for item in items))
+        self.assertTrue(all(item["explanation"] for item in items))
         self.assertTrue(all("_tags" not in item for item in items))
 
     def test_public_movie_keeps_provider_rating_separate_from_quality_score(self):
@@ -88,7 +92,8 @@ class RecommendationTests(unittest.IsolatedAsyncioTestCase):
         movie = {"id": 9, "title": "Rated", "imdb_rating": "7.2", "kp_rating": "7.0", "imdb_votes": "1000000"}
         self.assertGreater(recommendations._quality(movie), 7.2)
         self.assertEqual(
-            recommendations.public_movie(movie, role="best", explanation="test")["rating"],
+            recommendations.public_movie(movie, role="best", codes=[reasons.HIGH_QUALITY],
+                                         language="ru")["rating"],
             7.2,
         )
 
