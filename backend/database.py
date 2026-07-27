@@ -51,6 +51,7 @@ _SCHEMA_MIGRATION_MEDIA_TYPE = "2026-07-27-media-type-v1"
 _SCHEMA_MIGRATION_MOVIE_ENRICHMENT = "2026-07-27-movie-enrichment-v1"
 _SCHEMA_MIGRATION_WORKER_HEARTBEATS = "2026-07-27-worker-heartbeats-v1"
 _SCHEMA_MIGRATION_WISHLIST_ROULETTE = "2026-07-27-wishlist-roulette-v1"
+_SCHEMA_MIGRATION_SESSION_VERSIONS = "2026-07-27-session-versions-v1"
 
 # Значения films.media_type. Дублируются константами, а не импортом media_type,
 # чтобы не затенять одноимённый аргумент get_or_create_film.
@@ -768,6 +769,19 @@ async def _apply_wishlist_roulette_migration() -> None:
         await db.commit()
 
 
+async def _apply_session_versions_migration() -> None:
+    """Версии движка, политики, таксономии и признаков в самой сессии.
+
+    Без них сессия, начатая до деплоя, доигрывается уже другой семантикой:
+    ответы даны по старой анкете, а замена карточки считается новой. Колонки
+    NULL-совместимые — существующие сессии остаются валидными и просто помечены
+    как «версия неизвестна», то есть доигрываются прежней логикой.
+    """
+    for column in ("engine_version TEXT", "policy_version TEXT",
+                   "taxonomy_version TEXT", "feature_version TEXT"):
+        await _add_column_if_missing("recommendation_sessions", column)
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -788,6 +802,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_MOVIE_ENRICHMENT, _apply_movie_enrichment_migration),
         (_SCHEMA_MIGRATION_WORKER_HEARTBEATS, _apply_worker_heartbeats_migration),
         (_SCHEMA_MIGRATION_WISHLIST_ROULETTE, _apply_wishlist_roulette_migration),
+        (_SCHEMA_MIGRATION_SESSION_VERSIONS, _apply_session_versions_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -2092,19 +2107,33 @@ _RECOMMENDATION_SESSION_TTL = timedelta(hours=12)
 
 
 async def create_recommendation_session(user_id: int, version: str, session_id: str,
-                                        current_question: str | None) -> dict:
+                                        current_question: str | None,
+                                        versions: dict | None = None) -> dict:
+    """Версии фиксируются В МОМЕНТ СОЗДАНИЯ и дальше не меняются.
+
+    Иначе сессия, начатая до деплоя, доигрывается уже другой семантикой: ответы
+    даны по одной анкете, а замена карточки считается по другой.
+    """
     now = _now()
     expires = (datetime.now(UTC) + _RECOMMENDATION_SESSION_TTL).isoformat()
+    versions = versions or {}
+    engine = versions.get("engine_version")
+    policy = versions.get("policy_version")
+    taxonomy = versions.get("taxonomy_version")
+    feature = versions.get("feature_version")
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         await db.execute(
-            "INSERT INTO recommendation_sessions (id, user_id, version, answers, current_question, state, created_at, updated_at, expires_at) "
-            "VALUES (?,?,?,?,?,'active',?,?,?)",
-            (session_id, user_id, version, "{}", current_question, now, now, expires),
+            "INSERT INTO recommendation_sessions (id, user_id, version, answers, current_question, "
+            "state, created_at, updated_at, expires_at, engine_version, policy_version, "
+            "taxonomy_version, feature_version) VALUES (?,?,?,?,?,'active',?,?,?,?,?,?,?)",
+            (session_id, user_id, version, "{}", current_question, now, now, expires,
+             engine, policy, taxonomy, feature),
         )
         await db.commit()
     return {"id": session_id, "user_id": user_id, "version": version, "answers": {},
             "current_question": current_question, "state": "active", "created_at": now,
-            "updated_at": now, "expires_at": expires}
+            "updated_at": now, "expires_at": expires, "engine_version": engine,
+            "policy_version": policy, "taxonomy_version": taxonomy, "feature_version": feature}
 
 
 async def get_recommendation_session(user_id: int, session_id: str) -> dict | None:
@@ -2146,14 +2175,23 @@ async def update_recommendation_session(user_id: int, session_id: str, answers: 
     return await get_recommendation_session(user_id, session_id)
 
 
-async def restart_recommendation_session(user_id: int, session_id: str, current_question: str) -> dict | None:
+async def restart_recommendation_session(user_id: int, session_id: str, current_question: str,
+                                         versions: dict | None = None) -> dict | None:
+    """Перезапуск — это НОВЫЙ проход, поэтому версии переписываются на текущие:
+    иначе свежие ответы считались бы прошлой семантикой."""
     now = _now()
     expires = (datetime.now(UTC) + _RECOMMENDATION_SESSION_TTL).isoformat()
+    versions = versions or {}
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         cur = await db.execute(
-            "UPDATE recommendation_sessions SET answers='{}', current_question=?, state='active', results=NULL, updated_at=?, expires_at=? "
+            "UPDATE recommendation_sessions SET answers='{}', current_question=?, state='active', "
+            "results=NULL, updated_at=?, expires_at=?, version=COALESCE(?, version), "
+            "engine_version=?, policy_version=?, taxonomy_version=?, feature_version=? "
             "WHERE id=? AND user_id=?",
-            (current_question, now, expires, session_id, user_id),
+            (current_question, now, expires, versions.get("question_version"),
+             versions.get("engine_version"), versions.get("policy_version"),
+             versions.get("taxonomy_version"), versions.get("feature_version"),
+             session_id, user_id),
         )
         await db.commit()
         if not cur.rowcount:

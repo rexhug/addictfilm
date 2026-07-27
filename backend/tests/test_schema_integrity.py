@@ -57,6 +57,7 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
             db._SCHEMA_MIGRATION_FEATURED_COLLECTIONS,
             db._SCHEMA_MIGRATION_MEDIA_TYPE,
             db._SCHEMA_MIGRATION_MOVIE_ENRICHMENT,
+            db._SCHEMA_MIGRATION_SESSION_VERSIONS,
             db._SCHEMA_MIGRATION_WISHLIST_ROULETTE,
             db._SCHEMA_MIGRATION_WORKER_HEARTBEATS,
         ])

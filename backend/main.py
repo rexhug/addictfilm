@@ -29,6 +29,7 @@ import pair_notifications
 import posters
 import ratelimit
 import recommendations
+import smart_random
 import search
 import sentry_sdk
 import stats_cache
@@ -778,10 +779,43 @@ async def recommendation_random(body: RandomRecommendationBody, user: dict = Dep
     return {"item": item, "context": body.context}
 
 
+def _current_engine_versions() -> dict:
+    """Версии, которыми считается подбор ПРЯМО СЕЙЧАС. Пишутся в сессию при
+    создании и перезапуске, чтобы её можно было сверить после деплоя."""
+    from enrichment.taxonomy import MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION
+
+    return {
+        "question_version": QUESTION_VERSION,
+        "engine_version": recommendations.RECOMMENDATION_ENGINE_VERSION,
+        "policy_version": smart_random.SMART_RANDOM_POLICY_VERSION,
+        "taxonomy_version": MOVIE_TAXONOMY_VERSION,
+        "feature_version": MOVIE_FEATURE_VERSION,
+    }
+
+
+def _session_versions_match(session: dict) -> bool:
+    """Совпадает ли семантика сессии с текущей.
+
+    NULL — сессия старше версионирования: доигрываем её прежней логикой, а не
+    объявляем сломанной. Явное расхождение — уже другой движок.
+    """
+    current = _current_engine_versions()
+    stored = {
+        "question_version": session.get("version"),
+        "engine_version": session.get("engine_version"),
+        "policy_version": session.get("policy_version"),
+        "taxonomy_version": session.get("taxonomy_version"),
+        "feature_version": session.get("feature_version"),
+    }
+    return all(value is None or value == current[key] for key, value in stored.items())
+
+
 @app.post("/api/recommendations/quiz/start")
 async def recommendation_quiz_start(body: RecommendationStartBody, user: dict = Depends(current_user)):
     language = _recommendation_language(body.language)
-    session = await db.create_recommendation_session(user["id"], QUESTION_VERSION, secrets.token_urlsafe(18), "q1")
+    session = await db.create_recommendation_session(
+        user["id"], QUESTION_VERSION, secrets.token_urlsafe(18), "q1",
+        versions=_current_engine_versions())
     return await _quiz_payload(session, language, user["id"])
 
 
@@ -838,7 +872,8 @@ async def recommendation_quiz_back(session_id: str, body: RecommendationStartBod
 
 @app.post("/api/recommendations/quiz/{session_id}/restart")
 async def recommendation_quiz_restart(session_id: str, body: RecommendationStartBody, user: dict = Depends(current_user)):
-    session = await db.restart_recommendation_session(user["id"], session_id, "q1")
+    session = await db.restart_recommendation_session(user["id"], session_id, "q1",
+                                                      versions=_current_engine_versions())
     if not session:
         raise HTTPException(status_code=404, detail="Опрос не найден")
     return await _quiz_payload(session, _recommendation_language(body.language), user["id"])
@@ -895,6 +930,12 @@ async def recommendation_quiz_replace(session_id: str, body: RecommendationRepla
     server_role = str(rejected.get("role") or "")
     if body.role and body.role != server_role:
         raise HTTPException(status_code=422, detail="Роль не совпадает с текущей подборкой")
+    if not _session_versions_match(session):
+        # Подборка собрана прежней семантикой. Досчитывать её новой — молча
+        # смешать два движка в одном экране; честнее попросить пройти заново.
+        raise HTTPException(status_code=409, detail={
+            "code": "SESSION_VERSION_MISMATCH",
+            "message": "Подбор обновился — пройдите опрос заново"})
     answers = session.get("answers") or {}
     partner_id = await _active_partner_for_recommendation(user["id"], "pair") if answers.get("c4") == "pair" else None
     is_admin = (await _effective_role(user["id"])) in ("editor", "admin")

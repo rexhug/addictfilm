@@ -72,6 +72,7 @@ const DICT = {
     strategy_reliable: "Надёжный выбор", strategy_taste_match: "Под твой вкус", strategy_discovery: "Находка",
     pick_partial: "Под такой запрос в каталоге нашлось меньше вариантов, чем обычно — показываем только то, что действительно подходит.",
     pick_rejected: "Больше не предложим",
+    pick_version_changed: "Подбор обновился — начнём опрос заново",
     reason_DARK_COMEDY_TONE: "Чёрный юмор и мрачный тон", reason_SATIRICAL_HUMOR: "Сатира на серьёзные темы",
     reason_ABSURD_DARK_HUMOR: "Абсурдная комедия с мрачной подачей", reason_HIGH_TENSION: "Держит в напряжении",
     reason_INTELLECTUAL: "Требует внимания и размышления", reason_COZY_TONE: "Спокойный и светлый тон",
@@ -203,6 +204,7 @@ const DICT = {
     strategy_reliable: "Reliable choice", strategy_taste_match: "Matches your taste", strategy_discovery: "Discovery",
     pick_partial: "This request has fewer good matches in the catalog than usual — we only show what genuinely fits.",
     pick_rejected: "We won't suggest it again",
+    pick_version_changed: "The picker was updated — let's start the quiz again",
     reason_DARK_COMEDY_TONE: "Dark humour with a grim tone", reason_SATIRICAL_HUMOR: "Satire about serious things",
     reason_ABSURD_DARK_HUMOR: "Absurd comedy, grim delivery", reason_HIGH_TENSION: "Keeps the tension up",
     reason_INTELLECTUAL: "Asks for attention and thought", reason_COZY_TONE: "Calm, light tone",
@@ -1031,6 +1033,14 @@ async function replaceQuizPick(sessionId, item, apply) {
     apply(data.items || []);
     if (!data.replacement) tg?.showAlert?.(String(t("pick_rejected")));
   } catch (error) {
+    // Подбор обновился уже после начала опроса: досчитывать старую подборку
+    // новой логикой нельзя, поэтому предлагаем пройти заново, а не показываем
+    // человеку непонятную ошибку.
+    if (error.code === "SESSION_VERSION_MISMATCH") {
+      tg?.showAlert?.(String(t("pick_version_changed")));
+      startRecommendationQuiz();
+      return;
+    }
     tg?.showAlert?.(String(error.message || t("load_err")));
   }
 }

@@ -106,7 +106,8 @@ async function openStats(page, paired = false, options = {}) {
       : path === "/api/recommendations/random"
         ? { item: { ...recommendationMovie, role: "random", strategy: "discovery", reasons: ["UNSEEN_PICK", "RANDOM_DISCOVERY"] }, context: "solo" }
       : path === "/api/recommendations/quiz/start"
-        ? recommendationPayload()
+        // Новый опрос всегда начинается с первого вопроса — как на сервере.
+        ? (() => { recommendationStep = 0; return recommendationPayload(); })()
       : path.endsWith("/answer") && path.startsWith("/api/recommendations/quiz/")
         ? (() => { recommendationStep += 1; return recommendationPayload(); })()
       : path.endsWith("/back") && path.startsWith("/api/recommendations/quiz/")
@@ -115,6 +116,12 @@ async function openStats(page, paired = false, options = {}) {
         ? (() => { recommendationStep = 0; return recommendationPayload(); })()
       : path.endsWith("/results") && path.startsWith("/api/recommendations/quiz/")
         ? { id: "quiz_test", items: quizItems, context: "solo" }
+      : path.endsWith("/replace") && path.startsWith("/api/recommendations/quiz/") && options.replaceStatus === 409
+        ? (() => {
+          route.fulfill({ status: 409, contentType: "application/json",
+            body: JSON.stringify({ detail: { code: "SESSION_VERSION_MISMATCH", message: "Подбор обновился" } }) });
+          return null;
+        })()
       : path.endsWith("/replace") && path.startsWith("/api/recommendations/quiz/")
         ? (() => {
           const body = JSON.parse(route.request().postData() || "{}");
@@ -152,6 +159,8 @@ async function openStats(page, paired = false, options = {}) {
         : path === "/api/partner/stats" ? pairStats
           : path === "/api/stats/person" ? { items: [{ id: 17, title: "Donnie Darko", year: "2001", poster_url: null, my_rating: 9 }] }
             : personalStats;
+    // null означает «маршрут уже ответил сам» (например, смоделированный 409).
+    if (json === null) return;
     await route.fulfill({ contentType: "application/json", body: JSON.stringify(json) });
   });
   await page.goto("/");
@@ -917,4 +926,17 @@ test("wishlist roulette is a separate mode from smart random", async ({ page }) 
   await page.getByRole("button", { name: /Случайный из «Хочу»/ }).click();
   await expect(page.locator(".recommendation-film-copy h2", { hasText: "Wishlist Pick" })).toBeVisible();
   await expect(page.getByText("Случайный из «Хочу»", { exact: true })).toBeVisible();
+});
+
+
+test("session from an older engine asks to restart instead of mixing semantics", async ({ page }) => {
+  await openStats(page, false, { replaceStatus: 409 });
+  await page.getByRole("button", { name: "Подбор" }).click();
+  await page.getByRole("button", { name: "Подбор по настроению" }).click();
+  for (let index = 0; index < 8; index += 1) await page.locator(".picker-option").first().click();
+  await expect(page.locator(".recommendation-film")).toHaveCount(3);
+
+  await page.getByRole("button", { name: "Не предлагать" }).first().click();
+  // Досчитывать старую подборку новой логикой нельзя — предлагаем пройти заново.
+  await expect(page.locator(".picker-question h1")).toBeVisible();
 });

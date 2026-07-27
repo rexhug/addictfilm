@@ -21,6 +21,9 @@ import text_matching
 from recommendation_questions import answer_state
 
 TAG_VERSION = "v1"
+# Версия семантики подбора. Меняется, когда результат при тех же ответах стал бы
+# другим; сессии хранят её, чтобы не досчитываться чужой логикой после деплоя.
+RECOMMENDATION_ENGINE_VERSION = "recommendation-v1"
 
 # Values represent weak, explainable signals.  They are never used as absolute
 # assertions (for example a Drama may be emotional, but it is not guaranteed).
