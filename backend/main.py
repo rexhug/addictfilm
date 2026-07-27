@@ -29,9 +29,9 @@ import pair_notifications
 import posters
 import ratelimit
 import recommendations
-import smart_random
 import search
 import sentry_sdk
+import smart_random
 import stats_cache
 import wikidata
 from auth import validate_init_data
