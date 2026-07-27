@@ -565,8 +565,15 @@ test("admin sees featured controls and long titles stay clamped", async ({ page 
 test("featured card survives a broken backdrop image", async ({ page }) => {
   await featuredHarness(page, { isAdmin: false, collections: [FEATURED] });
   await page.goto("/");
-  await page.locator(".featured-card-img").evaluate(img => img.dispatchEvent(new Event("error")));
-  // Текст и переход остаются читаемыми поверх тёмной подложки.
+  await expect(page.locator(".featured-card")).toHaveCount(1);
+  // Картинку в харнессе никто не отдаёт: приложение могло уже снять её своим
+  // обработчиком ошибки. Гасим её принудительно, только если она ещё в DOM, —
+  // иначе тест гоняется с самим приложением (так он и флакал в CI).
+  await page.evaluate(() => {
+    document.querySelector(".featured-card-img")?.dispatchEvent(new Event("error"));
+  });
+  // Главное: без картинки карточка остаётся читаемой и кликабельной.
   await expect(page.locator(".featured-card-title")).toBeVisible();
   await expect(page.locator(".featured-card-meta")).toBeVisible();
+  await expect(page.locator(".featured-card-scrim")).toBeVisible();
 });
