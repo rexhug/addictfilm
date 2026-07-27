@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import aiosqlite  # noqa: E402
 import database as db  # noqa: E402
 import db_runtime  # noqa: E402
-from config import DATABASE_URL  # noqa: E402
 from enrichment import reconciliation, repository, service  # noqa: E402
 from enrichment.models import EnrichmentJob, JOB_FULL, PROFILE_FAILED  # noqa: E402
 from enrichment.semantic import DisabledSemanticClassifier, build_classifier  # noqa: E402
@@ -27,7 +26,7 @@ from enrichment.taxonomy import MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION  #
 
 
 async def _films(movie_id: int | None) -> list[dict]:
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         conn.row_factory = aiosqlite.Row
         if movie_id:
             rows = await (await conn.execute("SELECT * FROM films WHERE id=?", (movie_id,))).fetchall()

@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 import aiosqlite
 import database as db
 import db_runtime
-from config import DATABASE_URL
 
 from . import provider, queue, repository
 from .models import (JOB_ACTIVE_STATES, PROFILE_FAILED, PROFILE_STALE, build_source_hash)
@@ -43,7 +42,7 @@ class ReconciliationReport:
 
 
 async def _films_batch(limit: int, offset: int) -> list[dict]:
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         conn.row_factory = aiosqlite.Row
         rows = await (await conn.execute(
             "SELECT * FROM films ORDER BY id LIMIT ? OFFSET ?", (limit, offset))).fetchall()
@@ -52,7 +51,7 @@ async def _films_batch(limit: int, offset: int) -> list[dict]:
 
 async def _films_with_active_jobs() -> set[int]:
     placeholders = ",".join("?" for _ in JOB_ACTIVE_STATES)
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         conn.row_factory = aiosqlite.Row
         rows = await (await conn.execute(
             f"SELECT DISTINCT film_id FROM movie_enrichment_jobs WHERE status IN ({placeholders})",

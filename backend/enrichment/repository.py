@@ -8,7 +8,6 @@ import aiosqlite
 import database as db
 import db_runtime
 import mood
-from config import DATABASE_URL
 
 from .models import ExtractedMovieFeatures, PROFILE_STALE
 from .taxonomy import ContentType
@@ -45,7 +44,7 @@ async def save_profile(film_id: int, features: ExtractedMovieFeatures, *, status
     columns = ", ".join(_MOOD_COLUMNS)
     marks = ", ".join("?" for _ in _MOOD_COLUMNS)
     updates = ", ".join(f"{dim}=?" for dim in _MOOD_COLUMNS)
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         cur = await conn.execute(
             f"UPDATE movie_recommendation_profiles SET status=?, content_type=?, "
             f"feature_version=?, taxonomy_version=?, extractor_version=?, "
@@ -98,7 +97,7 @@ def _row_to_profile(row) -> dict:
 
 
 async def get_profile(film_id: int) -> dict | None:
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         conn.row_factory = aiosqlite.Row
         row = await (await conn.execute(
             "SELECT * FROM movie_recommendation_profiles WHERE film_id=?", (film_id,))).fetchone()
@@ -111,7 +110,7 @@ async def get_profiles(film_ids) -> dict[int, dict]:
     if not ids:
         return {}
     out: dict[int, dict] = {}
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         conn.row_factory = aiosqlite.Row
         for start in range(0, len(ids), 400):
             chunk = ids[start:start + 400]
@@ -126,7 +125,7 @@ async def get_profiles(film_ids) -> dict[int, dict]:
 async def mark_stale(feature_version: str, taxonomy_version: str) -> int:
     """Профили других версий помечаем устаревшими, но НЕ удаляем: до пересчёта
     они продолжают работать."""
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         cur = await conn.execute(
             "UPDATE movie_recommendation_profiles SET status=?, updated_at=? "
             "WHERE (feature_version<>? OR taxonomy_version<>?) AND status<>?",
@@ -136,7 +135,7 @@ async def mark_stale(feature_version: str, taxonomy_version: str) -> int:
 
 
 async def get_override(film_id: int) -> dict | None:
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         conn.row_factory = aiosqlite.Row
         row = await (await conn.execute(
             "SELECT override_data FROM movie_recommendation_profile_overrides WHERE film_id=?",
@@ -147,7 +146,7 @@ async def get_override(film_id: int) -> dict | None:
 async def set_override(film_id: int, data: dict, *, reason: str, created_by: int) -> None:
     now = _now()
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         cur = await conn.execute(
             "UPDATE movie_recommendation_profile_overrides SET override_data=?, reason=?, "
             "updated_at=? WHERE film_id=?", (payload, reason[:200], now, film_id))
@@ -160,7 +159,7 @@ async def set_override(film_id: int, data: dict, *, reason: str, created_by: int
 
 
 async def delete_override(film_id: int) -> bool:
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         cur = await conn.execute(
             "DELETE FROM movie_recommendation_profile_overrides WHERE film_id=?", (film_id,))
         await conn.commit()
@@ -169,7 +168,7 @@ async def delete_override(film_id: int) -> bool:
 
 async def distribution() -> dict:
     """Сводка для наблюдаемости и админской диагностики."""
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         conn.row_factory = aiosqlite.Row
         by_status = await (await conn.execute(
             "SELECT status, COUNT(*) AS n FROM movie_recommendation_profiles "
@@ -194,7 +193,7 @@ async def exceptions(limit: int = 50) -> list[dict]:
     Обычный новый фильм сюда не попадает — иначе «ручной разбор исключений»
     превращается в ручную разметку каталога.
     """
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         conn.row_factory = aiosqlite.Row
         rows = await (await conn.execute(
             "SELECT p.*, f.title FROM movie_recommendation_profiles p "

@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import aiosqlite  # noqa: E402
 import database as db  # noqa: E402
 import db_runtime  # noqa: E402
-from config import DATABASE_URL  # noqa: E402
 from enrichment import repository  # noqa: E402
 
 # Категории для представительной выборки: по одной строке на каждую, чтобы
@@ -45,7 +44,7 @@ REVIEW_BUCKETS: dict[str, dict] = {
 
 
 async def _rows() -> list[dict]:
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         conn.row_factory = aiosqlite.Row
         rows = await (await conn.execute(
             "SELECT f.id, f.title, f.genres, f.runtime FROM films f ORDER BY f.id")).fetchall()

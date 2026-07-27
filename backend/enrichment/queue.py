@@ -21,7 +21,6 @@ from datetime import datetime, timedelta, timezone
 import aiosqlite
 import database as db
 import db_runtime
-from config import DATABASE_URL
 
 from .models import (EnrichmentJob, JOB_ACTIVE_STATES, JOB_DEAD_LETTER, JOB_COMPLETED,
                      JOB_FAILED, JOB_FULL, JOB_PENDING, JOB_PROCESSING, JOB_RETRY)
@@ -83,7 +82,7 @@ async def enqueue(film_id: int, *, feature_version: str, taxonomy_version: str,
         # В той же транзакции, что и сохранение фильма: либо фильм и задание,
         # либо ничего.
         return await _run(connection)
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         created = await _run(conn)
         await conn.commit()
         return created
@@ -94,8 +93,9 @@ WITH selected AS (
     SELECT id FROM movie_enrichment_jobs
     WHERE status IN ('pending','retry') AND run_after <= ?
     ORDER BY priority DESC, created_at ASC, id ASC
-    FOR UPDATE SKIP LOCKED
+    -- Порядок обязателен: в PostgreSQL блокирующая клауза идёт ПОСЛЕ LIMIT.
     LIMIT ?
+    FOR UPDATE SKIP LOCKED
 )
 UPDATE movie_enrichment_jobs AS jobs
 SET status='processing', locked_at=?, locked_by=?, attempts=attempts+1, updated_at=?
@@ -115,7 +115,7 @@ async def claim(worker_id: str, batch_size: int = 5) -> list[EnrichmentJob]:
     таймаут пула на первом же медленном ответе.
     """
     now = _now()
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         conn.row_factory = aiosqlite.Row
         if db._PG:
             rows = await (await conn.execute(
@@ -151,7 +151,7 @@ async def claim(worker_id: str, batch_size: int = 5) -> list[EnrichmentJob]:
 
 async def complete(job_id: int) -> None:
     now = _now()
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         await conn.execute(
             "UPDATE movie_enrichment_jobs SET status=?, locked_at=NULL, locked_by=NULL, "
             "completed_at=?, updated_at=?, last_error_code=NULL, last_error_message=NULL "
@@ -175,7 +175,7 @@ async def fail(job: EnrichmentJob, *, error_code: str, message: str) -> str:
         status = JOB_RETRY
         run_after = _iso(datetime.now(timezone.utc) + retry_delay(job.attempts))
     now = _now()
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         await conn.execute(
             "UPDATE movie_enrichment_jobs SET status=?, locked_at=NULL, locked_by=NULL, "
             "run_after=?, updated_at=?, last_error_code=?, last_error_message=? WHERE id=?",
@@ -192,7 +192,7 @@ async def release_stuck(timeout_minutes: int = STUCK_JOB_TIMEOUT_MINUTES) -> int
     """
     cutoff = _iso(datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes))
     now = _now()
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         cur = await conn.execute(
             "UPDATE movie_enrichment_jobs SET status=?, locked_at=NULL, locked_by=NULL, "
             "run_after=?, updated_at=? WHERE status=? AND locked_at IS NOT NULL AND locked_at < ?",
@@ -202,7 +202,7 @@ async def release_stuck(timeout_minutes: int = STUCK_JOB_TIMEOUT_MINUTES) -> int
 
 
 async def stats() -> dict[str, int]:
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         conn.row_factory = aiosqlite.Row
         rows = await (await conn.execute(
             "SELECT status, COUNT(*) AS n FROM movie_enrichment_jobs GROUP BY status")).fetchall()
@@ -212,7 +212,7 @@ async def stats() -> dict[str, int]:
 async def retry_dead_letters(limit: int = 100) -> int:
     """Явное решение оператора: dead letter сам по себе не возвращается."""
     now = _now()
-    async with db_runtime.connect(db.DB_PATH, DATABASE_URL) as conn:
+    async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
         conn.row_factory = aiosqlite.Row
         rows = await (await conn.execute(
             "SELECT id FROM movie_enrichment_jobs WHERE status IN (?,?) LIMIT ?",
