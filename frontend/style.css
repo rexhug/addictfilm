@@ -863,3 +863,13 @@ body.collection-editor-open .admin-indicator{display:none;}
 /* Заголовок парной секции — ровно тот же паттерн, что у «Актёров»: без
    иконки-бокса, чтобы левый край и вес совпадали (третьего стиля не заводим). */
 .pair-showcase-head h2{font-size:18px;line-height:1.1;letter-spacing:-.025em;}
+
+/* Иконка метрики: нейтральный серый outline, вторичный по отношению к числу
+   (в фиолетовый по умолчанию не красим — акцент остаётся у значений). */
+.tile-icon{display:block;margin:0 auto 7px;width:24px;height:24px;color:var(--ink-2);opacity:.9;}
+.tile-icon svg{display:block;width:100%;height:100%;}
+/* Профиль больше не несёт дублирующую строку цифр — убираем её отступ. */
+.profile-hero .profile-main{margin-bottom:0;}
+/* Кнопка настроек: видимый размер прежний, но цель нажатия — не меньше 44px. */
+.page-head-action{width:44px;height:44px;border-radius:14px;color:var(--ink-2);}
+.page-head-action:active{color:var(--ink);background:var(--s3);transform:scale(.97);}

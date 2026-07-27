@@ -647,6 +647,8 @@ const ICONS = {
   shuffle: '<path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="m4 4 5 5"/>',
   sliders: '<line x1="4" x2="14" y1="6" y2="6"/><line x1="18" x2="20" y1="6" y2="6"/><line x1="4" x2="8" y1="12" y2="12"/><line x1="12" x2="20" y1="12" y2="12"/><line x1="4" x2="14" y1="18" y2="18"/><line x1="18" x2="20" y1="18" y2="18"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="16" cy="18" r="2"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/>',
+  star: '<path d="m12 3.6 2.6 5.3 5.9.9-4.2 4.1 1 5.8L12 17l-5.3 2.7 1-5.8-4.2-4.1 5.9-.9z"/>',
   alert: '<path d="m10.3 3.9-8 13.8a2 2 0 0 0 1.7 3h16a2 2 0 0 0 1.7-3l-8-13.8a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/>',
   ban: '<circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/>',
   checkCircle: '<circle cx="12" cy="12" r="9"/><path d="m8.3 12.2 2.5 2.5 4.9-5.4"/>',
@@ -2922,7 +2924,6 @@ function statsProfileHTML(s) {
   const name = me?.label || telegramUser.first_name || t("stats_profile_fallback");
   const username = me?.username || telegramUser.username;
   const photo = telegramUser.photo_url;
-  const hours = Math.floor((s.total_runtime_min || 0) / 60);
   const avatar = userAvatarHTML({ photo_url: photo }, name);
   const topGenre = cap(s.top_genres_pct?.[0]?.[0] || "");
   const topRating = (s.rating_dist || []).reduce((best, count, index, values) => count > values[best] ? index : best, 0) + 1;
@@ -2930,7 +2931,6 @@ function statsProfileHTML(s) {
   return `<section class="profile-hero">
     <div class="profile-main">${avatar}<div class="profile-copy"><div class="profile-name">${esc(name)}</div>
       <div class="profile-handle">${username ? `@${esc(username)}` : esc(t("stats_profile_sub"))}</div><p class="profile-taste">${esc(taste)}</p></div></div>
-    <div class="profile-facts"><span><b>${s.watched || 0}</b> ${esc(t("tile_watched"))}</span><span><b>${s.avg_rating ?? "—"}</b> ${esc(t("tile_avg"))}</span><span><b>${hours}</b> ${esc(t("tile_hours"))}</span></div>
   </section>`;
 }
 
@@ -3033,8 +3033,8 @@ function personalStatsHTML(s, scope = "me", expanded = { genres: false }) {
   const topRating = (s.rating_dist || []).reduce((best, count, index, values) => count > values[best] ? index : best, 0) + 1;
   const intro = "";
   const tiles = `<div class="stats-grid">
-    ${statTile("", s.watched, t(scope === "pair" ? "tile_shared_watched" : "tile_watched"))}${statTile("", s.want, t(scope === "pair" ? "tile_shared_want" : "tile_want"))}
-    ${statTile("", s.avg_rating ?? "—", t("tile_avg"))}${statTile("", hours, t("tile_hours"))}</div>`;
+    ${statTile("eye", s.watched, t(scope === "pair" ? "tile_shared_watched" : "tile_watched"))}${statTile("heart", s.want, t(scope === "pair" ? "tile_shared_want" : "tile_want"))}
+    ${statTile("star", s.avg_rating ?? "—", t("tile_avg"))}${statTile("clock", hours, t("tile_hours"))}</div>`;
   const dist = s.rating_dist || [];
   const maxD = Math.max(1, ...dist);
   const rankedRatings = dist.map((count, index) => ({ rating: index + 1, count })).filter(x => x.count).sort((a, b) => b.count - a.count).slice(0, 2).map(x => x.rating);
@@ -3152,7 +3152,9 @@ async function showAcceptInvite(param) {
   };
 }
 
-function statTile(icon, value, label) { return `<div class="tile">${icon ? `<div class="tile-icon">${icon}</div>` : ""}<div class="tile-val">${esc(value)}</div><div class="tile-label">${esc(label)}</div></div>`; }
+// icon — ключ общего реестра ICONS (не сырой SVG), чтобы у всех плиток был один
+// stroke и один цвет; иконка вторична по отношению к числу.
+function statTile(icon, value, label) { return `<div class="tile">${icon ? `<span class="tile-icon" aria-hidden="true">${appIcon(icon)}</span>` : ""}<div class="tile-val">${esc(value)}</div><div class="tile-label">${esc(label)}</div></div>`; }
 function chartCard(title, inner) { return `<div class="chart-card"><div class="chart-title">${esc(title)}</div>${inner}</div>`; }
 function hbar(label, valueText, pct) { return `<div class="hbar-row"><div class="hbar-label">${esc(label)}</div><div class="hbar-track"><div class="hbar-fill" style="width:${Math.max(4, pct)}%"></div></div><div class="hbar-val">${esc(valueText)}</div></div>`; }
 function personPill(name, count, photoUrl = null) { return `<div class="person-pill"><span class="person-avatar"><span class="fb">${esc(initials(name))}</span>${photoUrl ? `<img loading="lazy" decoding="async" src="${posterSrc(photoUrl)}" alt="" data-img-retry data-person-photo>` : ""}</span><span><b>${esc(name)}</b><small>${esc(t("stats_films", count))}</small></span></div>`; }

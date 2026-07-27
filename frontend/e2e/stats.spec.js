@@ -745,3 +745,47 @@ test("pair sections are open: outer frame removed, inner cards intact", async ({
   expect(await page.locator(".pair-favorites-rail").evaluate(el => el.scrollWidth > el.clientWidth)).toBeTruthy();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 });
+
+test("profile shows four metric cards with neutral outline icons and no duplicate strip", async ({ page }) => {
+  await openStats(page);
+
+  // Дублирующая строка «46 просмотрено | 7.2 средняя | 80 часов» удалена.
+  await expect(page.locator(".profile-facts")).toHaveCount(0);
+
+  // Осталась одна сводка — четыре плитки с прежними значениями.
+  const tiles = page.locator(".stats-grid .tile");
+  await expect(tiles).toHaveCount(4);
+  await expect(tiles.nth(0).locator(".tile-val")).toHaveText("46");
+  await expect(tiles.nth(1).locator(".tile-val")).toHaveText("31");
+  await expect(tiles.nth(2).locator(".tile-val")).toHaveText("7.2");
+  await expect(tiles.nth(3).locator(".tile-val")).toHaveText("80");
+
+  // У каждой плитки — иконка из общего outline-реестра, серая и не залитая.
+  await expect(page.locator(".stats-grid .tile-icon svg")).toHaveCount(4);
+  const iconStyle = await page.locator(".tile-icon").first().evaluate(el => {
+    const svg = el.querySelector("svg");
+    return { color: getComputedStyle(el).color, stroke: svg.getAttribute("stroke"), fill: svg.getAttribute("fill") };
+  });
+  expect(iconStyle.stroke).toBe("currentColor");
+  expect(iconStyle.fill).toBe("none");
+  expect(iconStyle.color).not.toContain("124, 58");   // не фиолетовый по умолчанию
+
+  // Шестерёнка — outline-иконка с достаточной целью нажатия, ведёт в настройки.
+  const gear = page.locator("[data-stats-settings]");
+  await expect(gear.locator("svg")).toHaveCount(1);
+  const box = await gear.boundingBox();
+  expect(box.width).toBeGreaterThanOrEqual(44);
+  expect(box.height).toBeGreaterThanOrEqual(44);
+  await gear.click();
+  await expect(page.locator(".settings-page")).toBeVisible();
+});
+
+test("metric cards stay readable and overflow-free at 320px", async ({ page }) => {
+  await openStats(page);
+  await page.setViewportSize({ width: 320, height: 640 });
+  await expect(page.locator(".stats-grid .tile")).toHaveCount(4);
+  const clipped = await page.locator(".stats-grid").evaluate(grid =>
+    [...grid.querySelectorAll(".tile-label")].filter(l => l.scrollWidth > l.clientWidth + 1).length);
+  expect(clipped).toBe(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+});
