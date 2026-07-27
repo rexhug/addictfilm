@@ -1913,15 +1913,21 @@ async def get_recommendation_preferences(user_id: int) -> dict:
     people_scores: dict[str, float] = {}
     for row in rows:
         rating = int(row.get("rating") or 0)
-        signal = max(0, rating - 5)
+        if not rating:
+            continue
+        # Оценка 1–5 — это осознанное «не моё», и она должна СНИЖАТЬ вес жанра,
+        # а не просто игнорироваться: иначе жанр, который человек стабильно
+        # ругает, продолжает всплывать только потому, что он часто попадается.
+        signal = (rating - 6.0) / 4.0            # 10 → +1.0, 6 → 0, 1 → -1.25
+        signal = max(-1.0, min(1.0, signal))
         if not signal:
             continue
         for genre in _split_genres(row.get("genres")):
             key = _canon_genre(genre).casefold()
-            genre_scores[key] = genre_scores.get(key, 0) + signal
+            genre_scores[key] = genre_scores.get(key, 0.0) + signal
         for person in _split_people(row.get("actors")) + _split_people(row.get("directors")):
             key = _person_key(person)
-            people_scores[key] = people_scores.get(key, 0) + signal
+            people_scores[key] = people_scores.get(key, 0.0) + signal
     return {"genres": genre_scores, "people": people_scores, "count": len(rows)}
 
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 import math
 import re
 import secrets
-from collections import defaultdict
 
 import database as db
 import search
@@ -92,11 +91,38 @@ def film_tags(film: dict) -> dict[str, float]:
     return tags
 
 
+# Оценка достоверна ровно настолько, насколько велика выборка: 10.0 по двум
+# голосам — это не «лучший фильм каталога». Байесовское сглаживание тянет такие
+# оценки к среднему по каталогу, пока голосов мало, и почти не трогает фильмы с
+# тысячами голосов.
+# Константы откалиброваны по реальному каталогу (288 фильмов): средний рейтинг
+# 6.96, нижний квартиль голосов ~1100. Не «универсальные» числа из головы:
+# слишком большой порог доверия сплющил бы весь каталог к среднему.
+_GLOBAL_MEAN_RATING = 6.96     # среднее по фильмам с оценкой
+_CONFIDENCE_VOTES = 1100       # p25 голосов: столько нужно для половинного доверия
+# Часть каталога просто не имеет заполненного поля голосов. Это «нет данных», а
+# не «никто не голосовал», поэтому такие фильмы сглаживаем умеренно, а не топим.
+_MISSING_VOTES_ASSUMPTION = 900
+
+
+def bayesian_rating(rating: float, votes: float, *, global_mean: float = _GLOBAL_MEAN_RATING,
+                    confidence_votes: int = _CONFIDENCE_VOTES) -> float:
+    votes = max(0.0, votes)
+    minimum = max(1, confidence_votes)
+    return (votes / (votes + minimum)) * rating + (minimum / (votes + minimum)) * global_mean
+
+
 def _quality(film: dict) -> float:
+    """0…10, но с поправкой на доверие к выборке голосов."""
     rating = max(_num(film.get("imdb_rating")), _num(film.get("kp_rating")))
-    votes = max(0.0, _num(film.get("imdb_votes")))
-    # rating dominates; votes lightly protect against a single unsupported vote.
-    return max(0.0, min(10.0, rating)) + min(1.2, math.log10(votes + 1) / 5)
+    raw_votes = max(0.0, _num(film.get("imdb_votes")))
+    if rating <= 0:
+        return 0.0
+    votes = raw_votes if raw_votes > 0 else _MISSING_VOTES_ASSUMPTION
+    adjusted = bayesian_rating(max(0.0, min(10.0, rating)), votes)
+    # Небольшая надбавка за подтверждённость выборки — но она уже не может
+    # вытащить наверх фильм с двумя голосами.
+    return adjusted + min(0.6, math.log10(raw_votes + 1) / 10)
 
 
 def _display_rating(film: dict) -> float | None:
@@ -124,48 +150,105 @@ def _matches_filters(film: dict, filters: dict, *, relaxed: bool = False) -> boo
 
 
 def _genre_affinity(film: dict, preferences: dict) -> float:
+    """-1…1. Отрицательный результат — жанр, который пользователь стабильно
+    оценивает низко; такой фильм должен опускаться, а не просто «не расти»."""
     scores = preferences.get("genres", {})
     if not scores:
         return 0.0
-    maximum = max(scores.values(), default=1.0)
-    affinity = sum(scores.get(genre, 0.0) / maximum for genre in _genres(film.get("genres")))
-    return min(1.0, affinity / 2.0)
+    scale = max((abs(value) for value in scores.values()), default=1.0) or 1.0
+    genres = _genres(film.get("genres"))
+    if not genres:
+        return 0.0
+    affinity = sum(scores.get(genre, 0.0) / scale for genre in genres)
+    return max(-1.0, min(1.0, affinity / 2.0))
 
 
 def _people_affinity(film: dict, preferences: dict) -> float:
+    """-1…1 по самому выраженному знакомому имени в титрах."""
     scores = preferences.get("people", {})
     if not scores:
         return 0.0
-    maximum = max(scores.values(), default=1.0)
+    scale = max((abs(value) for value in scores.values()), default=1.0) or 1.0
     people = [p.strip().casefold() for p in (str(film.get("actors") or "") + "," + str(film.get("directors") or "")).split(",") if p.strip()]
-    return min(1.0, max((scores.get(person, 0.0) / maximum for person in people), default=0.0))
+    known = [scores.get(person, 0.0) / scale for person in people if person in scores]
+    if not known:
+        return 0.0
+    return max(-1.0, min(1.0, max(known, key=abs)))
+
+
+def profile_confidence(preferences: dict) -> float:
+    """0…1 — насколько мы вправе опираться на личные вкусы. У нового человека
+    доверие низкое, и вес должен уходить в качество и запрос, а не в выдуманный
+    «твой любимый жанр»."""
+    return max(0.0, min(1.0, float(preferences.get("count", 0) or 0) / 25.0))
+
+
+def pair_fairness(a: float, b: float) -> float:
+    """Фильм, который один обожает, а второй терпеть не может, — плохой выбор
+    для пары. Минимум важнее среднего, поэтому он весит больше."""
+    return 0.55 * min(a, b) + 0.45 * ((a + b) / 2)
 
 
 def score_film(film: dict, weights: dict[str, float], preferences: dict, *, risk: str = "medium") -> dict:
+    """Разбор оценки на понятные слагаемые: запрос, качество, личные вкусы.
+
+    Веса зависят от того, сколько мы про человека знаем: у новичка личный вклад
+    почти не работает (и не должен — выдумывать «твой любимый жанр» не на чем),
+    поэтому его доля уходит в качество и соответствие запросу.
+    """
     tags = film_tags(film)
+    confidence = profile_confidence(preferences)
     direct = sum(weight * tags.get(tag, 0.0) for tag, weight in weights.items())
     max_direct = max(1.0, sum(max(0.0, value) for value in weights.values()))
-    match = min(38.0, 38.0 * direct / max_direct)
+    # Чем меньше знаем о вкусах — тем больше решает сам запрос и качество.
+    match = min(38.0, (38.0 + 8.0 * (1.0 - confidence)) * direct / max_direct)
     quality = _quality(film)
-    quality_score = min(25.0, max(0.0, (quality - 5.2) * 5.2))
-    affinity = _genre_affinity(film, preferences) * 12.0 + _people_affinity(film, preferences) * 5.0
+    quality_score = min(25.0 + 6.0 * (1.0 - confidence), max(0.0, (quality - 5.2) * 5.2))
+    genre_affinity = _genre_affinity(film, preferences)
+    people_affinity = _people_affinity(film, preferences)
+    # Отрицательная афинность теперь реально опускает фильм, а не обнуляется.
+    affinity = (genre_affinity * 12.0 + people_affinity * 5.0) * confidence
     wishlist = 5.0 if film.get("in_wishlist") else 0.0
     votes = max(0.0, _num(film.get("imdb_votes")))
     # ``less_known`` is a soft diversity signal, never a quality penalty.
     popularity = min(1.0, math.log10(votes + 1) / 6.0)
     novelty = (1.0 - popularity) * (5.0 if risk in ("medium", "high") else 1.5)
-    return {**film, "_tags": tags, "_quality": quality, "_score": round(match + quality_score + affinity + wishlist + novelty, 3),
-            "_match": match, "_novelty": novelty}
+    return {**film, "_tags": tags, "_quality": quality,
+            "_score": round(match + quality_score + affinity + wishlist + novelty, 3),
+            "_match": match, "_novelty": novelty, "_affinity": affinity,
+            "_confidence": confidence, "_quality_score": quality_score}
 
 
-def _select_distinct(ranked: list[dict], selected: list[dict], key: str) -> dict | None:
+def film_similarity(a: dict, b: dict) -> float:
+    """0…1 по пересечению жанров (Жаккар) плюс надбавка за общего режиссёра.
+    Нужна, чтобы «три варианта» не оказались тремя почти одинаковыми фильмами."""
+    genres_a, genres_b = set(_genres(a.get("genres"))), set(_genres(b.get("genres")))
+    jaccard = len(genres_a & genres_b) / len(genres_a | genres_b) if (genres_a | genres_b) else 0.0
+    directors_a = {p.strip().casefold() for p in str(a.get("directors") or "").split(",") if p.strip()}
+    directors_b = {p.strip().casefold() for p in str(b.get("directors") or "").split(",") if p.strip()}
+    same_director = 0.35 if directors_a & directors_b else 0.0
+    return min(1.0, jaccard + same_director)
+
+
+def _select_distinct(ranked: list[dict], selected: list[dict], key: str,
+                     *, relevance: float = 0.78) -> dict | None:
+    """Maximum Marginal Relevance: берём сильного кандидата, но штрафуем за
+    похожесть на уже выбранные — иначе «неожиданный вариант» оказывается
+    очередным триллером того же режиссёра."""
     selected_ids = {item["id"] for item in selected}
     selected_titles = {str(item.get("title") or "").casefold() for item in selected}
-    for item in sorted(ranked, key=lambda movie: (-movie[key], str(movie.get("title") or ""), movie["id"])):
-        title = str(item.get("title") or "").casefold()
-        if item["id"] not in selected_ids and title not in selected_titles:
-            return item
-    return None
+    pool = [item for item in ranked
+            if item["id"] not in selected_ids
+            and str(item.get("title") or "").casefold() not in selected_titles]
+    if not pool:
+        return None
+    if not selected:
+        return max(pool, key=lambda movie: (movie[key], -movie["id"]))
+    scale = max((abs(item[key]) for item in pool), default=1.0) or 1.0
+    def mmr(movie: dict) -> float:
+        penalty = max((film_similarity(movie, chosen) for chosen in selected), default=0.0)
+        return relevance * (movie[key] / scale) - (1.0 - relevance) * penalty
+    return max(pool, key=lambda movie: (mmr(movie), -movie["id"]))
 
 
 def _explanation(answers: dict, film: dict, language: str) -> str:
@@ -242,15 +325,22 @@ async def ranked_candidates(user_id: int, *, partner_id: int | None, weights: di
     if not pool:
         pool = candidates
     preferences = await db.get_recommendation_preferences(user_id)
-    if partner_id is not None:
-        partner_preferences = await db.get_recommendation_preferences(partner_id)
-        for bucket in ("genres", "people"):
-            combined = defaultdict(float, preferences.get(bucket, {}))
-            for key, value in partner_preferences.get(bucket, {}).items():
-                combined[key] += value
-            preferences[bucket] = dict(combined)
     risk = str(context.get("risk") or "medium")
-    ranked = [score_film(film, weights, preferences, risk=risk) for film in pool]
+    if partner_id is None:
+        ranked = [score_film(film, weights, preferences, risk=risk) for film in pool]
+    else:
+        # Для пары считаем ДВА профиля отдельно и сводим их честно: раньше веса
+        # просто складывались, и фильм, который один обожает, а второй не
+        # выносит, всё равно всплывал наверх.
+        partner_preferences = await db.get_recommendation_preferences(partner_id)
+        mine = {film["id"]: score_film(film, weights, preferences, risk=risk) for film in pool}
+        theirs = {film["id"]: score_film(film, weights, partner_preferences, risk=risk) for film in pool}
+        ranked = []
+        for film_id, scored in mine.items():
+            other = theirs[film_id]
+            fair = pair_fairness(scored["_score"], other["_score"])
+            ranked.append({**scored, "_score": round(fair, 3),
+                           "_pair_min": round(min(scored["_score"], other["_score"]), 3)})
     # Persist a very small derived-tag sample for auditability; no broad write
     # on a read path. Chosen result tags are enough to inspect rules later.
     return sorted(ranked, key=lambda movie: (-movie["_score"], str(movie.get("title") or ""), movie["id"]))
