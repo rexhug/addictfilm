@@ -259,21 +259,25 @@ test("bottom navigation never covers the last recommendation", async ({ page }) 
   await page.getByRole("button", { name: "Подбор" }).click();
   await page.getByRole("button", { name: "Подбор по настроению" }).click();
   for (let index = 0; index < 8; index += 1) await page.locator(".picker-option").first().click();
+  await expect(page.locator(".recommendation-film")).toHaveCount(3);
 
   for (const width of [320, 375, 390, 430]) {
     await page.setViewportSize({ width, height: 700 });
-    // Ждём, пока раскладка после смены ширины устаканится, иначе меряем прошлый кадр.
-    await page.waitForFunction(() => {
-      window.scrollTo(0, document.body.scrollHeight);
-      return Math.abs(window.scrollY + window.innerHeight - document.documentElement.scrollHeight) < 2;
-    });
+    // Меряем не позицию скролла, а зарезервированный запас: страница обязана
+    // продолжаться ниже последней карточки минимум на высоту плавающей панели.
+    // Такая проверка не зависит от того, докрутили мы страницу или нет.
     const clearance = await page.evaluate(() => {
       const cards = [...document.querySelectorAll(".recommendation-film")];
       const last = cards[cards.length - 1].getBoundingClientRect();
       const bar = document.getElementById("tabbar").getBoundingClientRect();
-      return { gap: bar.top - last.bottom, horizontal: document.documentElement.scrollWidth <= window.innerWidth };
+      return {
+        reserved: document.body.getBoundingClientRect().bottom - last.bottom,
+        barOverlay: window.innerHeight - bar.top,
+        horizontal: document.documentElement.scrollWidth <= window.innerWidth,
+      };
     });
-    expect(clearance.gap, `таббар накрывает карточку при ${width}px`).toBeGreaterThan(0);
+    expect(clearance.reserved, `таббар накрывает карточку при ${width}px`)
+      .toBeGreaterThan(clearance.barOverlay);
     expect(clearance.horizontal).toBeTruthy();
   }
 });
