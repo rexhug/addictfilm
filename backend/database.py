@@ -48,6 +48,7 @@ _SCHEMA_MIGRATION_EDITORIAL_COLLECTIONS = "2026-07-27-editorial-collections-v1"
 _SCHEMA_MIGRATION_FEATURED_COLLECTIONS = "2026-07-27-featured-collections-v1"
 _SCHEMA_MIGRATION_MEDIA_TYPE = "2026-07-27-media-type-v1"
 _SCHEMA_MIGRATION_MOVIE_ENRICHMENT = "2026-07-27-movie-enrichment-v1"
+_SCHEMA_MIGRATION_WORKER_HEARTBEATS = "2026-07-27-worker-heartbeats-v1"
 
 # Значения films.media_type. Дублируются константами, а не импортом media_type,
 # чтобы не затенять одноимённый аргумент get_or_create_film.
@@ -705,15 +706,6 @@ async def _apply_movie_enrichment_migration() -> None:
                          "ON movie_recommendation_profiles(feature_version, taxonomy_version)")
         # Ручная правка живёт отдельно и переживает любой пересчёт: иначе
         # исправление, сделанное руками, стирается следующим же обогащением.
-        # Пульс фоновых процессов: без него «очередь стоит» и «воркер умер»
-        # выглядят из диагностики одинаково.
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS worker_heartbeats (
-                name       TEXT PRIMARY KEY,
-                worker_id  TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-        """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS movie_recommendation_profile_overrides (
                 film_id       INTEGER PRIMARY KEY REFERENCES films(id) ON DELETE CASCADE,
@@ -722,6 +714,23 @@ async def _apply_movie_enrichment_migration() -> None:
                 created_by    BIGINT NOT NULL,
                 created_at    TEXT NOT NULL,
                 updated_at    TEXT NOT NULL
+            )
+        """)
+        await db.commit()
+
+
+async def _apply_worker_heartbeats_migration() -> None:
+    """Пульс фоновых процессов отдельной миграцией.
+
+    Урок: таблицу нельзя дописать в уже применённую миграцию — журнал её
+    пропустит, и в проде объекта просто не будет. Новый объект = новая версия.
+    """
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS worker_heartbeats (
+                name       TEXT PRIMARY KEY,
+                worker_id  TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )
         """)
         await db.commit()
@@ -745,6 +754,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_FEATURED_COLLECTIONS, _apply_featured_collections_migration),
         (_SCHEMA_MIGRATION_MEDIA_TYPE, _apply_media_type_migration),
         (_SCHEMA_MIGRATION_MOVIE_ENRICHMENT, _apply_movie_enrichment_migration),
+        (_SCHEMA_MIGRATION_WORKER_HEARTBEATS, _apply_worker_heartbeats_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
