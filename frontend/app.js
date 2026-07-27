@@ -915,7 +915,9 @@ async function showWishlistRandom() {
     const { item } = await api("/api/wishlist/random", { method: "POST", body: "{}" });
     const box = screen.querySelector(".picker-result");
     box.innerHTML = `<div class="picker-result-label">${esc(t("pick_wishlist_title"))}</div>${recommendationMovieCard(item, { onAnother: showWishlistRandom })}`;
-    wireRecommendationMovie(box, item, { mode: "random", onAnother: showWishlistRandom, returnTo: showPicker });
+    // Свой режим: сервер подтверждает показ по учёту рулетки, а не по
+    // истории рекомендаций каталога.
+    wireRecommendationMovie(box, item, { mode: "wishlist", onAnother: showWishlistRandom, returnTo: showPicker });
   } catch (error) {
     const message = error.message === "404" ? t("pick_wishlist_empty") : error.message;
     screen.querySelector(".picker-result").innerHTML = `${pickerError(message)}`;

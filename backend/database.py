@@ -2327,6 +2327,19 @@ async def get_recommendation_shown(user_id: int, film_id: int, mode: str) -> dic
     return {"role": row["role"], "score": row["score"]} if row else None
 
 
+async def was_wishlist_pick_shown(user_id: int, film_id: int) -> bool:
+    """Показывал ли сервер этот фильм в рулетке по списку «Хочу».
+
+    Своя таблица, а не recommendation_history: рулетка не рекомендация каталога,
+    и смешивать их источники правды нельзя.
+    """
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        row = await (await db.execute(
+            "SELECT 1 FROM wishlist_random_picks WHERE user_id=? AND film_id=? LIMIT 1",
+            (user_id, film_id))).fetchone()
+    return row is not None
+
+
 async def get_unrated_watched(user_id: int, since_days: int = 30, limit: int = 10) -> list[dict]:
     """Просмотренные за N дней, не оценённые пользователем (для напоминаний ботом)."""
     cutoff = (datetime.now(UTC) - timedelta(days=since_days)).isoformat()

@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import urljoin, urlparse
 
@@ -924,7 +925,7 @@ async def recommendation_feedback(film_id: int, body: RecommendationFeedbackBody
                                   user: dict = Depends(current_user)):
     if body.action not in {"opened", "want", "watched", "rejected", "another"}:
         raise HTTPException(status_code=422, detail="Некорректное действие")
-    if body.mode not in {"random", "quiz"}:
+    if body.mode not in {"random", "quiz", "wishlist"}:
         raise HTTPException(status_code=422, detail="Некорректный режим")
     if body.session_id and not await db.get_recommendation_session(user["id"], body.session_id):
         raise HTTPException(status_code=404, detail="Опрос не найден")
@@ -934,26 +935,66 @@ async def recommendation_feedback(film_id: int, body: RecommendationFeedbackBody
     # прислать любые значения и засорить аналитику подбора. Для квиза источник
     # правды — сохранённые карточки сессии, для случайного режима — запись
     # показа в истории.
-    role, score = await _server_recommendation_metadata(
+    metadata = await _server_recommendation_metadata(
         user["id"], film_id, body.mode, body.session_id)
-    await db.record_recommendation_history(user["id"], film_id, body.mode, session_id=body.session_id,
-                                           role=role, score=score, action=body.action)
+    if metadata is None:
+        # Не «запишем с пустыми полями», а отказ: строка истории без
+        # подтверждённого происхождения — это мусор в аналитике подбора.
+        raise HTTPException(status_code=409, detail="Фильм не относится к этой рекомендации")
+    # В историю пишем режим из разрешённого схемой набора. «Хочу»-рулетка имеет
+    # собственный учёт показов, но её отклонение — сигнал каталогу («не
+    # предлагать»), поэтому строка ложится в тот же журнал под ролью wishlist.
+    # Менять CHECK ради нового значения не нужно: роль различает источники.
+    history_mode = "random" if body.mode == "wishlist" else body.mode
+    await db.record_recommendation_history(user["id"], film_id, history_mode,
+                                           session_id=body.session_id,
+                                           role=metadata.role, score=metadata.score,
+                                           action=body.action)
     return {"ok": True}
 
 
+@dataclass(frozen=True)
+class RecommendationMetadata:
+    """Подтверждённое сервером происхождение показа."""
+    role: str | None
+    score: float | None
+
+
 async def _server_recommendation_metadata(user_id: int, film_id: int, mode: str,
-                                          session_id: str | None) -> tuple[str | None, float | None]:
-    if mode == "quiz" and session_id:
+                                          session_id: str | None) -> RecommendationMetadata | None:
+    """Метаданные показа ИЗ СВОИХ данных. None — сервер этот фильм в этом режиме
+    не показывал, и записывать обратную связь не о чем.
+
+    Между режимами не проваливаемся: если фильма нет в ЭТОЙ сессии квиза, брать
+    показ из другой сессии нельзя — роль оттуда не имеет отношения к текущей
+    карточке и портит аналитику ровно так же, как значение от клиента.
+    """
+    if mode == "quiz":
+        if not session_id:
+            return None
         session = await db.get_recommendation_session(user_id, session_id)
-        for item in (session or {}).get("results") or []:
-            if int(item.get("id") or 0) == film_id:
-                score = item.get("score")
-                return item.get("role"), (float(score) if score is not None else None)
-    shown = await db.get_recommendation_shown(user_id, film_id, mode)
-    if shown:
+        if not session:
+            return None
+        item = next((item for item in session.get("results") or []
+                     if int(item.get("id") or 0) == film_id), None)
+        if item is None:
+            return None
+        score = item.get("score")
+        return RecommendationMetadata(role=item.get("role"),
+                                      score=float(score) if score is not None else None)
+    if mode == "random":
+        shown = await db.get_recommendation_shown(user_id, film_id, "random")
+        if not shown:
+            return None
         score = shown.get("score")
-        return shown.get("role"), (float(score) if score is not None else None)
-    return None, None
+        return RecommendationMetadata(role=shown.get("role"),
+                                      score=float(score) if score is not None else None)
+    if mode == "wishlist":
+        # Рулетка ведёт свой учёт показов и не пишет в историю рекомендаций.
+        if not await db.was_wishlist_pick_shown(user_id, film_id):
+            return None
+        return RecommendationMetadata(role="wishlist", score=None)
+    return None
 
 
 # ── API: discovery (публичный каталог) ────────────────────────────────────────
