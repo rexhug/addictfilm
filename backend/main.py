@@ -31,7 +31,6 @@ import ratelimit
 import recommendations
 import search
 import sentry_sdk
-import smart_random
 import stats_cache
 import wikidata
 from auth import validate_init_data
@@ -41,7 +40,8 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from observability import RequestMetrics, observe_request
 from pydantic import BaseModel, Field
-from recommendation_questions import QUESTION_VERSION, next_question_id, public_question
+from recommendation import engines
+from recommendation_questions import next_question_id, public_question
 from starlette.middleware.gzip import GZipMiddleware
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -779,27 +779,29 @@ async def recommendation_random(body: RandomRecommendationBody, user: dict = Dep
     return {"item": item, "context": body.context}
 
 
-def _current_engine_versions() -> dict:
-    """Версии, которыми считается подбор ПРЯМО СЕЙЧАС. Пишутся в сессию при
-    создании и перезапуске, чтобы её можно было сверить после деплоя."""
-    from enrichment.taxonomy import MOVIE_FEATURE_VERSION, MOVIE_TAXONOMY_VERSION
+async def _engine_for_new_session(user_id: int) -> engines.EngineSpec:
+    """Версия НОВОЙ сессии. Единственное место, где смотрят на флаг.
 
-    return {
-        "question_version": QUESTION_VERSION,
-        "engine_version": recommendations.RECOMMENDATION_ENGINE_VERSION,
-        "policy_version": smart_random.SMART_RANDOM_POLICY_VERSION,
-        "taxonomy_version": MOVIE_TAXONOMY_VERSION,
-        "feature_version": MOVIE_FEATURE_VERSION,
-    }
+    Признак администратора резолвится на сервере — подделать его с клиента
+    нельзя.
+    """
+    is_admin = (await _effective_role(user_id)) in ("editor", "admin")
+    return engines.resolve_engine_for_new_session(is_admin=is_admin)
+
+
+def _current_engine_versions() -> dict:
+    """Версии V1 — то, чем считается подбор для обычного пользователя."""
+    return engines.V1.as_session_versions()
 
 
 def _session_versions_match(session: dict) -> bool:
     """Совпадает ли семантика сессии с текущей.
 
-    NULL — сессия старше версионирования: доигрываем её прежней логикой, а не
-    объявляем сломанной. Явное расхождение — уже другой движок.
+    Сверяемся не с «текущим флагом», а с реестром: V2-сессия остаётся V2, даже
+    если V2 только что выключили. NULL — сессия старше версионирования, её
+    доигрываем прежней логикой, а не объявляем сломанной.
     """
-    current = _current_engine_versions()
+    current = engines.resolve_for_session(session).as_session_versions()
     stored = {
         "question_version": session.get("version"),
         "engine_version": session.get("engine_version"),
@@ -813,9 +815,10 @@ def _session_versions_match(session: dict) -> bool:
 @app.post("/api/recommendations/quiz/start")
 async def recommendation_quiz_start(body: RecommendationStartBody, user: dict = Depends(current_user)):
     language = _recommendation_language(body.language)
+    engine = await _engine_for_new_session(user["id"])
     session = await db.create_recommendation_session(
-        user["id"], QUESTION_VERSION, secrets.token_urlsafe(18), "q1",
-        versions=_current_engine_versions())
+        user["id"], engine.question_version, secrets.token_urlsafe(18), "q1",
+        versions=engine.as_session_versions())
     return await _quiz_payload(session, language, user["id"])
 
 
@@ -872,8 +875,10 @@ async def recommendation_quiz_back(session_id: str, body: RecommendationStartBod
 
 @app.post("/api/recommendations/quiz/{session_id}/restart")
 async def recommendation_quiz_restart(session_id: str, body: RecommendationStartBody, user: dict = Depends(current_user)):
+    # Перезапуск — новый проход: берём версию, доступную СЕЙЧАС.
+    engine = await _engine_for_new_session(user["id"])
     session = await db.restart_recommendation_session(user["id"], session_id, "q1",
-                                                      versions=_current_engine_versions())
+                                                      versions=engine.as_session_versions())
     if not session:
         raise HTTPException(status_code=404, detail="Опрос не найден")
     return await _quiz_payload(session, _recommendation_language(body.language), user["id"])
@@ -1427,7 +1432,9 @@ async def admin_enrichment_status():
         "flags": {
             "mood_layer_enabled": recommendations.MOOD_LAYER_ENABLED,
             "mood_layer_admin_preview": recommendations.MOOD_LAYER_ADMIN_PREVIEW,
+            "smart_random_strategies": recommendations.SMART_RANDOM_STRATEGIES,
         },
+        "engines": engines.engine_state(is_admin=True),
         "queue": await enrichment_queue.stats(),
         "oldest_pending_job": await enrichment_repository.oldest_pending_job(),
         "worker_heartbeat": await enrichment_repository.heartbeat(),
