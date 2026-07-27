@@ -87,8 +87,17 @@ class MovieFeatureMerger:
                 continue
             confirmed_tones.add(tone)
 
-        # 3. Флаги аудитории против тона.
+        # 3. Флаг аудитории против измерений. Возрастной рейтинг — грубая шкала,
+        # и против выверенной мрачности он проигрывает: профиль, где стоит
+        # «семейное» при мрачности 0.8, противоречит сам себе. Снимаем ярлык, а
+        # не выбрасываем весь профиль — числа-то посчитаны верно.
         audience = set(deterministic.audience_flags)
+        if mood_values["darkness"] > 0.70:
+            for flag in (AudienceFlag.FAMILY_FRIENDLY, AudienceFlag.CHILD_ORIENTED):
+                if str(flag) in audience:
+                    audience.discard(str(flag))
+                    contradictions += 1
+        # Флаги аудитории против тона.
         for tone in list(confirmed_tones):
             forbidden = set(TONE_AUDIENCE_CONTRADICTIONS.get(tone, ()))
             if forbidden & audience:

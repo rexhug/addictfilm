@@ -183,10 +183,12 @@ def audience_from_certification(certification: str | None, age_rating: int | Non
         if label == key.replace("-", ""):
             flags.update(str(flag) for flag in mapped)
     if age_rating is not None:
+        # 12+ — это НЕ «семейное». Прежний порог помечал так «Марс атакует!»,
+        # и профиль сам себе противоречил: семейный ярлык при мрачности 0.75.
+        # Российская шкала: 0+/6+ — детское, 12+/16+ — подростковое (нейтрально),
+        # 18+ — взрослое.
         if age_rating <= 6:
             flags.update({str(AudienceFlag.FAMILY_FRIENDLY), str(AudienceFlag.CHILD_ORIENTED)})
-        elif age_rating <= 12:
-            flags.add(str(AudienceFlag.FAMILY_FRIENDLY))
         elif age_rating >= 18:
             flags.add(str(AudienceFlag.MATURE_THEMES))
     return frozenset(flags)

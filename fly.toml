@@ -15,10 +15,19 @@ primary_region = 'fra'
 # (Postgres/Neon) — том зайвий, але безпечний (просто не використовується).
 # Щоб прибрати: `fly volume destroy movies_data` (інтерактивно через flyctl).
 [[mounts]]
+  processes = ['web']
   source = 'movies_data'
   destination = '/data'
 
+# Обогащение каталога — отдельная группа процессов: воркер не должен ни получать
+# публичный HTTP, ни делить память с веб-процессом. `processes` в http_service
+# гарантирует, что трафик идёт только в web.
+[processes]
+  web = "sh -c 'uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}'"
+  worker = "python -m enrichment.worker"
+
 [http_service]
+  processes = ["web"]
   internal_port = 8080
   force_https = true
   auto_stop_machines = 'off'
@@ -33,5 +42,13 @@ primary_region = 'fra'
     path = '/healthz'
 
 [[vm]]
+  processes = ['web']
+  size = 'shared-cpu-1x'
+  memory = '256mb'
+
+# Том нужен только веб-процессу в SQLite-режиме: в облаке база — Postgres, и
+# воркеру монтировать нечего (том Fly нельзя подключить к двум машинам сразу).
+[[vm]]
+  processes = ['worker']
   size = 'shared-cpu-1x'
   memory = '256mb'

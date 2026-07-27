@@ -250,3 +250,23 @@ class ValidationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AudienceConflictTests(unittest.TestCase):
+    """Живой случай: «Марс атакует!» имел рейтинг 12+ и мрачность 0.75, из-за
+    чего профиль сам себе противоречил и признавался невалидным."""
+
+    def test_twelve_plus_is_not_family_friendly(self):
+        self.assertEqual(mappings.audience_from_certification(None, 12), frozenset())
+        self.assertIn(str(AudienceFlag.FAMILY_FRIENDLY),
+                      mappings.audience_from_certification(None, 6))
+
+    def test_dark_film_loses_a_family_label_instead_of_the_whole_profile(self):
+        deterministic = extraction.extract(_source(genre_names=("комедия", "фантастика"),
+                                                   certification="G",
+                                                   overview="Чёрная комедия про вторжение и гибель"))
+        merged, contradictions = merge.MovieFeatureMerger().merge(deterministic=deterministic)
+        if merged.mood["darkness"] > 0.70:
+            self.assertNotIn(str(AudienceFlag.FAMILY_FRIENDLY), merged.audience_flags)
+            self.assertGreater(contradictions, 0)
+        self.assertNotEqual(validation.validate(merged).level, "invalid")
