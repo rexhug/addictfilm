@@ -8,6 +8,7 @@
 Community-рейтинг = средняя оценка всех юзеров по фильму (агрегат user_films).
 Проверенные решения из movie_bot сохранены: WAL, VACUUM INTO-бэкапы, честные ничьи.
 """
+import asyncio
 import glob
 import json
 import logging
@@ -2281,6 +2282,11 @@ async def record_recommendation_history(user_id: int, film_id: int, mode: str, *
 _RANDOM_PICK_LOCK_NAMESPACE = 0x5241_4E44      # "RAND"
 
 
+# Внутрипроцессные замки для SQLite-режима. Их немного: это локальная разработка
+# и тесты, где пользователей единицы.
+_pick_locks: dict[int, asyncio.Lock] = {}
+
+
 @asynccontextmanager
 async def recommendation_pick_lock(user_id: int):
     """Сериализует «выбрать и записать показ» для одного пользователя.
@@ -2288,9 +2294,16 @@ async def recommendation_pick_lock(user_id: int):
     Без неё два одновременных запроса видят фильм доступным, оба его выбирают и
     оба пишут показ: человек получает одно и то же дважды, а анти-повтор,
     построенный на истории показов, обойдён.
+
+    «Один писатель в SQLite» тут НЕ спасает: корутины расходятся на каждом
+    await, и второй запрос успевает прочитать кандидатов до того, как первый
+    запишет показ. Поэтому в SQLite-режиме нужен обычный внутрипроцессный замок,
+    а в Postgres — консультативный, он работает и между машинами Fly.
     """
     if not _PG:
-        yield          # SQLite: писатель один, дополнительная блокировка не нужна
+        lock = _pick_locks.setdefault(int(user_id), asyncio.Lock())
+        async with lock:
+            yield
         return
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as lock_conn:
         await lock_conn.execute("SELECT pg_advisory_lock(?, ?)",
