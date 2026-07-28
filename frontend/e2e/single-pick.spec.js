@@ -329,17 +329,25 @@ for (const viewport of MOBILE_VIEWPORTS) {
 
 test("fullscreen loading never flashes the legacy header", async ({ page }) => {
   await openPicker(page);
+
+  let releaseRequest;
+  const requestGate = new Promise(resolve => {
+    releaseRequest = resolve;
+  });
+
   await page.route("**/api/wishlist/random", async route => {
-    await new Promise(resolve => setTimeout(resolve, 250));
+    await requestGate;
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({
       item: { ...baseMovie, id: 11, title: "Wishlist Pick", ...backdropHero },
       cycle: { cycle: 1, wishlist_size: 3, shown_in_cycle: 1, remaining_in_cycle: 2 },
     }) });
   });
 
-  void openWishlist(page);
+  await openWishlist(page);
   await expect(page.locator(".single-pick-state-screen")).toBeVisible();
   await expect(page.locator(".picker-head")).toHaveCount(0);
   await expect(page.locator("#tabbar")).toBeHidden();
+
+  releaseRequest();
   await expect(page.getByRole("heading", { name: "Wishlist Pick" })).toBeVisible();
 });
