@@ -36,7 +36,13 @@ logger = logging.getLogger(__name__)
 # ссылку, html-заглушку вместо картинки, обрезанный файл. Скачивать ради
 # скоринга весь каталог не нужно — размеры приходят от API.
 _PROBE_TIMEOUT = aiohttp.ClientTimeout(total=12, connect=5)
-_PROBE_MAX_BYTES = 12 * 1024 * 1024
+# Потолок и набор типов НЕ должны быть шире, чем у нашего же прокси картинок:
+# кадр, который прокси откажется отдать (413 или 415), проверку проходить не
+# должен — иначе мы сохраняем изображение, которое физически не сможем показать.
+# Согласованность закреплена тестом, который сверяет оба модуля.
+_PROBE_MAX_BYTES = 8 * 1024 * 1024
+_ACCEPTED_IMAGE_TYPES = frozenset({
+    "image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"})
 _PROBE_MIN_BYTES = 2048
 # Расхождение с метаданными в пределах округления допустимо, кратное — нет.
 _PROBE_SIZE_TOLERANCE = 0.05
@@ -232,7 +238,8 @@ async def probe_image_info(url: str, *, expected_width: int | None = None,
             if status_verdict != PROBE_OK:
                 return ImageProbeResult(status_verdict)
             # Дальше — только про содержимое ответа 200.
-            if not str(response.headers.get("Content-Type", "")).lower().startswith("image/"):
+            content_type = str(response.headers.get("Content-Type", "")).split(";", 1)[0].strip().lower()
+            if content_type not in _ACCEPTED_IMAGE_TYPES:
                 return ImageProbeResult(PROBE_REJECTED)
             head = b""
             size = 0

@@ -120,7 +120,7 @@ test("wishlist roulette shows a qualified backdrop across the full hero", async 
   expect(await backdrop.evaluate(node => getComputedStyle(node).objectFit)).toBe("cover");
   // Метаданные фильма читаются поверх затемнения, а не поверх голого кадра.
   await expect(page.locator(".single-pick-media-shade")).toBeAttached();
-  for (const name of ["Открыть фильм", "В «Хочу»", "Уже смотрел", "Другой вариант", "Не предлагать"]) {
+  for (const name of ["Открыть фильм", "Уже смотрел", "Другой вариант", "Не предлагать"]) {
     await expect(page.getByRole("button", { name })).toBeVisible();
   }
 });
@@ -154,6 +154,53 @@ test("a poster fallback is centered and never stretched horizontally", async ({ 
   // Резкая и размытая копия — один URL: вторая отрисовка идёт из кэша браузера,
   // а не второй загрузкой по сети.
   expect(await poster.getAttribute("src")).toBe(await blur.getAttribute("src"));
+});
+
+test("images are requested at display size, not at proof size", async ({ page }) => {
+  // Сохранённые 1920x1080 доказывают пригодность кадра, но блок занимает
+  // ~1050 физических пикселей: показывать 1920 значит удвоить трафик впустую.
+  await openPicker(page, {
+    wishlistItems: [{ ...baseMovie, id: 11, title: "Wishlist Pick",
+      hero_url: "https://avatars.mds.yandex.net/get-ott/1/x/1920x1080",
+      hero_type: "backdrop", hero_source: "kinopoisk", hero_quality_score: 0.935 }],
+  });
+  await openWishlist(page);
+
+  const src = await page.locator(".single-pick-backdrop").getAttribute("src");
+  const source = decodeURIComponent(new URL(src, "http://x").searchParams.get("u"));
+  expect(source).toBe("https://avatars.mds.yandex.net/get-ott/1/x/1280x720");
+});
+
+test("the fullscreen poster is not downscaled below the element it fills", async ({ page }) => {
+  // Прежде сюда уходил small=true из тайлов: источник 300x450 на элемент шириной
+  // ~690 физических пикселей — заметно мыльно.
+  const poster = "https://avatars.mds.yandex.net/get-kinopoisk-image/1/y/600x900";
+  await openPicker(page, {
+    randomItems: [{ ...baseMovie, poster_url: poster, hero_url: poster,
+      hero_type: "poster_blur", hero_source: "poster", hero_quality_score: 0.5 }],
+  });
+  await openSmartRandom(page);
+
+  const src = await page.locator(".single-pick-poster").getAttribute("src");
+  const source = decodeURIComponent(new URL(src, "http://x").searchParams.get("u"));
+  expect(source).toBe(poster);
+  expect(source).not.toContain("300x450");
+});
+
+test("the wishlist screen hides an action that cannot change anything", async ({ page }) => {
+  // Фильм рулетки уже лежит в «Хочу»: кнопка там показывала галочку, ничего
+  // при этом не меняя.
+  await openPicker(page);
+  await openWishlist(page);
+  await expect(page.getByRole("button", { name: "В «Хочу»" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Уже смотрел" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Открыть фильм" })).toBeVisible();
+});
+
+test("smart random keeps the wishlist action, where it does change something", async ({ page }) => {
+  await openPicker(page);
+  await openSmartRandom(page);
+  await expect(page.getByRole("button", { name: "В «Хочу»" })).toBeVisible();
 });
 
 test("a broken backdrop degrades to the poster without asking for another film", async ({ page }) => {
@@ -204,12 +251,12 @@ test("feedback keeps the wishlist mode on the wishlist screen", async ({ page })
   const state = await openPicker(page);
   await openWishlist(page);
 
-  await page.getByRole("button", { name: "В «Хочу»" }).click();
+  await page.getByRole("button", { name: "Другой вариант" }).click();
   await expect.poll(() => state.feedback.length).toBe(1);
   await page.getByRole("button", { name: "Не предлагать" }).click();
   await expect.poll(() => state.feedback.length).toBe(2);
 
-  expect(state.feedback.map(entry => entry.action)).toEqual(["want", "rejected"]);
+  expect(state.feedback.map(entry => entry.action)).toEqual(["another", "rejected"]);
   expect(state.feedback.every(entry => entry.mode === "wishlist")).toBe(true);
   // «Не предлагать» — про один фильм: остаёмся на экране подбора, а не улетаем
   // на стартовое меню.
@@ -244,7 +291,7 @@ test("the screen fits a 320px viewport without horizontal overflow", async ({ pa
     document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 
-  for (const name of ["Открыть фильм", "В «Хочу»", "Уже смотрел", "Не предлагать"]) {
+  for (const name of ["Открыть фильм", "Уже смотрел", "Не предлагать"]) {
     await expect(page.getByRole("button", { name })).toBeVisible();
   }
   // Прокрутив экран до конца, человек обязан дотянуться до последнего действия:

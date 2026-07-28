@@ -169,6 +169,17 @@ class HeroApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["hero_source"], "kinopoisk")
         self.assertEqual(item["hero_type"], "backdrop")
 
+    async def test_the_pipeline_never_accepts_what_the_proxy_will_not_serve(self):
+        """Кадр, который наш же прокси откажется отдать, сохранять нельзя.
+
+        Иначе в каталоге оседает изображение, которое физически невозможно
+        показать: проверка приняла 12 МБ или image/svg+xml, а /img вернёт 413
+        или 415. Эти два набора обязаны сходиться, и сходиться автоматически.
+        """
+        from enrichment import hero as hero_pipeline
+        self.assertLessEqual(hero_pipeline._PROBE_MAX_BYTES, main._MAX_IMAGE_BYTES)
+        self.assertTrue(hero_pipeline._ACCEPTED_IMAGE_TYPES.issubset(main._ALLOWED_IMG_TYPES))
+
     async def test_the_fanart_cdn_is_the_only_host_added_to_the_image_proxy(self):
         self.assertIn("assets.fanart.tv", main._ALLOWED_IMG_HOSTS)
         self.assertTrue(main._is_allowed_image_url("https://assets.fanart.tv/fanart/movies/1/a.jpg"))

@@ -424,6 +424,16 @@ class ProbeStatusTests(unittest.IsolatedAsyncioTestCase):
         # Самый «лёгкий» настоящий кадр в каталоге — 247 КБ на 1920x1080.
         self.assertEqual(await self._probe(body=_jpeg(size=247 * 1024)), hero.PROBE_OK)
 
+    async def test_a_type_the_proxy_cannot_serve_is_rejected(self):
+        # SVG формально «картинка», но /img отдаёт только пять растровых типов.
+        for ctype in ("image/svg+xml", "image/bmp", "image/x-icon"):
+            self.assertEqual(await self._probe(ctype=ctype, body=_jpeg()),
+                             hero.PROBE_REJECTED, ctype)
+
+    async def test_a_content_type_with_a_charset_is_still_accepted(self):
+        self.assertEqual(await self._probe(ctype="image/jpeg; charset=binary", body=_jpeg()),
+                         hero.PROBE_OK)
+
     async def test_a_truncated_file_is_rejected(self):
         self.assertEqual(await self._probe(body=b"\xff\xd8" + b"\x00" * 100),
                          hero.PROBE_REJECTED)
