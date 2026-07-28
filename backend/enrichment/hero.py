@@ -274,18 +274,24 @@ async def _try_kinopoisk(film: dict, *, probe_session) -> tuple[hero_media.HeroS
     стороннего API здесь нет. Поэтому канал продолжает работать, когда Fanart
     недоступен, — ради этого он и заведён.
     """
-    url = str(film.get("backdrop_url") or "").strip()
-    if not url:
-        return None, False
-    result = await probe_image_info(url, session=probe_session)
-    if result.verdict == PROBE_UNKNOWN:
-        return None, True
-    if result.verdict == PROBE_REJECTED:
-        return None, False
-    # Размеры взяты из заголовка файла. Их отсутствие — не «наверное подойдёт»,
-    # а «не доказано»: такой кадр в полноэкранный блок не попадает.
-    return hero_media.choose_kinopoisk_background(
-        url, width=result.width, height=result.height), False
+    # Сохранённый размер в ссылке — это то, что вернул API, а не единственная
+    # доступная редакция файла: тот же CDN по тому же пути отдаёт крупнее.
+    # Пробуем предпочтительный размер, затем исходный. Решает всё равно
+    # заголовок скачанного файла, а не наши ожидания от URL.
+    for candidate in hero_media.kinopoisk_rendition_candidates(film.get("backdrop_url")):
+        result = await probe_image_info(candidate, session=probe_session)
+        if result.verdict == PROBE_UNKNOWN:
+            # Сеть, а не файл: второй размер просить бессмысленно, вернёмся позже.
+            return None, True
+        if result.verdict == PROBE_REJECTED:
+            continue      # этой редакции нет — пробуем следующую
+        # Размеры взяты из заголовка файла. Их отсутствие — не «наверное
+        # подойдёт», а «не доказано»: такой кадр в полноэкранный блок не попадает.
+        selection = hero_media.choose_kinopoisk_background(
+            candidate, width=result.width, height=result.height)
+        if selection is not None:
+            return selection, False
+    return None, False
 
 
 async def _try_fanart(film: dict, *, session, probe_session,

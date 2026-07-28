@@ -734,5 +734,99 @@ class KinopoiskHeroTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["hero_url"], "https://kp/wide.jpg")
 
 
+class KinopoiskRenditionTests(unittest.IsolatedAsyncioTestCase):
+    """Сохранённый в ссылке размер — это то, что вернул API, а не единственная
+    доступная редакция. Замер на проде: 1344x756 → 383 КБ, 1920x1080 → 696 КБ
+    (настоящие 1920x1080), orig → 3840x2160. Без запроса большей редакции весь
+    канал давал бы ноль кадров: в каталоге 152 ссылки, и все на 1344x756."""
+
+    def test_a_yandex_rendition_is_upgraded_first_and_falls_back_to_the_original(self):
+        candidates = hero_media.kinopoisk_rendition_candidates(
+            "https://avatars.mds.yandex.net/get-ott/239697/2a00000/1344x756")
+        self.assertEqual(candidates, [
+            "https://avatars.mds.yandex.net/get-ott/239697/2a00000/1920x1080",
+            "https://avatars.mds.yandex.net/get-ott/239697/2a00000/1344x756",
+        ])
+
+    def test_an_already_preferred_rendition_is_not_duplicated(self):
+        url = "https://avatars.mds.yandex.net/get-ott/239697/2a00000/1920x1080"
+        self.assertEqual(hero_media.kinopoisk_rendition_candidates(url), [url])
+
+    def test_a_foreign_host_is_never_rewritten(self):
+        # Явное требование: TMDB как источник не подключаем. Его ссылки берём
+        # ровно такими, какие уже лежат в каталоге.
+        url = "https://image.tmdb.org/t/p/w1280/abc.jpg"
+        self.assertEqual(hero_media.kinopoisk_rendition_candidates(url), [url])
+
+    def test_a_url_without_a_size_directive_is_left_alone(self):
+        url = "https://avatars.mds.yandex.net/get-ott/239697/2a00000"
+        self.assertEqual(hero_media.kinopoisk_rendition_candidates(url), [url])
+
+    def test_an_empty_url_yields_no_candidates(self):
+        self.assertEqual(hero_media.kinopoisk_rendition_candidates(None), [])
+        self.assertEqual(hero_media.kinopoisk_rendition_candidates("  "), [])
+
+
+class KinopoiskRenditionFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.old = (db.DB_PATH, db.DATABASE_URL, db._PG)
+        db.DB_PATH = str(Path(self.temp.name) / "rend.db")
+        db.DATABASE_URL, db._PG = "", False
+        await db.init_db()
+        hero.reset_circuit()
+        self.addCleanup(hero.reset_circuit)
+        for name in ("KINOPOISK_HERO_ENABLED", "FANART_HERO_ENABLED"):
+            patcher = mock.patch.object(hero, name, name == "KINOPOISK_HERO_ENABLED")
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.film_id = await db.get_or_create_film(
+            imdb_id="tt0000001", title="Фильм", genres="драма", media_type="movie",
+            poster_url="https://p/1.jpg", year="2010",
+            backdrop_url="https://avatars.mds.yandex.net/get-ott/1/x/1344x756")
+
+    async def asyncTearDown(self):
+        db.DB_PATH, db.DATABASE_URL, db._PG = self.old
+        self.temp.cleanup()
+
+    def _probe(self, by_url):
+        asked: list[str] = []
+
+        async def _probe_info(url, *, expected_width=None, expected_height=None, session=None):
+            asked.append(url)
+            return by_url(url)
+        return asked, mock.patch.object(hero, "probe_image_info", new=_probe_info)
+
+    async def test_the_bigger_rendition_is_stored_when_it_really_is_bigger(self):
+        asked, patch_probe = self._probe(
+            lambda url: hero.ImageProbeResult(hero.PROBE_OK, 1920, 1080)
+            if url.endswith("1920x1080") else hero.ImageProbeResult(hero.PROBE_OK, 1344, 756))
+        with patch_probe:
+            await hero.refresh_due_heroes(limit=1)
+        film = await db.get_film(self.film_id)
+        self.assertTrue(film["hero_url"].endswith("1920x1080"))
+        self.assertEqual((film["hero_width"], film["hero_height"]), (1920, 1080))
+        self.assertEqual(asked, ["https://avatars.mds.yandex.net/get-ott/1/x/1920x1080"],
+                         "исходный размер спрашивать незачем — большой подошёл")
+
+    async def test_a_missing_bigger_rendition_falls_back_to_the_stored_one(self):
+        asked, patch_probe = self._probe(
+            lambda url: hero.ImageProbeResult(hero.PROBE_REJECTED)
+            if url.endswith("1920x1080") else hero.ImageProbeResult(hero.PROBE_OK, 1344, 756))
+        with patch_probe:
+            await hero.refresh_due_heroes(limit=1)
+        self.assertEqual(len(asked), 2)
+        # 1344x756 не проходит порог — честно уходим в постер, а не растягиваем.
+        self.assertEqual((await db.get_film(self.film_id))["hero_type"], "poster_blur")
+
+    async def test_a_network_failure_does_not_trigger_a_second_rendition_request(self):
+        asked, patch_probe = self._probe(lambda _url: hero.ImageProbeResult(hero.PROBE_UNKNOWN))
+        with patch_probe:
+            report = await hero.refresh_due_heroes(limit=1)
+        self.assertEqual(len(asked), 1, "сеть лежит — второй размер просить бессмысленно")
+        self.assertEqual(report.unavailable, 1)
+        self.assertIsNone((await db.get_film(self.film_id))["hero_checked_at"])
+
+
 if __name__ == "__main__":
     unittest.main()

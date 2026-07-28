@@ -318,7 +318,9 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
                                    language="00", likes=20, width=1920, height=1080)
         with patch.object(hero, "FANART_HERO_ENABLED", True), \
              patch.object(fanart, "get_movie_backgrounds", new=AsyncMock(return_value=[image])), \
-             patch.object(hero, "probe_image", new=AsyncMock(return_value=True)):
+             patch.object(hero, "probe_image_info",
+                          new=AsyncMock(return_value=hero.ImageProbeResult(
+                              hero.PROBE_OK, 1920, 1080))):
             first = await hero.refresh_due_heroes(limit=10)
         self.assertEqual(first.stored, 1)
 

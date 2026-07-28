@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -149,6 +150,30 @@ def score_kinopoisk_background(width: int, height: int) -> float:
     """
     score = _resolution_score(width, height) * 0.65 + _ratio_score(width, height) * 0.35
     return round(max(0.0, min(1.0, score)), 4)
+
+
+# Kinopoisk сохраняет ссылку с директивой размера в конце пути. 1344x756 —
+# это НЕ единственная доступная редакция файла, а всего лишь то, что вернул API:
+# тот же CDN по тому же пути отдаёт и 1920x1080, и orig. Замер на проде:
+# 1344x756 → 383 КБ, 1920x1080 → 696 КБ (настоящие 1920x1080), orig → 1.7 МБ
+# (3840x2160). orig для мобильного экрана слишком тяжёлый, поэтому просим 1920.
+#
+# Это не новый источник и не новое API: тот же хост, тот же файл, другая
+# директива. Решение всё равно принимает заголовок скачанного изображения.
+_RENDITION_HOST = "avatars.mds.yandex.net"
+_PREFERRED_RENDITION = "1920x1080"
+_RENDITION_SUFFIX = re.compile(r"/\d{3,4}x\d{3,4}$")
+
+
+def kinopoisk_rendition_candidates(url: str | None) -> list[str]:
+    """Ссылки на ОДИН и тот же кадр, от предпочтительного размера к исходному."""
+    normalized = str(url or "").strip()
+    if not normalized:
+        return []
+    if _RENDITION_HOST not in normalized or not _RENDITION_SUFFIX.search(normalized):
+        return [normalized]
+    upgraded = _RENDITION_SUFFIX.sub("/" + _PREFERRED_RENDITION, normalized)
+    return [upgraded] if upgraded == normalized else [upgraded, normalized]
 
 
 def choose_kinopoisk_background(url: str | None, *, width: int | None,
