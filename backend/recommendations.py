@@ -6,10 +6,13 @@ module is intentionally small enough to unit-test with a handful of films.
 """
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
 import secrets
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 import database as db
 import hero_media
@@ -22,6 +25,7 @@ import text_matching
 from recommendation_questions import answer_state
 
 TAG_VERSION = "v1"
+logger = logging.getLogger(__name__)
 # Версия семантики подбора. Меняется, когда результат при тех же ответах стал бы
 # другим; сессии хранят её, чтобы не досчитываться чужой логикой после деплоя.
 RECOMMENDATION_ENGINE_VERSION = "recommendation-v1"
@@ -339,6 +343,8 @@ def public_movie(movie: dict, *, role: str, codes: list[str], language: str) -> 
         "rating": _display_rating(movie),
         "plot": movie.get("plot"), "poster_url": hero_media.display_poster_url(movie),
         "backdrop_url": movie.get("backdrop_url"),
+        "movie_flow_state": movie.get("movie_flow_state") or "auto",
+        "movie_flow_reason": movie.get("movie_flow_reason"),
         # Изображение для полноэкранного экрана выбирает сервер: тип и источник
         # уже проверены, клиенту остаётся только переключить слой отрисовки.
         **hero_media.hero_payload(movie),
@@ -462,9 +468,21 @@ def profile_mood_features(movie: dict):
 
 
 async def ranked_candidates(user_id: int, *, partner_id: int | None, weights: dict[str, float], filters: dict,
-                            context: dict, minimum: int = 18) -> list[dict]:
-    candidates = await db.get_recommendation_candidates(user_id, partner_id)
-    candidates = await _warm_catalog_if_sparse(user_id, partner_id, weights, candidates, minimum)
+                            context: dict, minimum: int = 18,
+                            exclude_shown_since: str | None | object = db._DEFAULT_RECOMMENDATION_COOLDOWN,
+                            excluded_film_ids: set[int] | frozenset[int] | None = None,
+                            require_art: bool = True, warm_catalog: bool = True,
+                            relax_filters: bool = True) -> list[dict]:
+    candidates = await db.get_recommendation_candidates(
+        user_id, partner_id, exclude_shown_since=exclude_shown_since,
+        excluded_film_ids=excluded_film_ids, require_art=require_art)
+    if warm_catalog:
+        await _warm_catalog_if_sparse(user_id, partner_id, weights, candidates, minimum)
+        # Re-read with this tier's cooldown. The warmer intentionally owns only
+        # discovery; it must never silently restore the default seven-day rule.
+        candidates = await db.get_recommendation_candidates(
+            user_id, partner_id, exclude_shown_since=exclude_shown_since,
+            excluded_film_ids=excluded_film_ids, require_art=require_art)
     # Подбор ФИЛЬМОВ: сериалы, эпизоды и короткий метр здесь неуместны, каким бы
     # высоким ни был их рейтинг. Тип берётся из метаданных провайдера, а не из
     # длительности (22 минуты — это и мультсериал, и короткометражка).
@@ -481,9 +499,13 @@ async def ranked_candidates(user_id: int, *, partner_id: int | None, weights: di
     # First strict, then gently relaxed so a narrow runtime/year choice never
     # leaves a real user with an empty screen.
     strict = [film for film in candidates if _matches_filters(film, filters)]
-    pool = strict if len(strict) >= minimum else [film for film in candidates if _matches_filters(film, filters, relaxed=True)]
-    if not pool:
+    pool = strict
+    if relax_filters and len(strict) < minimum:
+        pool = [film for film in candidates if _matches_filters(film, filters, relaxed=True)]
+    if not pool and relax_filters:
         pool = candidates
+    if not pool:
+        return []
     preferences = await db.get_recommendation_preferences(user_id)
     risk = str(context.get("risk") or "medium")
     if partner_id is None:
@@ -700,7 +722,9 @@ async def quiz_results(user_id: int, answers: dict[str, str], language: str,
     """engine_version приходит ИЗ СЕССИИ, а не из флага: сессия, начатая одной
     семантикой, обязана досчитаться ею же."""
     weights, filters, context = answer_state(answers)
-    ranked = await ranked_candidates(user_id, partner_id=partner_id, weights=weights, filters=filters, context=context)
+    ranked = await ranked_candidates(
+        user_id, partner_id=partner_id, weights=weights, filters=filters,
+        context=context, relax_filters=False)
     if not ranked:
         return []
     mood_on = mood_layer_active(is_admin=is_admin)
@@ -789,6 +813,59 @@ def _legacy_random_pick(ranked: list[dict], language: str, partner_id: int | Non
     return public_movie(movie, role="random", codes=codes, language=language)
 
 
+@dataclass(frozen=True)
+class AvailabilityTier:
+    name: str
+    exclude_shown_since: str | None = None
+    exclude_recent_count: int = 0
+    require_art: bool = True
+    allow_unqualified: bool = False
+
+
+def _availability_tiers(now: datetime) -> tuple[AvailabilityTier, ...]:
+    return (
+        AvailabilityTier("fresh_7d", (now - timedelta(days=7)).isoformat()),
+        AvailabilityTier("fresh_24h", (now - timedelta(hours=24)).isoformat()),
+        AvailabilityTier("cycle_12", None, 12),
+        AvailabilityTier("cycle_1", None, 1),
+        AvailabilityTier("any_qualified"),
+        AvailabilityTier("any_eligible", require_art=False, allow_unqualified=True),
+    )
+
+
+async def _available_random_pool(
+        user_id: int, partner_id: int | None, profile_confidence_value: float
+        ) -> tuple[list[dict], AvailabilityTier, dict | None, str | None, bool]:
+    """Relax only display history; watched/rejected/moderation stay immutable."""
+    history = await db.get_recent_recommendation_shows(user_id, partner_id)
+    recent_ids = [int(row["film_id"]) for row in history]
+    previous_id = recent_ids[0] if recent_ids else None
+    for index, tier in enumerate(_availability_tiers(datetime.now(UTC))):
+        excluded = set(recent_ids[:tier.exclude_recent_count])
+        ranked = await ranked_candidates(
+            user_id, partner_id=partner_id, weights={}, filters={},
+            context={"risk": "medium"}, minimum=12,
+            exclude_shown_since=tier.exclude_shown_since,
+            excluded_film_ids=excluded, require_art=tier.require_art,
+            warm_catalog=index == 0)
+        if not ranked:
+            continue
+        # Even after the cycle has fully relaxed, never repeat the immediately
+        # previous card while another eligible option exists.
+        if previous_id is not None and tier.exclude_recent_count == 0:
+            alternatives = [movie for movie in ranked if int(movie["id"]) != previous_id]
+            if alternatives:
+                ranked = alternatives
+        movie, strategy, fallback = smart_random.select(
+            ranked, profile_confidence=profile_confidence_value,
+            allow_unqualified=tier.allow_unqualified)
+        if movie is not None:
+            logger.info("smart_random availability_tier=%s candidate_count=%s",
+                        tier.name, len(ranked))
+            return ranked, tier, movie, strategy, fallback
+    return [], _availability_tiers(datetime.now(UTC))[-1], None, None, False
+
+
 async def random_recommendation(user_id: int, language: str, partner_id: int | None = None) -> dict | None:
     """Умный случайный выбор: сначала стратегия, потом фильм внутри неё.
 
@@ -796,17 +873,16 @@ async def random_recommendation(user_id: int, language: str, partner_id: int | N
     поэтому и причины здесь только фактические. Запись показа — в
     pick_and_record_smart_random, чтобы выбор и учёт были атомарны.
     """
-    ranked = await ranked_candidates(user_id, partner_id=partner_id, weights={}, filters={},
-                                     context={"risk": "medium"}, minimum=12)
-    if not ranked:
-        return None
-    if not SMART_RANDOM_STRATEGIES:
-        return _legacy_random_pick(ranked, language, partner_id)
     preferences = await db.get_recommendation_preferences(user_id)
     confidence = profile_confidence(preferences)
-    movie, strategy, used_fallback = smart_random.select(ranked, profile_confidence=confidence)
+    ranked, tier, movie, strategy, used_fallback = await _available_random_pool(
+        user_id, partner_id, confidence)
     if movie is None:
         return None
+    if not SMART_RANDOM_STRATEGIES:
+        result = _legacy_random_pick(ranked, language, partner_id)
+        result["availability_tier"] = tier.name
+        return result
     await db.save_recommendation_tags(movie["id"], movie["_tags"], version=TAG_VERSION)
     codes = smart_random.reason_codes_for(strategy, movie, pair=partner_id is not None)
     result = public_movie(movie, role="random", codes=codes, language=language)
@@ -814,4 +890,5 @@ async def random_recommendation(user_id: int, language: str, partner_id: int | N
     # а старые клиенты просто игнорируют лишнее поле.
     result["strategy"] = strategy
     result["strategy_fallback"] = used_fallback
+    result["availability_tier"] = tier.name
     return result

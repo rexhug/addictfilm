@@ -23,16 +23,16 @@ EXCLUDED_FROM_MOVIE_FLOW = (SERIES, EPISODE, SHORT)
 MOVIE_FLOW_AUTO = "auto"
 MOVIE_FLOW_ALLOW = "allow"
 MOVIE_FLOW_EXCLUDE = "exclude"
-MOVIE_FLOW_STATES = (MOVIE_FLOW_AUTO, MOVIE_FLOW_ALLOW, MOVIE_FLOW_EXCLUDE)
+MOVIE_FLOW_STATES = frozenset((MOVIE_FLOW_AUTO, MOVIE_FLOW_ALLOW, MOVIE_FLOW_EXCLUDE))
 
 # Exact, normalized genre tokens which describe a broadcast/program rather than
 # a narrative feature.  Exact matching is intentional: generic ``sport`` films
 # remain eligible, while a provider-labelled reality/live event does not.
 _NON_NARRATIVE_GENRES = frozenset({
-    "реальное тв", "реалити-шоу", "reality-tv", "reality tv",
-    "ток-шоу", "talk-show", "talk show",
+    "реальное тв", "reality tv",
+    "ток шоу", "talk show",
     "новости", "news",
-    "игра", "game-show", "game show",
+    "игра шоу", "game show",
 })
 
 # kinopoisk.dev: movie | tv-series | cartoon | anime | animated-series | tv-show.
@@ -84,7 +84,7 @@ def _has_short_genre(film: dict) -> bool:
 def normalized_genres(film: dict) -> frozenset[str]:
     """Comma-separated provider genres as exact, case-insensitive tokens."""
     return frozenset(
-        token.strip().casefold()
+        token.strip().casefold().replace("_", " ").replace("-", " ")
         for token in str((film or {}).get("genres") or "").split(",")
         if token.strip()
     )
@@ -93,8 +93,8 @@ def normalized_genres(film: dict) -> frozenset[str]:
 @dataclass(frozen=True)
 class MovieFlowDecision:
     eligible: bool
-    reason: str
-    source: str
+    reason: str | None = None
+    source: str = "automatic"
 
 
 def resolve(film: dict) -> str:
@@ -130,14 +130,14 @@ def movie_flow_decision(film: dict) -> MovieFlowDecision:
     state = str((film or {}).get("movie_flow_state") or MOVIE_FLOW_AUTO).strip().casefold()
     manual_reason = str((film or {}).get("movie_flow_reason") or "").strip()
     if state == MOVIE_FLOW_ALLOW:
-        return MovieFlowDecision(True, manual_reason or "manual_allow", "manual")
+        return MovieFlowDecision(True, source="manual")
     if state == MOVIE_FLOW_EXCLUDE:
-        return MovieFlowDecision(False, manual_reason or "manual_exclude", "manual")
+        return MovieFlowDecision(False, manual_reason or "manual_exclusion", "manual")
 
     resolved = resolve(film)
     if resolved in EXCLUDED_FROM_MOVIE_FLOW:
-        return MovieFlowDecision(False, f"media_type:{resolved}", "automatic")
+        return MovieFlowDecision(False, f"provider_type:{resolved}")
     blocked = sorted(normalized_genres(film) & _NON_NARRATIVE_GENRES)
     if blocked:
-        return MovieFlowDecision(False, f"non_narrative_genre:{blocked[0]}", "automatic")
-    return MovieFlowDecision(True, "eligible_movie", "automatic")
+        return MovieFlowDecision(False, f"non_narrative_genre:{blocked[0]}")
+    return MovieFlowDecision(True)

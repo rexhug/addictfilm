@@ -2578,7 +2578,7 @@ async def get_recommendation_candidates(
         return [row for row in rows if media_type.is_movie_flow_eligible(row)]
 
 
-async def get_recent_recommendation_history(
+async def get_recent_recommendation_shows(
         user_id: int, partner_id: int | None = None, *, limit: int = 700) -> list[dict]:
     """Newest unique shown films, pair-aware, used to relax only cooldown."""
     users = [int(user_id)]
@@ -2594,6 +2594,12 @@ async def get_recent_recommendation_history(
             (*users, max(1, min(int(limit), 900))),
         )
         return [dict(row) for row in await cur.fetchall()]
+
+
+# Backward-compatible name for older internal callers. New code should use the
+# explicit ``shows`` name because rejected/opened history is intentionally not
+# part of the soft cooldown.
+get_recent_recommendation_history = get_recent_recommendation_shows
 
 
 async def get_recommendation_preferences(user_id: int) -> dict:

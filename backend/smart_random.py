@@ -21,11 +21,13 @@ SMART_RANDOM_POLICY_VERSION = "smart-random-v1"
 RELIABLE = "reliable"
 TASTE_MATCH = "taste_match"
 DISCOVERY = "discovery"
+AVAILABLE = "available"
 
 STRATEGY_REASONS = {
     RELIABLE: reason_codes.RANDOM_RELIABLE,
     TASTE_MATCH: reason_codes.RANDOM_TASTE_MATCH,
     DISCOVERY: reason_codes.RANDOM_DISCOVERY,
+    AVAILABLE: reason_codes.RANDOM_AVAILABLE,
 }
 
 
@@ -109,7 +111,8 @@ def _weight_for(strategy: str, movie: dict) -> float:
 
 
 def select(ranked: list[dict], *, profile_confidence: float,
-           policy: SmartRandomPolicyConfig = DEFAULT_POLICY, rng=None
+           policy: SmartRandomPolicyConfig = DEFAULT_POLICY, rng=None,
+           allow_unqualified: bool = False
            ) -> tuple[dict | None, str, bool]:
     """(фильм, стратегия, был ли откат).
 
@@ -117,7 +120,7 @@ def select(ranked: list[dict], *, profile_confidence: float,
     но и подменять обещание молча нельзя — стратегия возвращается наружу.
     """
     if not ranked:
-        return None, RELIABLE, False
+        return None, AVAILABLE, True
     rng = rng or secrets.SystemRandom()
     weights = resolve_strategy_weights(policy, profile_confidence)
     chosen = choose_strategy(weights, rng=rng)
@@ -129,9 +132,11 @@ def select(ranked: list[dict], *, profile_confidence: float,
             continue
         movie = rng.choices(pool, weights=[_weight_for(strategy, movie) for movie in pool], k=1)[0]
         return movie, strategy, index > 0
-    # Ни одна корзина не набралась — отдаём лучшее из доступного, не выдумывая
-    # обещаний: стратегия остаётся reliable, но причина будет только фактической.
-    return ranked[0], RELIABLE, True
+    # Ни одна корзина не набралась. Только явный последний уровень доступности
+    # вправе показать такой фильм, и он получает честную, отдельную стратегию.
+    if allow_unqualified:
+        return ranked[0], AVAILABLE, True
+    return None, AVAILABLE, True
 
 
 def reason_codes_for(strategy: str, movie: dict, *, pair: bool,

@@ -106,6 +106,59 @@ class RecommendationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["id"], high)
         self.assertEqual(item["role"], "random")
 
+    async def test_random_pick_recycles_history_without_repeating_previous(self):
+        first = await self._film(33, "First", rating="8.4")
+        second = await self._film(34, "Second", rating="6.0")
+        await db.record_recommendation_history(1, second, "random", action="shown")
+        await db.record_recommendation_history(1, first, "random", action="shown")
+        with patch("recommendations._warm_catalog_if_sparse", new=_keep_local_catalog):
+            item = await recommendations.random_recommendation(1, "ru")
+        self.assertIsNotNone(item)
+        self.assertEqual(item["id"], second)
+        self.assertEqual(item["availability_tier"], "any_eligible")
+        self.assertEqual(item["strategy"], "available")
+
+    async def test_cooldown_relaxation_never_revives_watched_or_rejected(self):
+        watched = await self._film(35, "Watched", rating="9.5")
+        rejected = await self._film(36, "Rejected", rating="9.4")
+        allowed = await self._film(37, "Allowed", rating="6.1")
+        await db.set_status(1, watched, "watched")
+        await db.record_recommendation_history(1, rejected, "random", action="rejected")
+        await db.record_recommendation_history(1, allowed, "random", action="shown")
+        with patch("recommendations._warm_catalog_if_sparse", new=_keep_local_catalog):
+            item = await recommendations.random_recommendation(1, "ru")
+        self.assertEqual(item["id"], allowed)
+
+    async def test_last_resort_can_use_an_artless_film_and_repeat_it(self):
+        film_id = await db.get_or_create_film(
+            "tt9000038", "Only eligible", "2022", "Drama", "110 min",
+            "2.8", "1000000", "Story", None, actors="Actor", directors="Director",
+            media_type="movie",
+        )
+        await db.record_recommendation_history(1, film_id, "random", action="shown")
+        with patch("recommendations._warm_catalog_if_sparse", new=_keep_local_catalog):
+            item = await recommendations.random_recommendation(1, "ru")
+        self.assertEqual(item["id"], film_id)
+        self.assertEqual(item["availability_tier"], "any_eligible")
+        self.assertEqual(item["strategy"], "available")
+
+    async def test_pair_cooldown_uses_both_people_history(self):
+        shown_by_partner = await self._film(39, "Partner just saw this", rating="9.2")
+        alternative = await self._film(40, "Shared alternative", rating="8.2")
+        await db.record_recommendation_history(2, shown_by_partner, "random", action="shown")
+        with patch("recommendations._warm_catalog_if_sparse", new=_keep_local_catalog):
+            item = await recommendations.random_recommendation(1, "ru", partner_id=2)
+        self.assertEqual(item["id"], alternative)
+
+    async def test_quiz_does_not_relax_an_explicit_runtime_limit(self):
+        await self._film(41, "Too long", rating="9.0", runtime="180 min")
+        answers = {
+            "q1": "relax", "r1": "warm", "r2": "medium", "r3": "comfort",
+            "c1": "short", "c2": "any", "c3": "safe", "c4": "solo",
+        }
+        with patch("recommendations._warm_catalog_if_sparse", new=_keep_local_catalog):
+            self.assertEqual(await recommendations.quiz_results(1, answers, "ru"), [])
+
     async def test_quiz_api_keeps_state_server_side_and_removes_pair_when_unavailable(self):
         user = {"id": 1}
         started = await main.recommendation_quiz_start(main.RecommendationStartBody(language="ru"), user)

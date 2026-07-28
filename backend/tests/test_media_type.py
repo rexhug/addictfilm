@@ -58,6 +58,23 @@ class ClassificationTests(unittest.TestCase):
         self.assertFalse(media_type.is_movie_flow_eligible(event))
         self.assertTrue(media_type.is_movie_flow_eligible(sport_film))
 
+    def test_production_shaped_live_event_is_excluded(self):
+        event = {
+            "title": "Джейк Пол против Майка Тайсона",
+            "title_original": "Jake Paul vs. Mike Tyson",
+            "media_type": "movie",
+            "genres": "реальное ТВ, спорт",
+            "runtime": "306 min",
+            "imdb_rating": "2.8",
+        }
+        decision = media_type.movie_flow_decision(event)
+        self.assertFalse(decision.eligible)
+        self.assertEqual(decision.reason, "non_narrative_genre:реальное тв")
+
+    def test_documentary_feature_remains_eligible(self):
+        documentary = {"media_type": "movie", "genres": "Documentary, Sport"}
+        self.assertTrue(media_type.is_movie_flow_eligible(documentary))
+
     def test_genre_filter_uses_exact_tokens(self):
         film = {"media_type": "movie", "genres": "новостийный триллер, драма"}
         self.assertTrue(media_type.is_movie_flow_eligible(film))

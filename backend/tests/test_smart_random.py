@@ -71,7 +71,10 @@ class PoolTests(unittest.TestCase):
 
 class SelectionTests(unittest.TestCase):
     def test_empty_catalog_returns_nothing(self):
-        self.assertIsNone(sr.select([], profile_confidence=0.5)[0])
+        movie, strategy, fallback = sr.select([], profile_confidence=0.5)
+        self.assertIsNone(movie)
+        self.assertEqual(strategy, sr.AVAILABLE)
+        self.assertTrue(fallback)
 
     def test_fallback_is_used_when_the_chosen_bucket_is_empty(self):
         movie, strategy, fallback = sr.select([_movie(1, quality=6.5, novelty=4.0)],
@@ -93,11 +96,23 @@ class SelectionTests(unittest.TestCase):
         picked = {sr.select(ranked, profile_confidence=0.0, rng=rng)[0]["id"] for _ in range(120)}
         self.assertGreater(len(picked), 15)
 
+    def test_unqualified_fallback_is_never_labelled_reliable(self):
+        ranked = [_movie(1, quality=4.0, affinity=-1.0, novelty=0.0)]
+        movie, strategy, _ = sr.select(ranked, profile_confidence=0.0)
+        self.assertIsNone(movie)
+        self.assertEqual(strategy, sr.AVAILABLE)
+        movie, strategy, fallback = sr.select(
+            ranked, profile_confidence=0.0, allow_unqualified=True)
+        self.assertEqual(movie["id"], 1)
+        self.assertEqual(strategy, sr.AVAILABLE)
+        self.assertTrue(fallback)
+
 
 class ReasonTests(unittest.TestCase):
     def test_every_strategy_has_its_own_reason_code(self):
-        codes = {sr.STRATEGY_REASONS[n] for n in (sr.RELIABLE, sr.TASTE_MATCH, sr.DISCOVERY)}
-        self.assertEqual(len(codes), 3)
+        codes = {sr.STRATEGY_REASONS[n] for n in (
+            sr.RELIABLE, sr.TASTE_MATCH, sr.DISCOVERY, sr.AVAILABLE)}
+        self.assertEqual(len(codes), 4)
         self.assertTrue(codes <= reasons.KNOWN_CODES)
 
     def test_high_quality_is_not_claimed_without_evidence(self):
@@ -117,7 +132,7 @@ class ReasonTests(unittest.TestCase):
                       sr.reason_codes_for(sr.RELIABLE, _movie(1), pair=True))
 
     def test_codes_are_known(self):
-        for strategy in (sr.RELIABLE, sr.TASTE_MATCH, sr.DISCOVERY):
+        for strategy in (sr.RELIABLE, sr.TASTE_MATCH, sr.DISCOVERY, sr.AVAILABLE):
             with self.subTest(strategy=strategy):
                 codes = sr.reason_codes_for(strategy, _movie(1, quality=8.5, affinity=0.4,
                                                              novelty=4.0), pair=True)

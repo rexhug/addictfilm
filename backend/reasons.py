@@ -38,6 +38,7 @@ UNSEEN_PICK = "UNSEEN_PICK"
 RANDOM_RELIABLE = "RANDOM_RELIABLE"
 RANDOM_TASTE_MATCH = "RANDOM_TASTE_MATCH"
 RANDOM_DISCOVERY = "RANDOM_DISCOVERY"
+RANDOM_AVAILABLE = "RANDOM_AVAILABLE"
 
 TEXTS: dict[str, dict[str, str]] = {
     DARK_COMEDY_TONE:  {"ru": "Чёрный юмор и мрачный тон", "en": "Dark humour with a grim tone"},
@@ -62,6 +63,7 @@ TEXTS: dict[str, dict[str, str]] = {
     RANDOM_RELIABLE:   {"ru": "Надёжный выбор", "en": "A reliable choice"},
     RANDOM_TASTE_MATCH: {"ru": "Похоже на то, что ты любишь", "en": "Close to what you love"},
     RANDOM_DISCOVERY:  {"ru": "Находка не на слуху", "en": "An off-the-radar find"},
+    RANDOM_AVAILABLE:  {"ru": "Доступный вариант", "en": "An available choice"},
 }
 
 KNOWN_CODES = frozenset(TEXTS)
