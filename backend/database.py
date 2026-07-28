@@ -54,6 +54,7 @@ _SCHEMA_MIGRATION_WORKER_HEARTBEATS = "2026-07-27-worker-heartbeats-v1"
 _SCHEMA_MIGRATION_WISHLIST_ROULETTE = "2026-07-27-wishlist-roulette-v1"
 _SCHEMA_MIGRATION_SESSION_VERSIONS = "2026-07-27-session-versions-v1"
 _SCHEMA_MIGRATION_HERO_MEDIA = "2026-07-28-hero-media-v1"
+_SCHEMA_MIGRATION_HERO_PRESENTATION = "2026-07-28-hero-presentation-v1"
 
 # Значения films.media_type. Дублируются константами, а не импортом media_type,
 # чтобы не затенять одноимённый аргумент get_or_create_film.
@@ -821,6 +822,19 @@ async def _apply_hero_media_migration() -> None:
         await db.commit()
 
 
+async def _apply_hero_presentation_migration() -> None:
+    """Persistent art direction and exact-file poster moderation."""
+    for col_def in (
+        "hero_fit TEXT",
+        "hero_focus_x REAL",
+        "hero_focus_y REAL",
+        "poster_display_state TEXT",
+        "poster_display_url TEXT",
+        "poster_reject_reason TEXT",
+    ):
+        await _add_column_if_missing("films", col_def)
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -843,6 +857,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_WISHLIST_ROULETTE, _apply_wishlist_roulette_migration),
         (_SCHEMA_MIGRATION_SESSION_VERSIONS, _apply_session_versions_migration),
         (_SCHEMA_MIGRATION_HERO_MEDIA, _apply_hero_media_migration),
+        (_SCHEMA_MIGRATION_HERO_PRESENTATION, _apply_hero_presentation_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -1641,15 +1656,77 @@ async def update_film_hero(film_id: int, *, hero_url: str, hero_type: str, hero_
     now = _now()
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
+        existing = await (await db.execute(
+            "SELECT hero_url FROM films WHERE id = ?", (film_id,))).fetchone()
+        if existing is None:
+            await db.commit()
+            return None
+        changed_url = str(existing["hero_url"] or "").strip() != str(hero_url or "").strip()
         cur = await db.execute(
             "UPDATE films SET hero_url = ?, hero_type = ?, hero_source = ?, "
             "hero_quality_score = ?, hero_width = ?, hero_height = ?, "
-            "hero_updated_at = ?, hero_checked_at = ? WHERE id = ?",
+            "hero_updated_at = ?, hero_checked_at = ?, "
+            "hero_fit = CASE WHEN ? THEN NULL ELSE hero_fit END, "
+            "hero_focus_x = CASE WHEN ? THEN NULL ELSE hero_focus_x END, "
+            "hero_focus_y = CASE WHEN ? THEN NULL ELSE hero_focus_y END "
+            "WHERE id = ?",
             (hero_url, hero_type, hero_source, float(hero_quality_score),
-             hero_width, hero_height, now, now, film_id))
+             hero_width, hero_height, now, now,
+             changed_url, changed_url, changed_url, film_id))
         if not cur.rowcount:
             await db.commit()
             return None
+        row = await (await db.execute(
+            "SELECT * FROM films WHERE id = ?", (film_id,))).fetchone()
+        await db.commit()
+        return dict(row) if row else None
+
+
+async def update_film_hero_presentation(
+        film_id: int, *, fit: str, focus_x: float = 0.5,
+        focus_y: float = 0.36) -> dict | None:
+    if fit not in hero_media.HERO_FITS:
+        raise ValueError(f"Invalid hero fit: {fit!r}")
+    focus_x = float(focus_x)
+    focus_y = float(focus_y)
+    if not 0.0 <= focus_x <= 1.0:
+        raise ValueError("hero_focus_x must be between 0 and 1")
+    if not 0.0 <= focus_y <= 1.0:
+        raise ValueError("hero_focus_y must be between 0 and 1")
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "UPDATE films SET hero_fit = ?, hero_focus_x = ?, hero_focus_y = ? "
+            "WHERE id = ?", (fit, focus_x, focus_y, film_id))
+        if not cur.rowcount:
+            await db.commit()
+            return None
+        row = await (await db.execute(
+            "SELECT * FROM films WHERE id = ?", (film_id,))).fetchone()
+        await db.commit()
+        return dict(row) if row else None
+
+
+async def update_film_poster_display(
+        film_id: int, *, state: str, reason: str | None = None) -> dict | None:
+    if state not in {"auto", "approved", "rejected"}:
+        raise ValueError(f"Invalid poster display state: {state!r}")
+    normalized_reason = str(reason or "").strip() or None
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        film = await (await db.execute(
+            "SELECT poster_url FROM films WHERE id = ?", (film_id,))).fetchone()
+        if film is None:
+            return None
+        if state == "auto":
+            moderated_url = None
+            normalized_reason = None
+        else:
+            moderated_url = str(film["poster_url"] or "").strip() or None
+        await db.execute(
+            "UPDATE films SET poster_display_state = ?, poster_display_url = ?, "
+            "poster_reject_reason = ? WHERE id = ?",
+            (state, moderated_url, normalized_reason, film_id))
         row = await (await db.execute(
             "SELECT * FROM films WHERE id = ?", (film_id,))).fetchone()
         await db.commit()

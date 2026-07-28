@@ -94,6 +94,62 @@ class HeroPipelineTests(unittest.IsolatedAsyncioTestCase):
                                       hero_source="tmdb", hero_quality_score=0.9,
                                       hero_width=None, hero_height=None)
 
+    async def test_presentation_validation_and_storage(self):
+        film_id = await self._film()
+        await db.update_film_hero(
+            film_id, hero_url="https://assets.fanart.tv/a.jpg", hero_type="backdrop",
+            hero_source="fanart", hero_quality_score=0.91,
+            hero_width=1920, hero_height=1080)
+        stored = await db.update_film_hero_presentation(
+            film_id, fit="cover", focus_x=0.25, focus_y=0.75)
+        self.assertEqual(stored["hero_fit"], "cover")
+        self.assertEqual((stored["hero_focus_x"], stored["hero_focus_y"]), (0.25, 0.75))
+        with self.assertRaises(ValueError):
+            await db.update_film_hero_presentation(film_id, fit="smart")
+        with self.assertRaises(ValueError):
+            await db.update_film_hero_presentation(
+                film_id, fit="cover", focus_x=1.01, focus_y=0.5)
+
+    async def test_same_hero_preserves_but_changed_url_clears_presentation(self):
+        film_id = await self._film()
+        kwargs = {
+            "hero_type": "backdrop", "hero_source": "fanart",
+            "hero_quality_score": 0.91, "hero_width": 1920, "hero_height": 1080,
+        }
+        await db.update_film_hero(
+            film_id, hero_url="https://assets.fanart.tv/a.jpg", **kwargs)
+        await db.update_film_hero_presentation(
+            film_id, fit="cover", focus_x=0.2, focus_y=0.7)
+        same = await db.update_film_hero(
+            film_id, hero_url="https://assets.fanart.tv/a.jpg", **kwargs)
+        self.assertEqual(
+            (same["hero_fit"], same["hero_focus_x"], same["hero_focus_y"]),
+            ("cover", 0.2, 0.7))
+        changed = await db.update_film_hero(
+            film_id, hero_url="https://assets.fanart.tv/b.jpg", **kwargs)
+        self.assertIsNone(changed["hero_fit"])
+        self.assertIsNone(changed["hero_focus_x"])
+        self.assertIsNone(changed["hero_focus_y"])
+
+    async def test_poster_decision_binds_to_the_current_url(self):
+        film_id = await self._film(poster="https://p/promo.jpg")
+        rejected = await db.update_film_poster_display(
+            film_id, state="rejected", reason="embedded_promotion")
+        self.assertEqual(rejected["poster_display_url"], "https://p/promo.jpg")
+        self.assertEqual(rejected["poster_reject_reason"], "embedded_promotion")
+        self.assertTrue(hero_media.poster_is_rejected(rejected))
+        async with db.db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute(
+                "UPDATE films SET poster_url = ? WHERE id = ?",
+                ("https://p/new.jpg", film_id))
+            await conn.commit()
+        changed = await db.get_film(film_id)
+        self.assertFalse(hero_media.poster_is_rejected(changed))
+        self.assertEqual(hero_media.hero_payload(changed)["hero_url"], "https://p/new.jpg")
+        automatic = await db.update_film_poster_display(film_id, state="auto")
+        self.assertIsNone(automatic["poster_display_url"])
+        self.assertIsNone(automatic["poster_reject_reason"])
+
     # ── отбор кандидатов ─────────────────────────────────────────────────────
     async def test_never_checked_films_come_first(self):
         await self._film("tt0000001")

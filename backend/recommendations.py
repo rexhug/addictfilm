@@ -337,7 +337,8 @@ def public_movie(movie: dict, *, role: str, codes: list[str], language: str) -> 
         "title": movie.get("title"), "title_original": movie.get("title_original"),
         "year": movie.get("year"), "runtime": movie.get("runtime"), "genres": movie.get("genres"),
         "rating": _display_rating(movie),
-        "plot": movie.get("plot"), "poster_url": movie.get("poster_url"), "backdrop_url": movie.get("backdrop_url"),
+        "plot": movie.get("plot"), "poster_url": hero_media.display_poster_url(movie),
+        "backdrop_url": movie.get("backdrop_url"),
         # Изображение для полноэкранного экрана выбирает сервер: тип и источник
         # уже проверены, клиенту остаётся только переключить слой отрисовки.
         **hero_media.hero_payload(movie),

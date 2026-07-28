@@ -81,6 +81,12 @@ const DICT = {
     pick_v2_preview_hint: "Тестовая версия нового подбора, доступная только администратору",
     pick_poster_alt: "Постер фильма", pick_backdrop_alt: "Кадр из фильма",
     pick_image_unavailable: "Изображение недоступно",
+    art_frame: "Кадр", art_fit: "Показ изображения",
+    art_contain: "Показать полностью", art_cover: "Заполнить экран",
+    art_focus_x: "Фокус по горизонтали", art_focus_y: "Фокус по вертикали",
+    art_save: "Сохранить", art_reset: "Сбросить", art_close: "Закрыть",
+    art_reject_poster: "Отклонить этот постер",
+    art_approve_poster: "Разрешить этот постер", art_auto_poster: "Автоматически",
     settings_attribution: "Данные об изображениях предоставлены fanart.tv",
     reason_DARK_COMEDY_TONE: "Чёрный юмор и мрачный тон", reason_SATIRICAL_HUMOR: "Сатира на серьёзные темы",
     reason_ABSURD_DARK_HUMOR: "Абсурдная комедия с мрачной подачей", reason_HIGH_TENSION: "Держит в напряжении",
@@ -218,6 +224,11 @@ const DICT = {
     pick_v2_preview_hint: "Preview of the new recommendation engine, available only to administrators",
     pick_poster_alt: "Movie poster", pick_backdrop_alt: "Movie backdrop",
     pick_image_unavailable: "Image unavailable",
+    art_frame: "Frame", art_fit: "Image fit", art_contain: "Show full image",
+    art_cover: "Fill screen", art_focus_x: "Horizontal focus",
+    art_focus_y: "Vertical focus", art_save: "Save", art_reset: "Reset",
+    art_close: "Close", art_reject_poster: "Reject this poster",
+    art_approve_poster: "Allow this poster", art_auto_poster: "Automatic",
     settings_attribution: "Artwork data provided by fanart.tv",
     reason_DARK_COMEDY_TONE: "Dark humour with a grim tone", reason_SATIRICAL_HUMOR: "Satire about serious things",
     reason_ABSURD_DARK_HUMOR: "Absurd comedy, grim delivery", reason_HIGH_TENSION: "Keeps the tension up",
@@ -984,25 +995,86 @@ function singlePickMode(active) {
   }
 }
 
+function clampUnit(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.min(1, parsed));
+}
+function percentFromUnit(value, fallback) {
+  return `${(clampUnit(value, fallback) * 100).toFixed(2)}%`;
+}
 function singlePickHero(item) {
-  const url = item?.hero_url || item?.poster_url || null;
-  return { url, type: item?.hero_type === "backdrop" ? "backdrop" : "poster_blur" };
+  // Presence of hero_type means the server has made a display decision.  In
+  // particular, an explicit null must not be bypassed with the raw poster URL.
+  const serverDecided = item && Object.prototype.hasOwnProperty.call(item, "hero_type");
+  const url = item?._posterRejected
+    ? null
+    : (serverDecided ? item?.hero_url : (item?.hero_url || item?.poster_url || null));
+  const type = item?.hero_type === "backdrop" ? "backdrop" : "poster_blur";
+  const fit = type === "backdrop" && item?.hero_fit === "cover" ? "cover" : "contain";
+  return {
+    url, type, fit,
+    focusX: percentFromUnit(item?.hero_focus_x, 0.5),
+    focusY: percentFromUnit(item?.hero_focus_y, 0.36),
+  };
+}
+
+function singlePickArtControlsHTML(item, hero) {
+  if (!AdminMode.isCapable()) return "";
+  const opener = `<button class="single-pick-art-open" type="button" data-art-open
+    aria-expanded="false">${esc(t("art_frame"))}</button>`;
+  if (hero.type === "backdrop") {
+    const x = clampUnit(item?.hero_focus_x, 0.5);
+    const y = clampUnit(item?.hero_focus_y, 0.36);
+    return `${opener}<section class="single-pick-art-panel" data-art-panel hidden>
+      <div class="single-pick-art-head"><b>${esc(t("art_fit"))}</b>
+        <button type="button" data-art-close aria-label="${esc(t("art_close"))}">×</button></div>
+      <div class="single-pick-art-segments">
+        <button type="button" data-art-fit="contain" aria-pressed="${hero.fit === "contain"}">${esc(t("art_contain"))}</button>
+        <button type="button" data-art-fit="cover" aria-pressed="${hero.fit === "cover"}">${esc(t("art_cover"))}</button>
+      </div>
+      <label>${esc(t("art_focus_x"))}<input type="range" min="0" max="1" step=".01"
+        value="${x}" data-art-focus-x ${hero.fit === "cover" ? "" : "disabled"}></label>
+      <label>${esc(t("art_focus_y"))}<input type="range" min="0" max="1" step=".01"
+        value="${y}" data-art-focus-y ${hero.fit === "cover" ? "" : "disabled"}></label>
+      <div class="single-pick-art-actions">
+        <button type="button" data-art-save>${esc(t("art_save"))}</button>
+        <button type="button" data-art-reset>${esc(t("art_reset"))}</button>
+      </div>
+    </section>`;
+  }
+  return `${opener}<section class="single-pick-art-panel single-pick-art-poster-panel"
+      data-art-panel hidden>
+    <div class="single-pick-art-head"><b>${esc(t("art_frame"))}</b>
+      <button type="button" data-art-close aria-label="${esc(t("art_close"))}">×</button></div>
+    <button type="button" data-poster-state="rejected">${esc(t("art_reject_poster"))}</button>
+    <button type="button" data-poster-state="approved">${esc(t("art_approve_poster"))}</button>
+    <button type="button" data-poster-state="auto">${esc(t("art_auto_poster"))}</button>
+  </section>`;
 }
 
 function singlePickMediaHTML(item) {
   const hero = singlePickHero(item);
   if (!hero.url) {
-    return `<div class="single-pick-media single-pick-media-empty"><span>${esc(t("pick_image_unavailable"))}</span></div>`;
+    return `<div class="single-pick-media single-pick-media-empty"><span>${esc(t("pick_image_unavailable"))}</span>
+      ${singlePickArtControlsHTML(item, hero)}</div>`;
   }
   // Резкий постер и его размытая копия — ОДИН и тот же URL: браузер берёт вторую
   // отрисовку из кэша, сети на неё не тратится.
   const src = posterSrc(hero.url, hero.type !== "backdrop");
   const title = esc(item.title || "");
   if (hero.type === "backdrop") {
-    return `<div class="single-pick-media single-pick-media-backdrop">
-      <img class="single-pick-backdrop" src="${src}" alt="${esc(t("pick_backdrop_alt"))}: ${title}"
-           loading="eager" decoding="async" data-single-pick-media>
+    const style = `--hero-focus-x:${hero.focusX};--hero-focus-y:${hero.focusY}`;
+    return `<div class="single-pick-media single-pick-media-backdrop"
+      data-hero-fit="${hero.fit}" style="${style}">
+      <img class="single-pick-backdrop-ambient" src="${src}" alt="" aria-hidden="true"
+           loading="eager" decoding="async" data-img-remove-on-error>
+      <div class="single-pick-backdrop-stage">
+        <img class="single-pick-backdrop" src="${src}" alt="${esc(t("pick_backdrop_alt"))}: ${title}"
+             loading="eager" decoding="async" data-single-pick-media>
+      </div>
       <div class="single-pick-media-shade" aria-hidden="true"></div>
+      ${singlePickArtControlsHTML(item, hero)}
     </div>`;
   }
   return `<div class="single-pick-media single-pick-media-poster">
@@ -1011,6 +1083,7 @@ function singlePickMediaHTML(item) {
     <div class="single-pick-poster-shade" aria-hidden="true"></div>
     <img class="single-pick-poster" src="${src}" alt="${esc(t("pick_poster_alt"))}: ${title}"
          loading="eager" decoding="async" data-single-pick-media>
+    ${singlePickArtControlsHTML(item, hero)}
   </div>`;
 }
 
@@ -1020,10 +1093,106 @@ function degradeSinglePickMedia(img) {
   if (!container) return;
   const item = _singlePickItem;
   const canFallBack = container.classList.contains("single-pick-media-backdrop")
-    && item && item.poster_url && item.poster_url !== item.hero_url;
-  container.outerHTML = canFallBack
-    ? singlePickMediaHTML({ ...item, hero_url: item.poster_url, hero_type: "poster_blur" })
-    : `<div class="single-pick-media single-pick-media-empty"><span>${esc(t("pick_image_unavailable"))}</span></div>`;
+    && item && !item._posterRejected && item.poster_url && item.poster_url !== item.hero_url;
+  if (canFallBack) {
+    Object.assign(item, {
+      hero_url: item.poster_url, hero_type: "poster_blur",
+      hero_fit: null, hero_focus_x: null, hero_focus_y: null,
+    });
+  } else if (item) {
+    Object.assign(item, { hero_url: null, hero_type: null });
+  }
+  container.outerHTML = singlePickMediaHTML(item || {});
+  wireSinglePickArtControls();
+}
+
+function replaceSinglePickMedia() {
+  const media = screen.querySelector(".single-pick-media");
+  if (!media || !_singlePickItem) return;
+  media.outerHTML = singlePickMediaHTML(_singlePickItem);
+  wireSinglePickArtControls();
+}
+
+function wireSinglePickArtControls() {
+  const media = screen.querySelector(".single-pick-media");
+  const item = _singlePickItem;
+  if (!media || !item || !AdminMode.isCapable()) return;
+  const open = media.querySelector("[data-art-open]");
+  const panel = media.querySelector("[data-art-panel]");
+  if (!open || !panel) return;
+  const closePanel = () => {
+    panel.hidden = true;
+    open.setAttribute("aria-expanded", "false");
+  };
+  open.onclick = () => {
+    panel.hidden = false;
+    open.setAttribute("aria-expanded", "true");
+  };
+  panel.querySelector("[data-art-close]")?.addEventListener("click", closePanel);
+
+  const fitButtons = [...panel.querySelectorAll("[data-art-fit]")];
+  if (fitButtons.length) {
+    const focusX = panel.querySelector("[data-art-focus-x]");
+    const focusY = panel.querySelector("[data-art-focus-y]");
+    let fit = item.hero_fit === "cover" ? "cover" : "contain";
+    const preview = () => {
+      media.dataset.heroFit = fit;
+      media.style.setProperty("--hero-focus-x", percentFromUnit(focusX?.value, 0.5));
+      media.style.setProperty("--hero-focus-y", percentFromUnit(focusY?.value, 0.36));
+      fitButtons.forEach(button => button.setAttribute(
+        "aria-pressed", String(button.dataset.artFit === fit)));
+      if (focusX) focusX.disabled = fit !== "cover";
+      if (focusY) focusY.disabled = fit !== "cover";
+    };
+    fitButtons.forEach(button => button.onclick = () => {
+      fit = button.dataset.artFit === "cover" ? "cover" : "contain";
+      preview();
+    });
+    focusX?.addEventListener("input", preview);
+    focusY?.addEventListener("input", preview);
+    panel.querySelector("[data-art-save]")?.addEventListener("click", async event => {
+      event.currentTarget.disabled = true;
+      const updated = await adminCall(`/api/admin/films/${item.id}/hero-presentation`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          fit,
+          focus_x: clampUnit(focusX?.value, 0.5),
+          focus_y: clampUnit(focusY?.value, 0.36),
+        }),
+      });
+      if (updated && updated !== true) Object.assign(item, updated);
+      replaceSinglePickMedia();
+    });
+    panel.querySelector("[data-art-reset]")?.addEventListener("click", async event => {
+      event.currentTarget.disabled = true;
+      const updated = await adminCall(`/api/admin/films/${item.id}/hero-presentation`, {
+        method: "PATCH",
+        body: JSON.stringify({ fit: "contain", focus_x: 0.5, focus_y: 0.36 }),
+      });
+      if (updated && updated !== true) Object.assign(item, updated);
+      replaceSinglePickMedia();
+    });
+    preview();
+  }
+
+  panel.querySelectorAll("[data-poster-state]").forEach(button => {
+    button.onclick = async () => {
+      button.disabled = true;
+      const state = button.dataset.posterState;
+      const updated = await adminCall(`/api/admin/films/${item.id}/poster-display`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          state,
+          reason: state === "rejected" ? "manual_admin_rejection" : null,
+        }),
+      });
+      if (updated && updated !== true) {
+        Object.assign(item, updated);
+        item._posterRejected = state === "rejected";
+      }
+      replaceSinglePickMedia();
+    };
+  });
 }
 
 function singlePickScreenHTML(item, { label = "", allowAnother = true } = {}) {
@@ -1077,6 +1246,7 @@ function wireSinglePickScreen(item, { label, mode, onAnother }) {
   singlePickMode(true);
   screen.innerHTML = singlePickScreenHTML(item, { label, allowAnother: true });
   window.scrollTo(0, 0);      // новый фильм всегда показывается с начала экрана
+  wireSinglePickArtControls();
   wireBack(showPicker);
   wireRecommendationMovie(screen.querySelector(".single-pick-screen"), item,
     { mode, onAnother, returnTo: showPicker });
@@ -1563,6 +1733,11 @@ const AdminMode = {
     if (!this.capability.is_admin) this.enabled = false;  // права отозвали — режим гаснет
     else this.enabled = this.preference();
     this.renderIndicator();
+    // The picker may already be visible while this server-confirmed capability
+    // is loading. Rebuild only its media layer; never request another film.
+    if (_singlePickItem && document.body.classList.contains("single-pick-open")) {
+      replaceSinglePickMedia();
+    }
     // Возможности приходят асинхронно, а главная уже могла отрисоваться без
     // админских действий — перерисовываем её, когда состояние изменилось.
     if (this.enabled !== wasEditing && activeTabName() === "home"

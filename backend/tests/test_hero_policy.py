@@ -95,15 +95,82 @@ class PayloadTests(unittest.TestCase):
             "poster_url": "https://p/1.jpg"})
         self.assertEqual(payload["hero_type"], "backdrop")
         self.assertEqual(payload["hero_url"], "https://assets.fanart.tv/a.jpg")
+        self.assertEqual(payload["hero_fit"], "contain")
+        self.assertEqual(payload["hero_focus_x"], 0.5)
+        self.assertEqual(payload["hero_focus_y"], 0.36)
+
+    def test_explicit_presentation_is_preserved_and_focus_is_clamped(self):
+        cover = hero_media.hero_payload({
+            "hero_url": "https://assets.fanart.tv/a.jpg", "hero_type": "backdrop",
+            "hero_source": "fanart", "hero_fit": "cover",
+            "hero_focus_x": 1.4, "hero_focus_y": -0.2,
+        })
+        self.assertEqual(cover["hero_fit"], "cover")
+        self.assertEqual((cover["hero_focus_x"], cover["hero_focus_y"]), (1.0, 0.0))
+        contained = hero_media.hero_payload({
+            "hero_url": "https://assets.fanart.tv/a.jpg", "hero_type": "backdrop",
+            "hero_source": "fanart", "hero_fit": "contain",
+        })
+        self.assertEqual(contained["hero_fit"], "contain")
 
     def test_a_row_without_hero_columns_still_gets_a_usable_mode(self):
         payload = hero_media.hero_payload({"poster_url": "https://p/1.jpg"})
-        self.assertEqual(payload, {"hero_url": "https://p/1.jpg", "hero_type": "poster_blur",
-                                   "hero_source": "poster", "hero_quality_score": 0.5})
+        self.assertEqual(payload, {
+            "hero_url": "https://p/1.jpg", "hero_type": "poster_blur",
+            "hero_source": "poster", "hero_quality_score": 0.5,
+            "hero_fit": None, "hero_focus_x": None, "hero_focus_y": None})
 
     def test_a_row_with_nothing_at_all_declares_nothing(self):
         self.assertEqual(hero_media.hero_payload({}), {
-            "hero_url": None, "hero_type": None, "hero_source": None, "hero_quality_score": None})
+            "hero_url": None, "hero_type": None, "hero_source": None,
+            "hero_quality_score": None, "hero_fit": None,
+            "hero_focus_x": None, "hero_focus_y": None})
+
+    def test_exact_rejected_poster_is_omitted_but_a_changed_url_is_usable(self):
+        rejected = {
+            "poster_url": "https://p/promo.jpg",
+            "poster_display_state": "rejected",
+            "poster_display_url": "https://p/promo.jpg",
+        }
+        self.assertTrue(hero_media.poster_is_rejected(rejected))
+        self.assertIsNone(hero_media.hero_payload(rejected)["hero_url"])
+        changed = {**rejected, "poster_url": "https://p/clean.jpg"}
+        self.assertFalse(hero_media.poster_is_rejected(changed))
+        self.assertEqual(hero_media.hero_payload(changed)["hero_url"], "https://p/clean.jpg")
+
+    def test_auto_and_approved_posters_remain_usable(self):
+        for state in ("auto", "approved", None):
+            film = {
+                "poster_url": "https://p/1.jpg",
+                "poster_display_state": state,
+                "poster_display_url": "https://p/1.jpg",
+            }
+            self.assertEqual(hero_media.hero_payload(film)["hero_type"], "poster_blur")
+
+    def test_backdrop_survives_a_rejected_poster(self):
+        payload = hero_media.hero_payload({
+            "hero_url": "https://b/1.jpg", "hero_type": "backdrop",
+            "hero_source": "fanart", "poster_url": "https://p/promo.jpg",
+            "poster_display_state": "rejected",
+            "poster_display_url": "https://p/promo.jpg",
+        })
+        self.assertEqual(payload["hero_url"], "https://b/1.jpg")
+        self.assertEqual(payload["hero_fit"], "contain")
+
+    def test_public_media_row_hides_moderation_audit_fields(self):
+        public = hero_media.public_media_row({
+            "id": 7,
+            "poster_url": "https://p/promo.jpg",
+            "poster_display_state": "rejected",
+            "poster_display_url": "https://p/promo.jpg",
+            "poster_reject_reason": "embedded_kinopoisk_promotion",
+        })
+        self.assertEqual(public["id"], 7)
+        self.assertIsNone(public["poster_url"])
+        self.assertIsNone(public["hero_url"])
+        self.assertNotIn("poster_display_state", public)
+        self.assertNotIn("poster_display_url", public)
+        self.assertNotIn("poster_reject_reason", public)
 
     def test_an_unknown_stored_type_is_not_trusted(self):
         # Значение вне словаря — это либо ручная правка, либо будущая версия.

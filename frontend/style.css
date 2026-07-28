@@ -924,11 +924,28 @@ body.single-pick-open .single-pick-screen.rise{
   position:absolute;inset:0;width:100%;height:100%;overflow:hidden;background:#08090c;
 }
 .single-pick-media-backdrop{min-height:0;max-height:none;aspect-ratio:auto;}
-.single-pick-backdrop{
-  display:block;width:100%;height:100%;object-fit:cover;object-position:50% 36%;
+.single-pick-backdrop-ambient{
+  position:absolute;inset:-34px;width:calc(100% + 68px);height:calc(100% + 68px);
+  object-fit:cover;object-position:var(--hero-focus-x,50%) var(--hero-focus-y,36%);
+  filter:blur(28px) saturate(.78);opacity:.46;transform:scale(1.06);
+}
+.single-pick-backdrop-stage{
+  position:absolute;z-index:1;display:grid;place-items:center;overflow:hidden;
+}
+.single-pick-media-backdrop[data-hero-fit="contain"] .single-pick-backdrop-stage{
+  inset:clamp(54px,7dvh,82px) 10px clamp(142px,21dvh,184px);
+}
+.single-pick-media-backdrop[data-hero-fit="contain"] .single-pick-backdrop{
+  display:block;width:100%;height:100%;object-fit:contain;object-position:center;
+  border-radius:12px;filter:drop-shadow(0 12px 28px rgba(0,0,0,.34));
+}
+.single-pick-media-backdrop[data-hero-fit="cover"] .single-pick-backdrop-stage{inset:0;}
+.single-pick-media-backdrop[data-hero-fit="cover"] .single-pick-backdrop{
+  display:block;width:100%;height:100%;object-fit:cover;
+  object-position:var(--hero-focus-x,50%) var(--hero-focus-y,36%);
 }
 .single-pick-media-shade{
-  position:absolute;inset:0;pointer-events:none;
+  position:absolute;z-index:2;inset:0;pointer-events:none;
   background:
     linear-gradient(180deg,rgba(4,5,8,.20) 0%,rgba(4,5,8,.04) 28%,
       rgba(5,6,9,.28) 54%,rgba(5,6,9,.94) 82%,#08090c 100%),
@@ -955,6 +972,41 @@ body.single-pick-open .single-pick-screen.rise{
 .single-pick-media-empty{
   display:grid;place-items:center;min-height:0;color:var(--ink-2);font-size:13px;
 }
+.single-pick-media-empty>span{position:relative;z-index:1;}
+.single-pick-art-open{
+  position:absolute;z-index:7;top:12px;right:12px;min-height:36px;padding:7px 12px;
+  border:1px solid rgba(255,255,255,.13);border-radius:12px;
+  background:rgba(8,9,12,.72);color:#fff;font:650 12px/1 var(--font);
+  -webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);
+}
+.single-pick-art-panel{
+  position:absolute;z-index:8;right:10px;bottom:10px;left:10px;display:grid;gap:10px;
+  padding:14px;border:1px solid rgba(255,255,255,.14);border-radius:17px;
+  background:rgba(14,15,21,.96);color:#fff;text-align:left;
+  box-shadow:0 18px 42px rgba(0,0,0,.52);
+  -webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);
+}
+.single-pick-art-panel[hidden]{display:none;}
+.single-pick-art-head{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.single-pick-art-head b{font-size:13px;}
+.single-pick-art-head button{
+  width:30px;height:30px;border:0;background:transparent;color:var(--ink-2);font-size:22px;
+}
+.single-pick-art-segments{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+.single-pick-art-segments button,.single-pick-art-actions button,
+.single-pick-art-poster-panel>button{
+  min-height:38px;padding:7px 9px;border:1px solid rgba(255,255,255,.11);
+  border-radius:11px;background:rgba(255,255,255,.04);color:#fff;
+  font:620 11.5px/1.2 var(--font);
+}
+.single-pick-art-segments button[aria-pressed="true"]{
+  border-color:rgba(139,102,255,.65);background:rgba(126,87,255,.18);color:#c9b8ff;
+}
+.single-pick-art-panel label{display:grid;gap:4px;color:var(--ink-2);font-size:10.5px;}
+.single-pick-art-panel input[type="range"]{width:100%;accent-color:var(--accent);}
+.single-pick-art-panel input:disabled{opacity:.38;}
+.single-pick-art-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+.single-pick-art-poster-panel>button:first-of-type{color:#ff8aa0;}
 .single-pick-back-slot{position:absolute;z-index:5;top:12px;left:12px;}
 .single-pick-back-slot .back{
   width:42px;height:42px;margin:0;border:1px solid rgba(255,255,255,.11);
@@ -1050,6 +1102,9 @@ body.single-pick-open .single-pick-screen.rise{
   .single-pick-danger{min-height:32px;}
 }
 @media(max-height:620px){
+  .single-pick-media-backdrop[data-hero-fit="contain"] .single-pick-backdrop-stage{
+    inset:44px 8px 118px;
+  }
   .single-pick-reason{display:none;}
   .single-pick-genres{margin-top:6px;}
   .single-pick-chips{margin-top:7px;}

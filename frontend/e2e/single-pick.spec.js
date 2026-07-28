@@ -18,6 +18,9 @@ const baseMovie = {
 const backdropHero = {
   hero_url: BACKDROP, hero_type: "backdrop", hero_source: "fanart", hero_quality_score: 0.91,
 };
+const coverHero = {
+  ...backdropHero, hero_fit: "cover", hero_focus_x: 0.22, hero_focus_y: 0.71,
+};
 const posterHero = {
   hero_url: POSTER, hero_type: "poster_blur", hero_source: "poster", hero_quality_score: 0.5,
 };
@@ -27,6 +30,8 @@ async function openPicker(page, options = {}) {
     feedback: [],
     wishlistCalls: 0,
     randomCalls: 0,
+    adminMutations: [],
+    capabilityLoaded: false,
   };
   const fullscreen = options.fullscreen !== false;
   const wishlistItems = options.wishlistItems
@@ -61,6 +66,36 @@ async function openPicker(page, options = {}) {
 
   await page.route("**/api/**", async route => {
     const path = new URL(route.request().url()).pathname;
+    if (path === "/api/me/capabilities") {
+      state.capabilityLoaded = true;
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify(
+        options.admin
+          ? { is_admin: true, admin_role: "admin",
+            capabilities: ["collections.read", "collections.write", "content.publish", "audit.read"] }
+          : { is_admin: false, admin_role: null, capabilities: [] }) });
+      return;
+    }
+    if (/^\/api\/admin\/films\/\d+\/hero-presentation$/.test(path)) {
+      const body = JSON.parse(route.request().postData() || "{}");
+      state.adminMutations.push({ kind: "hero", ...body });
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+        ...backdropHero, hero_fit: body.fit,
+        hero_focus_x: body.focus_x, hero_focus_y: body.focus_y,
+      }) });
+      return;
+    }
+    if (/^\/api\/admin\/films\/\d+\/poster-display$/.test(path)) {
+      const body = JSON.parse(route.request().postData() || "{}");
+      state.adminMutations.push({ kind: "poster", ...body });
+      const rejected = body.state === "rejected";
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify(
+        rejected
+          ? { hero_url: null, hero_type: null, hero_source: null,
+            hero_quality_score: null, hero_fit: null,
+            hero_focus_x: null, hero_focus_y: null }
+          : { ...posterHero, hero_fit: null, hero_focus_x: null, hero_focus_y: null }) });
+      return;
+    }
     if (path === "/api/wishlist/random") {
       const item = wishlistItems[Math.min(state.wishlistCalls, wishlistItems.length - 1)];
       state.wishlistCalls += 1;
@@ -95,6 +130,10 @@ async function openPicker(page, options = {}) {
   });
 
   await page.goto("/");
+  if (options.admin) {
+    await expect.poll(() => state.capabilityLoaded).toBe(true);
+    await page.waitForTimeout(20);
+  }
   await page.getByRole("button", { name: "Подбор", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Что посмотреть?" })).toBeVisible();
   return state;
@@ -154,7 +193,7 @@ async function expectSinglePickFits(page, title) {
   }
 }
 
-test("wishlist roulette shows a qualified backdrop across the full hero", async ({ page }) => {
+test("wishlist roulette safely contains a backdrop with no saved fit", async ({ page }) => {
   await openPicker(page);
   await openWishlist(page);
 
@@ -164,16 +203,75 @@ test("wishlist roulette shows a qualified backdrop across the full hero", async 
   await expect(page.locator(".single-pick-label")).toHaveText("Случайный из «Хочу»");
 
   const hero = page.locator(".single-pick-media-backdrop");
-  const heroBox = await hero.boundingBox();
+  await expect(hero).toHaveAttribute("data-hero-fit", "contain");
+  const stageBox = await page.locator(".single-pick-backdrop-stage").boundingBox();
   const imageBox = await backdrop.boundingBox();
-  expect(Math.abs(imageBox.width - heroBox.width)).toBeLessThan(2);
-  expect(Math.abs(imageBox.height - heroBox.height)).toBeLessThan(2);
-  expect(await backdrop.evaluate(node => getComputedStyle(node).objectFit)).toBe("cover");
+  expect(await backdrop.evaluate(node => getComputedStyle(node).objectFit)).toBe("contain");
+  expect(imageBox.x).toBeGreaterThanOrEqual(stageBox.x - 1);
+  expect(imageBox.y).toBeGreaterThanOrEqual(stageBox.y - 1);
+  expect(imageBox.x + imageBox.width).toBeLessThanOrEqual(stageBox.x + stageBox.width + 1);
+  expect(imageBox.y + imageBox.height).toBeLessThanOrEqual(stageBox.y + stageBox.height + 1);
   // Метаданные фильма читаются поверх затемнения, а не поверх голого кадра.
   await expect(page.locator(".single-pick-media-shade")).toBeAttached();
   for (const name of ["Открыть фильм", "В «Хочу»", "Уже смотрел", "Другой вариант", "Не предлагать"]) {
     await expect(page.getByRole("button", { name })).toBeVisible();
   }
+});
+
+test("explicit cover uses the saved focal point", async ({ page }) => {
+  await openPicker(page, {
+    wishlistItems: [{ ...baseMovie, id: 11, title: "Directed Cover", ...coverHero }],
+  });
+  await openWishlist(page);
+  const hero = page.locator(".single-pick-media-backdrop");
+  const sharp = page.locator(".single-pick-backdrop");
+  await expect(hero).toHaveAttribute("data-hero-fit", "cover");
+  expect(await sharp.evaluate(node => getComputedStyle(node).objectFit)).toBe("cover");
+  expect(await sharp.evaluate(node => getComputedStyle(node).objectPosition)).toBe("22% 71%");
+});
+
+test("regular users receive no art-direction controls", async ({ page }) => {
+  await openPicker(page);
+  await openWishlist(page);
+  await expect(page.locator("[data-art-open]")).toHaveCount(0);
+});
+
+test("admin can preview and save presentation without another recommendation", async ({ page }) => {
+  const state = await openPicker(page, { admin: true });
+  await openWishlist(page);
+  await expect(page.getByRole("button", { name: "Кадр" })).toBeVisible();
+  await page.getByRole("button", { name: "Кадр" }).click();
+  await page.getByRole("button", { name: "Заполнить экран" }).click();
+  const x = page.locator("[data-art-focus-x]");
+  await x.fill("0.31");
+  await x.dispatchEvent("input");
+  await expect(page.locator(".single-pick-media-backdrop")).toHaveAttribute("data-hero-fit", "cover");
+  expect(state.wishlistCalls).toBe(1);
+  await page.getByRole("button", { name: "Сохранить" }).click();
+  await expect.poll(() => state.adminMutations.length).toBe(1);
+  expect(state.adminMutations[0]).toMatchObject({ kind: "hero", fit: "cover", focus_x: 0.31 });
+  expect(state.wishlistCalls).toBe(1);
+});
+
+test("rejecting the exact poster rerenders neutral media only", async ({ page }) => {
+  const state = await openPicker(page, { admin: true });
+  await openSmartRandom(page);
+  await page.getByRole("button", { name: "Кадр" }).click();
+  await page.getByRole("button", { name: "Отклонить этот постер" }).click();
+  await expect(page.locator(".single-pick-media-empty")).toContainText("Изображение недоступно");
+  expect(state.randomCalls).toBe(1);
+  expect(state.adminMutations).toEqual([{
+    kind: "poster", state: "rejected", reason: "manual_admin_rejection",
+  }]);
+});
+
+test("ambient image failure leaves the sharp backdrop intact", async ({ page }) => {
+  const state = await openPicker(page);
+  await openWishlist(page);
+  await page.locator(".single-pick-backdrop-ambient").dispatchEvent("error");
+  await expect(page.locator(".single-pick-backdrop-ambient")).toHaveCount(0);
+  await expect(page.locator(".single-pick-backdrop")).toBeVisible();
+  expect(state.wishlistCalls).toBe(1);
 });
 
 test("smart random keeps its strategy label on the fullscreen renderer", async ({ page }) => {

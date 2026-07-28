@@ -28,6 +28,12 @@ SOURCE_POSTER = "poster"
 
 HERO_TYPES = frozenset({HERO_BACKDROP, HERO_POSTER_BLUR})
 HERO_SOURCES = frozenset({SOURCE_FANART, SOURCE_KINOPOISK, SOURCE_POSTER})
+HERO_FIT_CONTAIN = "contain"
+HERO_FIT_COVER = "cover"
+HERO_FITS = frozenset({HERO_FIT_CONTAIN, HERO_FIT_COVER})
+DEFAULT_HERO_FIT = HERO_FIT_CONTAIN
+DEFAULT_HERO_FOCUS_X = 0.5
+DEFAULT_HERO_FOCUS_Y = 0.36
 
 # Жёсткие пороги — до всякого скоринга. Кадр меньше этого на широком блоке
 # заметно мылит, а соотношение вне диапазона либо обрежется до неузнаваемости,
@@ -218,19 +224,83 @@ def choose_hero(*, fanart_images: Iterable[FanartImage],
     return choose_fanart_background(fanart_images) or poster_fallback(poster_url)
 
 
+def _clamped_focus(value: object, fallback: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = fallback
+    return min(1.0, max(0.0, parsed))
+
+
+def hero_presentation(film: dict) -> dict:
+    """Resolve presentation separately from the selected media source."""
+    if film.get("hero_type") != HERO_BACKDROP:
+        return {"hero_fit": None, "hero_focus_x": None, "hero_focus_y": None}
+    fit = film.get("hero_fit")
+    if fit not in HERO_FITS:
+        fit = DEFAULT_HERO_FIT
+    return {
+        "hero_fit": fit,
+        "hero_focus_x": _clamped_focus(
+            film.get("hero_focus_x"), DEFAULT_HERO_FOCUS_X),
+        "hero_focus_y": _clamped_focus(
+            film.get("hero_focus_y"), DEFAULT_HERO_FOCUS_Y),
+    }
+
+
+def poster_is_rejected(film: dict) -> bool:
+    """Reject only the exact provider file an editor reviewed."""
+    poster_url = str(film.get("poster_url") or "").strip()
+    moderated_url = str(film.get("poster_display_url") or "").strip()
+    return (
+        bool(poster_url)
+        and film.get("poster_display_state") == "rejected"
+        and moderated_url == poster_url
+    )
+
+
+def display_poster_url(film: dict) -> str | None:
+    """Public poster URL after exact-file moderation (DB value stays intact)."""
+    if poster_is_rejected(film):
+        return None
+    value = str(film.get("poster_url") or "").strip()
+    return value or None
+
+
+def public_media_row(film: dict) -> dict:
+    """Resolve public media without exposing moderation audit fields."""
+    public = dict(film)
+    for field in (
+        "poster_display_state",
+        "poster_display_url",
+        "poster_reject_reason",
+    ):
+        public.pop(field, None)
+    public["poster_url"] = display_poster_url(film)
+    public.update(hero_payload(film))
+    return public
+
+
 def hero_payload(film: dict) -> dict:
     """Нормализованные поля для API. Строка каталога без hero_* — не ошибка:
     так выглядит любой фильм до бекфила, и он обязан работать."""
     hero_url = str(film.get("hero_url") or "").strip()
     hero_type = film.get("hero_type")
-    if hero_url and hero_type in HERO_TYPES:
+    if (hero_url and hero_type in HERO_TYPES
+            and not (hero_type == HERO_POSTER_BLUR and poster_is_rejected(film))):
         score = film.get("hero_quality_score")
-        return {"hero_url": hero_url, "hero_type": hero_type,
-                "hero_source": film.get("hero_source"),
-                "hero_quality_score": round(float(score), 4) if score is not None else None}
+        return {
+            "hero_url": hero_url,
+            "hero_type": hero_type,
+            "hero_source": film.get("hero_source"),
+            "hero_quality_score": round(float(score), 4) if score is not None else None,
+            **hero_presentation(film),
+        }
     poster_url = str(film.get("poster_url") or "").strip()
-    if not poster_url:
+    if not poster_url or poster_is_rejected(film):
         return {"hero_url": None, "hero_type": None,
-                "hero_source": None, "hero_quality_score": None}
+                "hero_source": None, "hero_quality_score": None,
+                "hero_fit": None, "hero_focus_x": None, "hero_focus_y": None}
     return {"hero_url": poster_url, "hero_type": HERO_POSTER_BLUR,
-            "hero_source": SOURCE_POSTER, "hero_quality_score": _POSTER_FALLBACK_SCORE}
+            "hero_source": SOURCE_POSTER, "hero_quality_score": _POSTER_FALLBACK_SCORE,
+            "hero_fit": None, "hero_focus_x": None, "hero_focus_y": None}

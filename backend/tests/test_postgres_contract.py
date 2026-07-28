@@ -293,6 +293,11 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
             hero_source="fanart", hero_quality_score=0.91, hero_width=1920, hero_height=1080)
         self.assertEqual(stored["hero_type"], "backdrop")
         self.assertAlmostEqual(float(stored["hero_quality_score"]), 0.91)
+        directed = await db.update_film_hero_presentation(
+            strong, fit="cover", focus_x=0.25, focus_y=0.7)
+        self.assertEqual(directed["hero_fit"], "cover")
+        self.assertAlmostEqual(float(directed["hero_focus_x"]), 0.25)
+        self.assertAlmostEqual(float(directed["hero_focus_y"]), 0.7)
 
         due = await db.list_films_missing_or_stale_hero(limit=10)
         self.assertEqual([film["imdb_id"] for film in due], ["tt77001"],

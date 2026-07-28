@@ -18,6 +18,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
@@ -726,14 +727,15 @@ async def wishlist_random(user: dict = Depends(current_user)):
     # Режим изображения выбирает СЕРВЕР. Фронтенд не должен гадать по
     # backdrop_url, годится тот кадр или нет: ровно эта догадка и давала
     # растянутый вертикальный постер на всю ширину экрана.
-    return {"item": {**item, **hero_media.hero_payload(item)},
+    return {"item": hero_media.public_media_row(item),
             "cycle": await db.wishlist_roulette_state(user["id"])}
 
 
 @app.get("/api/random")
 async def random_movie(user: dict = Depends(current_user)):
     """Прежний эндпоинт: оставлен для уже установленных клиентов."""
-    return {"item": await db.pick_random_wishlist_film(user["id"])}
+    item = await db.pick_random_wishlist_film(user["id"])
+    return {"item": hero_media.public_media_row(item) if item else None}
 
 
 # ── Adaptive recommendations ────────────────────────────────────────────────
@@ -1408,6 +1410,41 @@ async def collection_reorder(collection_id: int, body: CollectionOrderBody,
 class ResolveFilmBody(BaseModel):
     src: str
     ref: str = Field(max_length=128)
+
+
+class HeroPresentationPatch(BaseModel):
+    fit: Literal["contain", "cover"]
+    focus_x: float = Field(default=0.5, ge=0.0, le=1.0)
+    focus_y: float = Field(default=0.36, ge=0.0, le=1.0)
+
+
+class PosterDisplayPatch(BaseModel):
+    state: Literal["auto", "approved", "rejected"]
+    reason: str | None = Field(default=None, max_length=200)
+
+
+@app.patch("/api/admin/films/{film_id}/hero-presentation",
+           dependencies=[Depends(require_editor)])
+async def admin_update_hero_presentation(
+        film_id: int, body: HeroPresentationPatch,
+        user: dict = Depends(current_user)):
+    updated = await db.update_film_hero_presentation(
+        film_id, fit=body.fit, focus_x=body.focus_x, focus_y=body.focus_y)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Фильм не найден")
+    return hero_media.hero_payload(updated)
+
+
+@app.patch("/api/admin/films/{film_id}/poster-display",
+           dependencies=[Depends(require_editor)])
+async def admin_update_poster_display(
+        film_id: int, body: PosterDisplayPatch,
+        user: dict = Depends(current_user)):
+    updated = await db.update_film_poster_display(
+        film_id, state=body.state, reason=body.reason)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Фильм не найден")
+    return hero_media.hero_payload(updated)
 
 
 @app.post("/api/admin/films/resolve", dependencies=[Depends(require_editor)])

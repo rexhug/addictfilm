@@ -14,7 +14,10 @@ import database as db
 import main
 import recommendations as rec
 
-_HERO_FIELDS = ("hero_url", "hero_type", "hero_source", "hero_quality_score")
+_HERO_FIELDS = (
+    "hero_url", "hero_type", "hero_source", "hero_quality_score",
+    "hero_fit", "hero_focus_x", "hero_focus_y",
+)
 
 
 async def _keep_local_catalog(_user_id, _partner_id, _weights, candidates, _minimum):
@@ -168,6 +171,27 @@ class HeroApiTests(unittest.IsolatedAsyncioTestCase):
         item = (await main.wishlist_random(user={"id": 1}))["item"]
         self.assertEqual(item["hero_source"], "kinopoisk")
         self.assertEqual(item["hero_type"], "backdrop")
+        self.assertEqual(item["hero_fit"], "contain")
+
+    async def test_admin_can_update_fit_and_focus(self):
+        film_id = await self._wishlist_film()
+        await db.update_film_hero(
+            film_id, hero_url="https://kp/wide.jpg", hero_type="backdrop",
+            hero_source="kinopoisk", hero_quality_score=0.935,
+            hero_width=1920, hero_height=1080)
+        payload = await main.admin_update_hero_presentation(
+            film_id,
+            main.HeroPresentationPatch(fit="cover", focus_x=0.2, focus_y=0.8),
+            user={"id": 1},
+        )
+        self.assertEqual(payload["hero_fit"], "cover")
+        self.assertEqual((payload["hero_focus_x"], payload["hero_focus_y"]), (0.2, 0.8))
+
+    async def test_non_admin_is_stopped_by_the_shared_server_gate(self):
+        with mock.patch.object(main, "_effective_role", new=mock.AsyncMock(return_value=None)):
+            with self.assertRaises(main.HTTPException) as error:
+                await main.require_editor(user={"id": 999})
+        self.assertEqual(error.exception.status_code, 403)
 
     async def test_the_fanart_cdn_is_the_only_host_added_to_the_image_proxy(self):
         self.assertIn("assets.fanart.tv", main._ALLOWED_IMG_HOSTS)
