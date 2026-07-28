@@ -1003,6 +1003,21 @@ function clampUnit(value, fallback) {
 function percentFromUnit(value, fallback) {
   return `${(clampUnit(value, fallback) * 100).toFixed(2)}%`;
 }
+// Сохранённые 1920x1080 — это ДОКАЗАТЕЛЬСТВО пригодности кадра, а не размер для
+// показа: блок занимает ~1050 физических пикселей даже на плотном экране.
+// Замер по каталогу: 1280x720 весит 181 КБ против 375 КБ и доступен у всех
+// проверенных кадров; если какой-то редакции не окажется, сработает обычная
+// деградация к постеру.
+const HERO_DISPLAY_RENDITION = /^(https:\/\/avatars\.mds\.yandex\.net\/get-ott\/.+)\/\d{3,4}x\d{3,4}$/;
+
+function singlePickSrc(url, type) {
+  if (type === "backdrop") return posterSrc(String(url).replace(HERO_DISPLAY_RENDITION, "$1/1280x720"), false);
+  // Постер здесь во всю карточку (до 230 CSS px, то есть ~690 физических), а
+  // small=true отдал бы 300x450 — источник вдвое меньше элемента. Тот же URL
+  // берут и размытый фон, и ambient-подложка: они приходят из кэша браузера.
+  return posterSrc(url, false);
+}
+
 function singlePickHero(item) {
   // Presence of hero_type means the server has made a display decision.  In
   // particular, an explicit null must not be bypassed with the raw poster URL.
@@ -1061,7 +1076,7 @@ function singlePickMediaHTML(item) {
   }
   // Резкий постер и его размытая копия — ОДИН и тот же URL: браузер берёт вторую
   // отрисовку из кэша, сети на неё не тратится.
-  const src = posterSrc(hero.url, hero.type !== "backdrop");
+  const src = singlePickSrc(hero.url, hero.type);
   const title = esc(item.title || "");
   if (hero.type === "backdrop") {
     const style = `--hero-focus-x:${hero.focusX};--hero-focus-y:${hero.focusY}`;
@@ -1195,7 +1210,21 @@ function wireSinglePickArtControls() {
   });
 }
 
-function singlePickScreenHTML(item, { label = "", allowAnother = true } = {}) {
+// В рулетке по «Хочу» фильм УЖЕ в этом списке — кнопка «В „Хочу“» там не может
+// ничего изменить. Показывать действие, которое заведомо ничего не делает, хуже,
+// чем не показывать его вовсе: человек жмёт, видит галочку и не понимает, что
+// произошло. Когда остаётся одно действие, сетка на две колонки не нужна.
+function secondaryActionsHTML(allowWant) {
+  const buttons = [
+    allowWant ? `<button type="button" class="single-pick-secondary" data-pick-want>${PICK_ICONS.heart}<span>${esc(t("pick_want"))}</span></button>` : "",
+    `<button type="button" class="single-pick-secondary" data-pick-watched>${PICK_ICONS.check}<span>${esc(t("pick_watched"))}</span></button>`,
+  ].filter(Boolean);
+  return buttons.length > 1
+    ? `<div class="single-pick-action-grid">${buttons.join("")}</div>`
+    : buttons.join("");
+}
+
+function singlePickScreenHTML(item, { label = "", allowAnother = true, allowWant = true } = {}) {
   const chips = [item.rating ? `<span class="single-pick-chip single-pick-rating">★ ${esc(item.rating)}</span>` : ""]
     .concat([item.year, item.runtime].filter(Boolean)
       .map(value => `<span class="single-pick-chip">${esc(value)}</span>`))
@@ -1220,10 +1249,7 @@ function singlePickScreenHTML(item, { label = "", allowAnother = true } = {}) {
     </article>
     <section class="single-pick-actions">
       <button type="button" class="single-pick-primary" data-pick-open>${esc(t("pick_open"))}</button>
-      <div class="single-pick-action-grid">
-        <button type="button" class="single-pick-secondary" data-pick-want>${PICK_ICONS.heart}<span>${esc(t("pick_want"))}</span></button>
-        <button type="button" class="single-pick-secondary" data-pick-watched>${PICK_ICONS.check}<span>${esc(t("pick_watched"))}</span></button>
-      </div>
+      ${secondaryActionsHTML(allowWant)}
       ${allowAnother ? `<button type="button" class="single-pick-alternate" data-pick-another>${PICK_ICONS.shuffle}<span>${esc(t("pick_another"))}</span></button>` : ""}
       <button type="button" class="single-pick-danger" data-pick-reject>${esc(t("pick_not_suggest"))}</button>
     </section>
@@ -1244,7 +1270,8 @@ function singlePickStateHTML(message, { error = false } = {}) {
 function wireSinglePickScreen(item, { label, mode, onAnother }) {
   _singlePickItem = item;
   singlePickMode(true);
-  screen.innerHTML = singlePickScreenHTML(item, { label, allowAnother: true });
+  screen.innerHTML = singlePickScreenHTML(item, {
+    label, allowAnother: true, allowWant: mode !== "wishlist" });
   window.scrollTo(0, 0);      // новый фильм всегда показывается с начала экрана
   wireSinglePickArtControls();
   wireBack(showPicker);

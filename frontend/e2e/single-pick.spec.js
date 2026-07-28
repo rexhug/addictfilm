@@ -150,8 +150,10 @@ const MOBILE_VIEWPORTS = [
 const ACTION_NAMES = [
   "Открыть фильм", "В «Хочу»", "Уже смотрел", "Другой вариант", "Не предлагать",
 ];
+// В рулетке фильм уже в «Хочу», поэтому этого действия там нет — и быть не должно.
+const WISHLIST_ACTION_NAMES = ACTION_NAMES.filter(name => name !== "В «Хочу»");
 
-async function expectSinglePickFits(page, title) {
+async function expectSinglePickFits(page, title, actionNames = ACTION_NAMES) {
   await expect(page.locator(".single-pick-screen")).toBeVisible();
   await expect(page.locator(".picker-head")).toHaveCount(0);
   await expect(page.locator("#tabbar")).toBeHidden();
@@ -159,7 +161,7 @@ async function expectSinglePickFits(page, title) {
   await expect(page.locator(".single-pick-back-slot .back")).toBeVisible();
   await expect(page.getByRole("heading", { name: title })).toBeVisible();
 
-  for (const name of ACTION_NAMES) {
+  for (const name of actionNames) {
     await expect(page.getByRole("button", { name })).toBeVisible();
   }
 
@@ -181,7 +183,7 @@ async function expectSinglePickFits(page, title) {
       buttons,
       titleLines: Math.round(titleRect.height / Number.parseFloat(titleStyle.lineHeight)),
     };
-  }, ACTION_NAMES);
+  }, actionNames);
 
   expect(layout.htmlScrollHeight).toBeLessThanOrEqual(layout.viewportHeight + 2);
   expect(layout.bodyScrollHeight).toBeLessThanOrEqual(layout.viewportHeight + 2);
@@ -213,9 +215,10 @@ test("wishlist roulette safely contains a backdrop with no saved fit", async ({ 
   expect(imageBox.y + imageBox.height).toBeLessThanOrEqual(stageBox.y + stageBox.height + 1);
   // Метаданные фильма читаются поверх затемнения, а не поверх голого кадра.
   await expect(page.locator(".single-pick-media-shade")).toBeAttached();
-  for (const name of ["Открыть фильм", "В «Хочу»", "Уже смотрел", "Другой вариант", "Не предлагать"]) {
+  for (const name of WISHLIST_ACTION_NAMES) {
     await expect(page.getByRole("button", { name })).toBeVisible();
   }
+  await expect(page.getByRole("button", { name: "В «Хочу»" })).toHaveCount(0);
 });
 
 test("explicit cover uses the saved focal point", async ({ page }) => {
@@ -354,12 +357,12 @@ test("feedback keeps the wishlist mode on the wishlist screen", async ({ page })
   const state = await openPicker(page);
   await openWishlist(page);
 
-  await page.getByRole("button", { name: "В «Хочу»" }).click();
+  await page.getByRole("button", { name: "Другой вариант" }).click();
   await expect.poll(() => state.feedback.length).toBe(1);
   await page.getByRole("button", { name: "Не предлагать" }).click();
   await expect.poll(() => state.feedback.length).toBe(2);
 
-  expect(state.feedback.map(entry => entry.action)).toEqual(["want", "rejected"]);
+  expect(state.feedback.map(entry => entry.action)).toEqual(["another", "rejected"]);
   expect(state.feedback.every(entry => entry.mode === "wishlist")).toBe(true);
   // «Не предлагать» — про один фильм: остаёмся на экране подбора, а не улетаем
   // на стартовое меню.
@@ -413,7 +416,7 @@ for (const viewport of MOBILE_VIEWPORTS) {
     await openPicker(page);
     await openWishlist(page);
     await expect(page.locator(".single-pick-backdrop")).toBeVisible();
-    await expectSinglePickFits(page, "Wishlist Pick");
+    await expectSinglePickFits(page, "Wishlist Pick", WISHLIST_ACTION_NAMES);
   });
 
   test(`poster blur fits ${viewport.width}x${viewport.height} without scrolling`, async ({ page }) => {
@@ -448,4 +451,49 @@ test("fullscreen loading never flashes the legacy header", async ({ page }) => {
 
   releaseRequest();
   await expect(page.getByRole("heading", { name: "Wishlist Pick" })).toBeVisible();
+});
+
+test("images are requested at display size, not at proof size", async ({ page }) => {
+  // Сохранённые 1920x1080 доказывают пригодность кадра, но блок занимает
+  // ~1050 физических пикселей: показывать 1920 значит удвоить трафик впустую.
+  await openPicker(page, {
+    wishlistItems: [{ ...baseMovie, id: 11, title: "Wishlist Pick",
+      hero_url: "https://avatars.mds.yandex.net/get-ott/1/x/1920x1080",
+      hero_type: "backdrop", hero_source: "kinopoisk", hero_quality_score: 0.935 }],
+  });
+  await openWishlist(page);
+
+  const src = await page.locator(".single-pick-backdrop").getAttribute("src");
+  const source = decodeURIComponent(new URL(src, "http://x").searchParams.get("u"));
+  expect(source).toBe("https://avatars.mds.yandex.net/get-ott/1/x/1280x720");
+});
+
+test("the fullscreen poster is not downscaled below the element it fills", async ({ page }) => {
+  // Прежде сюда уходил small=true из тайлов: источник 300x450 на элемент шириной
+  // ~690 физических пикселей — заметно мыльно.
+  const poster = "https://avatars.mds.yandex.net/get-kinopoisk-image/1/y/600x900";
+  await openPicker(page, {
+    randomItems: [{ ...baseMovie, poster_url: poster, hero_url: poster,
+      hero_type: "poster_blur", hero_source: "poster", hero_quality_score: 0.5 }],
+  });
+  await openSmartRandom(page);
+
+  const src = await page.locator(".single-pick-poster").getAttribute("src");
+  const source = decodeURIComponent(new URL(src, "http://x").searchParams.get("u"));
+  expect(source).toBe(poster);
+  expect(source).not.toContain("300x450");
+});
+
+test("the wishlist screen hides an action that cannot change anything", async ({ page }) => {
+  await openPicker(page);
+  await openWishlist(page);
+  await expect(page.getByRole("button", { name: "В «Хочу»" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Уже смотрел" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Открыть фильм" })).toBeVisible();
+});
+
+test("smart random keeps the wishlist action, where it does change something", async ({ page }) => {
+  await openPicker(page);
+  await openSmartRandom(page);
+  await expect(page.getByRole("button", { name: "В «Хочу»" })).toBeVisible();
 });
