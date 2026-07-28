@@ -50,8 +50,10 @@ class HeroPipelineTests(unittest.IsolatedAsyncioTestCase):
             return list(images)
         return mock.patch.object(fanart, "get_movie_backgrounds", new=_fake)
 
-    def _probe(self, ok=True):
-        return mock.patch.object(hero, "probe_image", new=mock.AsyncMock(return_value=ok))
+    def _probe(self, verdict=None):
+        return mock.patch.object(
+            hero, "probe_image",
+            new=mock.AsyncMock(return_value=verdict or hero.PROBE_OK))
 
     # ── схема ────────────────────────────────────────────────────────────────
     async def test_migration_is_idempotent(self):
@@ -176,12 +178,31 @@ class HeroPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(film["hero_type"], "poster_blur")
         self.assertEqual(film["hero_url"], "https://p/1.jpg")
 
-    async def test_a_file_that_fails_verification_falls_back_instead_of_being_stored(self):
+    async def test_a_file_that_is_received_and_unusable_falls_back(self):
         film_id = await self._film()
-        with self._fanart([image()]), self._probe(ok=False):
+        with self._fanart([image()]), self._probe(hero.PROBE_REJECTED):
             await hero.refresh_due_heroes(limit=10)
         film = await db.get_film(film_id)
         self.assertEqual(film["hero_type"], "poster_blur")
+
+    async def test_an_unreachable_cdn_changes_nothing_at_all(self):
+        """Реальный случай с прода: CDN Fanart лежал. Записывать запасной постер
+        и отметку проверки нельзя — фильм заморозился бы на недели из-за чужого
+        получасового сбоя."""
+        film_id = await self._film()
+        with self._fanart([image()]), self._probe(hero.PROBE_UNKNOWN):
+            report = await hero.refresh_due_heroes(limit=10)
+        self.assertEqual(report.unavailable, 1)
+        self.assertEqual(report.stored, 0)
+        film = await db.get_film(film_id)
+        self.assertIsNone(film["hero_url"])
+        self.assertIsNone(film["hero_checked_at"])
+
+    async def test_a_film_stays_a_candidate_after_an_unreachable_cdn(self):
+        await self._film()
+        with self._fanart([image()]), self._probe(hero.PROBE_UNKNOWN):
+            await hero.refresh_due_heroes(limit=10)
+        self.assertEqual(len(await db.list_films_missing_or_stale_hero(limit=10)), 1)
 
     async def test_a_temporary_outage_preserves_the_existing_selection(self):
         film_id = await self._film()

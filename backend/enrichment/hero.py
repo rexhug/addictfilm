@@ -35,6 +35,10 @@ _PROBE_MIN_BYTES = 2048
 # Расхождение с метаданными в пределах округления допустимо, кратное — нет.
 _PROBE_SIZE_TOLERANCE = 0.05
 
+PROBE_OK = "ok"
+PROBE_REJECTED = "rejected"
+PROBE_UNKNOWN = "unknown"
+
 ACTION_STORED = "stored"
 ACTION_UNCHANGED = "unchanged"
 ACTION_NONE = "none"
@@ -122,33 +126,46 @@ def _sniff_dimensions(head: bytes) -> tuple[int, int] | None:
 
 
 async def probe_image(url: str, *, expected_width: int | None = None,
-                      expected_height: int | None = None, session=None) -> bool:
-    """Одна лёгкая проверка выбранного файла. Повторов нет: ошибка сети здесь
-    означает «в этот раз не подтвердили», а не «файл плохой навсегда»."""
+                      expected_height: int | None = None, session=None) -> str:
+    """Проверка выбранного файла. Три исхода, а не два.
+
+    Различие принципиальное, и оно проявилось сразу на проде: CDN Fanart лежал,
+    проверка не проходила — и «не смог проверить» трактовалось как «файл плохой».
+    В итоге весь каталог уезжал в запасной постер И получал свежую отметку
+    проверки, то есть замораживался на недели из-за чужого получасового сбоя.
+
+    PROBE_OK        файл получен и совпал с метаданными;
+    PROBE_REJECTED  файл получен, но негоден (не картинка, обрезан, врут размеры);
+    PROBE_UNKNOWN   до файла не достучались — это про сеть, а не про файл.
+    """
     owns = session is None
     http = session or aiohttp.ClientSession(timeout=_PROBE_TIMEOUT)
     try:
         async with http.get(url) as response:
+            # 5xx и 429 — это тоже «сейчас не смогли», а не «файл негоден».
+            if response.status >= 500 or response.status == 429:
+                return PROBE_UNKNOWN
             if response.status != 200:
-                return False
+                return PROBE_REJECTED
             if not str(response.headers.get("Content-Type", "")).lower().startswith("image/"):
-                return False
+                return PROBE_REJECTED
             head = b""
             size = 0
             async for chunk in response.content.iter_chunked(64 * 1024):
                 size += len(chunk)
                 if size > _PROBE_MAX_BYTES:
-                    return False
+                    return PROBE_REJECTED
                 if len(head) < 4096:
                     head += chunk
-    except (TimeoutError, aiohttp.ClientError):
-        return False
+    except (TimeoutError, aiohttp.ClientError) as exc:
+        logger.info("hero: файл не удалось проверить (%s)", type(exc).__name__)
+        return PROBE_UNKNOWN
     finally:
         if owns:
             await http.close()
 
     if size < _PROBE_MIN_BYTES:
-        return False
+        return PROBE_REJECTED
     sniffed = _sniff_dimensions(head)
     if sniffed and expected_width and expected_height:
         width, height = sniffed
@@ -156,8 +173,8 @@ async def probe_image(url: str, *, expected_width: int | None = None,
                 or abs(height - expected_height) / expected_height > _PROBE_SIZE_TOLERANCE):
             logger.warning("hero: файл не совпал с метаданными Fanart (%sx%s против %sx%s)",
                            width, height, expected_width, expected_height)
-            return False
-    return True
+            return PROBE_REJECTED
+    return PROBE_OK
 
 
 def _unchanged(film: dict, selection: hero_media.HeroSelection) -> bool:
@@ -188,11 +205,16 @@ async def enrich_film_hero(film: dict, *, session=None, probe_session=None,
     selection = hero_media.choose_hero(fanart_images=images, poster_url=film.get("poster_url"))
     if (selection is not None and verify and not dry_run
             and selection.source == hero_media.SOURCE_FANART):
-        ok = await probe_image(selection.url, expected_width=selection.width,
-                               expected_height=selection.height, session=probe_session)
-        if not ok:
-            # Кадр не подтвердился — честно уходим в запасной режим, а не
-            # сохраняем ссылку, которая не откроется у человека на экране.
+        verdict = await probe_image(selection.url, expected_width=selection.width,
+                                    expected_height=selection.height, session=probe_session)
+        if verdict == PROBE_UNKNOWN:
+            # До CDN не достучались. Записать сейчас запасной постер значило бы
+            # заморозить фильм на недели из-за чужого получасового сбоя — и, что
+            # хуже, сделать это молча. Оставляем как есть и вернёмся позже.
+            return HeroOutcome(film_id, title, ACTION_UNAVAILABLE, candidates=len(images))
+        if verdict == PROBE_REJECTED:
+            # Файл получен и негоден — вот это уже про сам файл: уходим в
+            # запасной режим, а не показываем человеку битую ссылку.
             selection = hero_media.poster_fallback(film.get("poster_url"))
 
     if selection is None:
