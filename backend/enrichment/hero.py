@@ -170,7 +170,10 @@ async def enrich_film_hero(film: dict, *, session=None, probe_session=None,
                            dry_run: bool = False, verify: bool = True) -> HeroOutcome:
     film_id = int(film["id"])
     title = str(film.get("title") or "")
-    if not FANART_HERO_ENABLED:
+    # Флаг решает, делает ли систему это САМА. Осмотр (--dry-run) он не запрещает:
+    # он ничего не записывает, а посмотреть на качество отбора нужно ДО включения,
+    # иначе прапорец пришлось бы включать вслепую.
+    if not FANART_HERO_ENABLED and not dry_run:
         return HeroOutcome(film_id, title, ACTION_DISABLED)
 
     images: list[fanart.FanartImage] = []
@@ -225,7 +228,7 @@ async def refresh_due_heroes(*, limit: int | None = None, concurrency: int | Non
     определению, и один таймаут не повод бросать остальные 19.
     """
     report = HeroReport()
-    if not FANART_HERO_ENABLED:
+    if not FANART_HERO_ENABLED and not dry_run:
         return report
     batch = films if films is not None else await db.list_films_missing_or_stale_hero(
         limit=limit or HERO_REFRESH_BATCH)

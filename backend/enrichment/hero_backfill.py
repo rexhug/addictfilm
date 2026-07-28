@@ -57,8 +57,14 @@ async def _candidates(args: argparse.Namespace) -> list[dict]:
 
 async def run(args: argparse.Namespace) -> hero.HeroReport:
     await db.init_db()
-    if not FANART_HERO_ENABLED:
-        print("FANART_HERO_ENABLED выключен — внешние запросы не выполняются.")
+    # Осмотр разрешён и при выключенном флаге: он ничего не пишет, а посмотреть
+    # на качество отбора нужно ДО включения. Запись — только с флагом.
+    if not FANART_HERO_ENABLED and not args.dry_run:
+        print("FANART_HERO_ENABLED выключен — запись отключена. "
+              "Посмотреть отбор можно с --dry-run.")
+        return hero.HeroReport()
+    if not fanart.configured():
+        print("Ключи Fanart не настроены (FANART_PROJECT_KEY / FANART_CLIENT_KEY).")
         return hero.HeroReport()
 
     films = await _candidates(args)

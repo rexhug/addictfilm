@@ -149,6 +149,16 @@ class HeroPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report.examined, 0)
         called.assert_not_awaited()
 
+    async def test_a_dry_run_is_allowed_before_the_flag_is_turned_on(self):
+        # Иначе флаг пришлось бы включать вслепую: посмотреть на качество отбора
+        # было бы нечем, а осмотр ничего не записывает.
+        film_id = await self._film()
+        with mock.patch.object(hero, "FANART_HERO_ENABLED", False), self._fanart([image()]):
+            report = await hero.refresh_due_heroes(limit=10, dry_run=True)
+        self.assertEqual(report.examined, 1)
+        self.assertEqual(report.outcomes[0].hero_type, "backdrop")
+        self.assertIsNone((await db.get_film(film_id))["hero_checked_at"])
+
     async def test_a_qualified_backdrop_is_stored(self):
         film_id = await self._film()
         with self._fanart([image()]), self._probe():
