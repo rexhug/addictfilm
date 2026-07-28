@@ -12,6 +12,7 @@ import re
 import secrets
 
 import database as db
+import hero_media
 import media_type
 import mood
 import reasons as reason_codes
@@ -337,6 +338,9 @@ def public_movie(movie: dict, *, role: str, codes: list[str], language: str) -> 
         "year": movie.get("year"), "runtime": movie.get("runtime"), "genres": movie.get("genres"),
         "rating": _display_rating(movie),
         "plot": movie.get("plot"), "poster_url": movie.get("poster_url"), "backdrop_url": movie.get("backdrop_url"),
+        # Изображение для полноэкранного экрана выбирает сервер: тип и источник
+        # уже проверены, клиенту остаётся только переключить слой отрисовки.
+        **hero_media.hero_payload(movie),
         "role": role, "score": round(float(movie.get("_score") or 0), 1),
         # reasons — источник правды для интерфейса; explanation остаётся строкой
         # для клиентов, которые ещё не умеют в коды, и собирается из тех же кодов.

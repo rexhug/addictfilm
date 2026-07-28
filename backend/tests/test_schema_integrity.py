@@ -38,7 +38,10 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
                          "wishlist_random_picks"}.issubset({row[0] for row in tables}))
         self.assertTrue({"kp_id", "search_text", "poster_checked_at", "artwork_checked_at", "actor_photos_checked_at",
                          "directors_photos", "director_photos_checked_at",
-                         "media_type", "media_type_source"}.issubset(
+                         "media_type", "media_type_source",
+                         "hero_url", "hero_type", "hero_source", "hero_quality_score",
+                         "hero_width", "hero_height", "hero_updated_at",
+                         "hero_checked_at"}.issubset(
             {row[1] for row in films}))
         self.assertEqual({row[2] for row in user_films_fks}, {"users", "films"})
         self.assertEqual([row[0] for row in migrations], [
@@ -60,6 +63,7 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
             db._SCHEMA_MIGRATION_SESSION_VERSIONS,
             db._SCHEMA_MIGRATION_WISHLIST_ROULETTE,
             db._SCHEMA_MIGRATION_WORKER_HEARTBEATS,
+            db._SCHEMA_MIGRATION_HERO_MEDIA,
         ])
 
     async def test_foreign_keys_reject_orphaned_user_film_rows(self):

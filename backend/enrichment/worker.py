@@ -17,8 +17,10 @@ import database as db
 from config import ENRICHMENT_BATCH_SIZE as BATCH_SIZE
 from config import ENRICHMENT_IDLE_SLEEP as IDLE_SLEEP_SECONDS
 from config import ENRICHMENT_RECONCILE_INTERVAL as RECONCILE_INTERVAL_SECONDS
+from config import FANART_HERO_ENABLED
+from config import HERO_REFRESH_INTERVAL as HERO_INTERVAL_SECONDS
 
-from . import queue, reconciliation, repository, service
+from . import hero, queue, reconciliation, repository, service
 from .semantic import build_classifier
 
 logger = logging.getLogger(__name__)
@@ -88,6 +90,12 @@ async def run_worker(state: WorkerState | None = None, *, max_cycles: int | None
     logger.info("enrichment worker: согласование при старте %s", report.as_dict())
     last_reconcile = time.monotonic()
 
+    # Подбор кадров идёт в паузах между заданиями профилей: это внешний сервис,
+    # и он не должен ни задерживать очередь, ни стартовать одновременно с
+    # согласованием. Первый проход намеренно отложен на интервал — воркер после
+    # деплоя сначала доводит профили.
+    last_hero = time.monotonic()
+
     cycles = 0
     while state.running:
         if max_cycles is not None and cycles >= max_cycles:
@@ -100,6 +108,10 @@ async def run_worker(state: WorkerState | None = None, *, max_cycles: int | None
                 report = await reconciliation.reconcile(batch_size=200)
                 logger.info("enrichment worker: периодическое согласование %s", report.as_dict())
                 last_reconcile = time.monotonic()
+            if FANART_HERO_ENABLED and time.monotonic() - last_hero > HERO_INTERVAL_SECONDS:
+                hero_report = await hero.refresh_due_heroes()
+                logger.info("enrichment worker: подбор кадров %s", hero_report.as_dict())
+                last_hero = time.monotonic()
             if max_cycles is not None:
                 break
             await asyncio.sleep(IDLE_SLEEP_SECONDS)

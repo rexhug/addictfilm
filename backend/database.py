@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 import db_runtime
+import hero_media
 from config import DATABASE_URL
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ _SCHEMA_MIGRATION_MOVIE_ENRICHMENT = "2026-07-27-movie-enrichment-v1"
 _SCHEMA_MIGRATION_WORKER_HEARTBEATS = "2026-07-27-worker-heartbeats-v1"
 _SCHEMA_MIGRATION_WISHLIST_ROULETTE = "2026-07-27-wishlist-roulette-v1"
 _SCHEMA_MIGRATION_SESSION_VERSIONS = "2026-07-27-session-versions-v1"
+_SCHEMA_MIGRATION_HERO_MEDIA = "2026-07-28-hero-media-v1"
 
 # Значения films.media_type. Дублируются константами, а не импортом media_type,
 # чтобы не затенять одноимённый аргумент get_or_create_film.
@@ -782,6 +784,43 @@ async def _apply_session_versions_migration() -> None:
         await _add_column_if_missing("recommendation_sessions", column)
 
 
+async def _apply_hero_media_migration() -> None:
+    """Выбранное сервером изображение для полноэкранного экрана подбора.
+
+    Почему отдельные колонки, а не переиспользование backdrop_url: наличие
+    backdrop_url не доказывает ПРИГОДНОСТЬ. Там встречаются и вертикальные
+    обложки, и 640×360. hero_* хранит именно результат проверки — что выбрано,
+    откуда, с каким счётом и какого размера.
+
+    CHECK намеренно не навешиваем: колонки добавляются в существующую большую
+    таблицу через ALTER, и добавление ограничения на живой Postgres — это
+    отдельная блокирующая операция, ради которой не стоит рисковать стартовой
+    миграцией. Допустимые значения проверяет hero_media.HERO_TYPES/HERO_SOURCES
+    на записи, и это закрыто тестом.
+
+    Все колонки NULL-совместимы: каталог до бекфила обязан работать как раньше.
+    """
+    for col_def in (
+        "hero_url TEXT",
+        "hero_type TEXT",
+        "hero_source TEXT",
+        "hero_quality_score REAL",
+        "hero_width INTEGER",
+        "hero_height INTEGER",
+        "hero_updated_at TEXT",
+        # Отдельно от hero_updated_at: фильм без IMDb-id и без постера не даёт
+        # выбора вовсе, и без отметки о ПОПЫТКЕ он возвращался бы в кандидаты
+        # на каждом круге воркера — то есть внешний обход каталога на каждом
+        # деплое, ровно то, чего быть не должно.
+        "hero_checked_at TEXT",
+    ):
+        await _add_column_if_missing("films", col_def)
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_films_hero_checked "
+                         "ON films(hero_checked_at)")
+        await db.commit()
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -803,6 +842,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_WORKER_HEARTBEATS, _apply_worker_heartbeats_migration),
         (_SCHEMA_MIGRATION_WISHLIST_ROULETTE, _apply_wishlist_roulette_migration),
         (_SCHEMA_MIGRATION_SESSION_VERSIONS, _apply_session_versions_migration),
+        (_SCHEMA_MIGRATION_HERO_MEDIA, _apply_hero_media_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -884,6 +924,16 @@ async def _init_schema() -> None:
                 plot           TEXT,
                 poster_url     TEXT,
                 backdrop_url   TEXT,
+                -- Проверенное изображение для полноэкранного подбора: что выбрано,
+                -- откуда, с каким счётом. NULL = ещё не проверяли (см. hero_media).
+                hero_url       TEXT,
+                hero_type      TEXT,   -- backdrop | poster_blur
+                hero_source    TEXT,   -- fanart | kinopoisk | poster
+                hero_quality_score REAL,
+                hero_width     INTEGER,
+                hero_height    INTEGER,
+                hero_updated_at TEXT,  -- когда ВЫБОР менялся
+                hero_checked_at TEXT,  -- когда была последняя ПОПЫТКА (в т.ч. пустая)
                 age_rating     TEXT,
                 media_type     TEXT,   -- movie/series/episode/short от провайдера; NULL = нет данных
                 media_type_source TEXT,
@@ -1556,6 +1606,136 @@ async def upgrade_film_poster(imdb_id: str, poster_url: str) -> bool:
             "UPDATE films SET poster_url = ? WHERE imdb_id = ?", (poster_url, imdb_id))
         await db.commit()
         return cur.rowcount > 0
+
+
+# ── Изображение для полноэкранного подбора ───────────────────────────────────
+# Периоды перепроверки. Хороший кадр не меняется — перепроверять его ежедневно
+# значит жечь чужой сервис впустую. Запасной постер, наоборот, стоит
+# перепроверять чаще: у свежего фильма артворк появляется уже после релиза.
+HERO_REFRESH_STRONG_DAYS = 90        # fanart-кадр со счётом >= 0.85
+HERO_REFRESH_WEAK_DAYS = 30          # fanart-кадр послабее
+HERO_REFRESH_RECENT_FALLBACK_DAYS = 7   # запасной постер у свежего фильма
+HERO_REFRESH_OLD_FALLBACK_DAYS = 30     # запасной постер у старого фильма
+_HERO_STRONG_SCORE = 0.85
+_HERO_RECENT_YEARS = 2               # «свежий» = этот год и прошлый
+
+
+def _hero_recent_year_cutoff(now: datetime | None = None) -> str:
+    moment = now or datetime.now(UTC)
+    return str(moment.year - (_HERO_RECENT_YEARS - 1))
+
+
+async def update_film_hero(film_id: int, *, hero_url: str, hero_type: str, hero_source: str,
+                           hero_quality_score: float, hero_width: int | None,
+                           hero_height: int | None) -> dict | None:
+    """Записать выбранное изображение одной операцией.
+
+    Значения hero_type/hero_source проверяются здесь, а не CHECK-ограничением в
+    схеме: ограничение на живой таблице пришлось бы навешивать отдельной
+    блокирующей миграцией, а испортить данные может только этот метод.
+    """
+    if hero_type not in hero_media.HERO_TYPES:
+        raise ValueError(f"Недопустимый hero_type: {hero_type!r}")
+    if hero_source not in hero_media.HERO_SOURCES:
+        raise ValueError(f"Недопустимый hero_source: {hero_source!r}")
+    now = _now()
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "UPDATE films SET hero_url = ?, hero_type = ?, hero_source = ?, "
+            "hero_quality_score = ?, hero_width = ?, hero_height = ?, "
+            "hero_updated_at = ?, hero_checked_at = ? WHERE id = ?",
+            (hero_url, hero_type, hero_source, float(hero_quality_score),
+             hero_width, hero_height, now, now, film_id))
+        if not cur.rowcount:
+            await db.commit()
+            return None
+        row = await (await db.execute(
+            "SELECT * FROM films WHERE id = ?", (film_id,))).fetchone()
+        await db.commit()
+        return dict(row) if row else None
+
+
+async def mark_film_hero_checked(film_id: int) -> None:
+    """Отметить ПОПЫТКУ без результата.
+
+    У фильма без imdb_id и без постера выбирать не из чего. Без этой отметки он
+    возвращался бы в кандидаты вечно, и каждый круг воркера снова стучался бы
+    во внешний сервис по всему такому хвосту каталога.
+    """
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute("UPDATE films SET hero_checked_at = ? WHERE id = ?", (_now(), film_id))
+        await db.commit()
+
+
+async def list_films_missing_or_stale_hero(*, limit: int = 50,
+                                           now: datetime | None = None) -> list[dict]:
+    """Кандидаты на подбор кадра, в порядке пользы.
+
+    Сначала те, кого не проверяли ни разу, затем самые свежие релизы, затем
+    самые давно проверенные. Пустая строка в COALESCE сортируется раньше любой
+    ISO-метки — это и даёт «непроверенные вперёд» одинаково в SQLite и Postgres.
+    """
+    moment = now or datetime.now(UTC)
+    strong = (moment - timedelta(days=HERO_REFRESH_STRONG_DAYS)).isoformat()
+    weak = (moment - timedelta(days=HERO_REFRESH_WEAK_DAYS)).isoformat()
+    recent_fallback = (moment - timedelta(days=HERO_REFRESH_RECENT_FALLBACK_DAYS)).isoformat()
+    old_fallback = (moment - timedelta(days=HERO_REFRESH_OLD_FALLBACK_DAYS)).isoformat()
+    recent_year = _hero_recent_year_cutoff(moment)
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """
+            SELECT * FROM films
+            WHERE hero_checked_at IS NULL
+               OR (hero_type = 'backdrop' AND hero_quality_score >= ? AND hero_checked_at < ?)
+               OR (hero_type = 'backdrop' AND hero_quality_score <  ? AND hero_checked_at < ?)
+               OR (hero_type = 'poster_blur' AND COALESCE(year, '') >= ? AND hero_checked_at < ?)
+               OR (hero_type = 'poster_blur' AND COALESCE(year, '') <  ? AND hero_checked_at < ?)
+               OR (hero_type IS NULL AND hero_checked_at < ?)
+            ORDER BY COALESCE(hero_checked_at, '') ASC, COALESCE(year, '') DESC, id ASC
+            LIMIT ?
+            """,
+            (_HERO_STRONG_SCORE, strong, _HERO_STRONG_SCORE, weak,
+             recent_year, recent_fallback, recent_year, old_fallback,
+             old_fallback, max(1, int(limit))))
+        return [dict(row) for row in await cur.fetchall()]
+
+
+async def list_films_for_hero_backfill(*, limit: int = 50) -> list[dict]:
+    """Кандидаты БЕЗ учёта срока перепроверки — путь `--force` у оператора.
+
+    Порядок тот же, что и в обычном отборе: сначала непроверенные, затем свежие
+    релизы. limit остаётся потолком внешних запросов и здесь.
+    """
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM films "
+            "ORDER BY COALESCE(hero_checked_at, '') ASC, COALESCE(year, '') DESC, id ASC "
+            "LIMIT ?", (max(1, int(limit)),))
+        return [dict(row) for row in await cur.fetchall()]
+
+
+async def hero_distribution() -> dict:
+    """Сводка для оператора: что реально лежит в каталоге."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(
+            "SELECT COALESCE(hero_source, 'none') AS source, COUNT(*) AS total, "
+            "AVG(hero_quality_score) AS avg_score, MIN(hero_quality_score) AS min_score "
+            "FROM films GROUP BY COALESCE(hero_source, 'none')")).fetchall()
+        checked = await (await db.execute(
+            "SELECT COUNT(*) FROM films WHERE hero_checked_at IS NOT NULL")).fetchone()
+        total = await (await db.execute("SELECT COUNT(*) FROM films")).fetchone()
+    by_source = {
+        str(row["source"]): {
+            "count": int(row["total"] or 0),
+            "avg_score": round(float(row["avg_score"]), 4) if row["avg_score"] is not None else None,
+            "min_score": round(float(row["min_score"]), 4) if row["min_score"] is not None else None,
+        } for row in rows
+    }
+    return {"films": int(total[0] or 0), "checked": int(checked[0] or 0), "by_source": by_source}
 
 
 async def films_missing_actor_photos(limit: int = 200) -> list[dict]:

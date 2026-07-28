@@ -33,6 +33,19 @@ def _bounded_int(name: str, default: int, low: int, high: int) -> int:
             f"{name} должен быть целым числом от {low} до {high}") from None
 
 
+def _flag(name: str, default: bool = False) -> bool:
+    """Единая трактовка булевых переменных окружения.
+
+    Раньше каждый модуль писал свой `in ("1","true","yes")` — расхождения в
+    таком месте тихие и дорогие: флаг «выключен» в одном модуле и «включён» в
+    соседнем выглядит как случайный баг, а не как опечатка в окружении.
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _user_ids(name: str) -> set[int]:
     """Раньше опечатка в ADMIN_USER_IDS роняла импорт модуля голым ValueError:
     трассировка указывала в set-comprehension, а не на переменную окружения."""
@@ -83,3 +96,25 @@ ENRICHMENT_BATCH_SIZE: int = _bounded_int("ENRICHMENT_BATCH_SIZE", 5, 1, 100)
 ENRICHMENT_IDLE_SLEEP: float = _bounded_float("ENRICHMENT_IDLE_SLEEP", 5.0, 0.5, 300.0)
 ENRICHMENT_RECONCILE_INTERVAL: float = _bounded_float(
     "ENRICHMENT_RECONCILE_INTERVAL", 900.0, 60.0, 86400.0)
+
+# ── Fanart.tv: горизонтальные кадры для полноэкранного экрана подбора ─────────
+# Два ключа по документации Fanart: project key уходит заголовком `api-key`,
+# личный — `client-key`. Оба необязательны по отдельности, но без хотя бы одного
+# запросы не делаются вовсе. Значения живут ТОЛЬКО в окружении (Fly secrets).
+FANART_PROJECT_KEY: str = os.getenv("FANART_PROJECT_KEY", "").strip()
+FANART_CLIENT_KEY: str = os.getenv("FANART_CLIENT_KEY", "").strip()
+
+# Внешнее обогащение кадрами. Выключено → воркер не ходит в Fanart вообще,
+# уже сохранённые hero_* продолжают работать.
+FANART_HERO_ENABLED: bool = _flag("FANART_HERO_ENABLED", False)
+
+# Полноэкранные экраны «Случайный из Хочу» и «Умный случайный». Выключено →
+# работает прежний рендер карточки. Флаг НЕ связан с движком подбора: это
+# только представление.
+FULLSCREEN_SINGLE_PICK_ENABLED: bool = _flag("FULLSCREEN_SINGLE_PICK_ENABLED", False)
+
+# Как часто воркер проверяет, кому пора обновить кадр.
+HERO_REFRESH_INTERVAL: float = _bounded_float("HERO_REFRESH_INTERVAL", 900.0, 60.0, 86400.0)
+HERO_REFRESH_BATCH: int = _bounded_int("HERO_REFRESH_BATCH", 20, 1, 200)
+# Fanart просит не бомбить сервис: три одновременных запроса — потолок.
+HERO_REFRESH_CONCURRENCY: int = _bounded_int("HERO_REFRESH_CONCURRENCY", 2, 1, 3)

@@ -276,3 +276,55 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
     async def _reacquire_pick_lock(self):
         async with db.recommendation_pick_lock(1):
             return True
+
+    async def test_hero_columns_and_staleness_query_work_on_postgres(self):
+        """Отбор кандидатов сравнивает TEXT-метки и REAL-счёт в одном запросе —
+        именно там диалекты обычно и расходятся."""
+        from datetime import UTC, datetime, timedelta
+
+        await db.get_or_create_film("tt77001", "Свежий", genres="драма", media_type="movie",
+                                    poster_url="https://example.test/p.jpg", year="1999")
+        strong = await db.get_or_create_film("tt77002", "Сильный", genres="драма",
+                                             media_type="movie", year="1999",
+                                             poster_url="https://example.test/p.jpg")
+
+        stored = await db.update_film_hero(
+            strong, hero_url="https://assets.fanart.tv/a.jpg", hero_type="backdrop",
+            hero_source="fanart", hero_quality_score=0.91, hero_width=1920, hero_height=1080)
+        self.assertEqual(stored["hero_type"], "backdrop")
+        self.assertAlmostEqual(float(stored["hero_quality_score"]), 0.91)
+
+        due = await db.list_films_missing_or_stale_hero(limit=10)
+        self.assertEqual([film["imdb_id"] for film in due], ["tt77001"],
+                         "свежий сильный выбор не должен перепроверяться")
+
+        later = datetime.now(UTC) + timedelta(days=95)
+        self.assertEqual(len(await db.list_films_missing_or_stale_hero(limit=10, now=later)), 2)
+
+        distribution = await db.hero_distribution()
+        self.assertEqual(distribution["by_source"]["fanart"]["count"], 1)
+        self.assertEqual(distribution["checked"], 1)
+
+    async def test_hero_refresh_is_idempotent_on_postgres(self):
+        """Второй проход подряд не должен делать ни одного внешнего запроса."""
+        from unittest.mock import AsyncMock, patch
+
+        import fanart
+        from enrichment import hero
+
+        await db.get_or_create_film("tt77010", "Кино", genres="драма", media_type="movie",
+                                    poster_url="https://example.test/p.jpg", year="2001")
+        image = fanart.FanartImage(id="a", url="https://assets.fanart.tv/a.jpg",
+                                   language="00", likes=20, width=1920, height=1080)
+        with patch.object(hero, "FANART_HERO_ENABLED", True), \
+             patch.object(fanart, "get_movie_backgrounds", new=AsyncMock(return_value=[image])), \
+             patch.object(hero, "probe_image", new=AsyncMock(return_value=True)):
+            first = await hero.refresh_due_heroes(limit=10)
+        self.assertEqual(first.stored, 1)
+
+        called = AsyncMock(return_value=[image])
+        with patch.object(hero, "FANART_HERO_ENABLED", True), \
+             patch.object(fanart, "get_movie_backgrounds", new=called):
+            second = await hero.refresh_due_heroes(limit=10)
+        self.assertEqual(second.examined, 0)
+        called.assert_not_awaited()

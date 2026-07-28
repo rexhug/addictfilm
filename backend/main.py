@@ -23,6 +23,8 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 import database as db
 import db_runtime
+import fanart
+import hero_media
 import kinopoisk
 import omdb
 import pair_notifications
@@ -34,7 +36,16 @@ import sentry_sdk
 import stats_cache
 import wikidata
 from auth import validate_init_data
-from config import ADMIN_TOKEN, ADMIN_USER_IDS, BOT_TOKEN, DATABASE_URL, SENTRY_DSN, SENTRY_TRACES_SAMPLE_RATE
+from config import (
+    ADMIN_TOKEN,
+    ADMIN_USER_IDS,
+    BOT_TOKEN,
+    DATABASE_URL,
+    FANART_HERO_ENABLED,
+    FULLSCREEN_SINGLE_PICK_ENABLED,
+    SENTRY_DSN,
+    SENTRY_TRACES_SAMPLE_RATE,
+)
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -259,13 +270,24 @@ async def me_capabilities(user: dict = Depends(current_user)):
             "capabilities": list(capabilities)}
 
 
+def _client_features() -> dict:
+    """Только про представление. Версии движка подбора сюда не попадают: они
+    приходят из СЕССИИ и только администратору (см. _admin_quiz_engine_meta)."""
+    return {"fullscreen_single_pick": FULLSCREEN_SINGLE_PICK_ENABLED}
+
+
 # ── API: список пользователя ──────────────────────────────────────────────────
 @app.get("/api/me")
 async def me(user: dict = Depends(current_user)):
     settings = await db.get_notification_settings(user["id"])
     return {"id": user["id"], "label": user.get("first_name", ""),
             "username": user.get("username"), "photo_url": user.get("photo_url"),
-            "role": await _effective_role(user["id"]), "telegram_available": bool(BOT_TOKEN), **settings}
+            "role": await _effective_role(user["id"]), "telegram_available": bool(BOT_TOKEN),
+            # Состояние интерфейсных возможностей приходит с сервера один раз, на
+            # старте. Собирать его на клиенте из своей сборки нельзя: закешированный
+            # Telegram-ом фронтенд пережил бы откат флага и рисовал бы экран,
+            # которого на сервере уже нет.
+            "features": _client_features(), **settings}
 
 
 class SettingsBody(BaseModel):
@@ -700,7 +722,11 @@ async def wishlist_random(user: dict = Depends(current_user)):
     item = await db.pick_random_wishlist_film(user["id"])
     if item is None:
         raise HTTPException(status_code=404, detail="Список «Хочу посмотреть» пуст")
-    return {"item": item, "cycle": await db.wishlist_roulette_state(user["id"])}
+    # Режим изображения выбирает СЕРВЕР. Фронтенд не должен гадать по
+    # backdrop_url, годится тот кадр или нет: ровно эта догадка и давала
+    # растянутый вертикальный постер на всю ширину экрана.
+    return {"item": {**item, **hero_media.hero_payload(item)},
+            "cycle": await db.wishlist_roulette_state(user["id"])}
 
 
 @app.get("/api/random")
@@ -1478,7 +1504,11 @@ async def admin_enrichment_status():
             "mood_layer_enabled": recommendations.MOOD_LAYER_ENABLED,
             "mood_layer_admin_preview": recommendations.MOOD_LAYER_ADMIN_PREVIEW,
             "smart_random_strategies": recommendations.SMART_RANDOM_STRATEGIES,
+            "fanart_hero_enabled": FANART_HERO_ENABLED,
+            "fanart_configured": fanart.configured(),   # НАСТРОЕН ли ключ, а не какой
+            "fullscreen_single_pick": FULLSCREEN_SINGLE_PICK_ENABLED,
         },
+        "hero_media": await db.hero_distribution(),
         "engines": engines.engine_state(is_admin=True),
         "queue": await enrichment_queue.stats(),
         "oldest_pending_job": await enrichment_repository.oldest_pending_job(),
@@ -1732,6 +1762,8 @@ _ALLOWED_IMG_HOSTS = {
     # Portraits from the free Wikidata/Commons fallback redirect through these
     # two exact Wikimedia hosts. Keep the list explicit for SSRF protection.
     "commons.wikimedia.org", "upload.wikimedia.org",
+    # Единственный CDN Fanart.tv: горизонтальные кадры для экрана подбора.
+    fanart.IMAGE_HOST,
 }
 _ALLOWED_IMG_TYPES = {"image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"}
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
