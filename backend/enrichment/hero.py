@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 
 import aiohttp
@@ -38,6 +39,53 @@ _PROBE_SIZE_TOLERANCE = 0.05
 PROBE_OK = "ok"
 PROBE_REJECTED = "rejected"
 PROBE_UNKNOWN = "unknown"
+
+# Классификация ответа CDN. Разделение проходит не по «успех/не успех», а по
+# вопросу «это про ФАЙЛ или про то, что мы сейчас не смогли его получить».
+# 401/403 попали в временные намеренно: у CDN картинок нет нашей авторизации,
+# и такой ответ от него означает защиту от нагрузки или сбой раздачи, а не
+# «этого изображения не существует». Понизить фильм навсегда из-за него нельзя.
+_TRANSIENT_HTTP_STATUSES = frozenset({401, 403, 408, 425, 429})
+# Ответы, которые ДОКАЗЫВАЮТ, что файла нет.
+_PERMANENT_HTTP_STATUSES = frozenset({404, 410})
+
+
+def _probe_status_verdict(status: int) -> str:
+    if status == 200:
+        return PROBE_OK
+    if status in _PERMANENT_HTTP_STATUSES:
+        return PROBE_REJECTED
+    if status in _TRANSIENT_HTTP_STATUSES or 500 <= status <= 599:
+        return PROBE_UNKNOWN
+    return PROBE_REJECTED
+
+# Предохранитель. Глобальный сбой Fanart выглядел так: воркер каждые 15 минут
+# честно делал двадцать одинаково безрезультатных запросов. Толку от них нет ни
+# нам, ни чужому сервису, который в этот момент и так лежит.
+#
+# Состояние процессное, а не в БД, и это осознанно: оно про «эта машина только
+# что видела сбой», живёт минуты и обязано исчезать при рестарте. Класть такое
+# в общую базу значило бы дать одной машине заглушить остальные.
+_CIRCUIT_UNKNOWN_LIMIT = 3
+_CIRCUIT_COOLDOWN_SECONDS = 60 * 60
+_circuit_open_until = 0.0
+
+
+def _circuit_is_open() -> bool:
+    return time.monotonic() < _circuit_open_until
+
+
+def _open_circuit() -> None:
+    global _circuit_open_until
+    _circuit_open_until = time.monotonic() + _CIRCUIT_COOLDOWN_SECONDS
+
+
+def reset_circuit() -> None:
+    """Сбросить предохранитель. Нужен тестам, чтобы они не зависели друг от
+    друга, и оператору — когда он знает, что чужой сбой уже кончился."""
+    global _circuit_open_until
+    _circuit_open_until = 0.0
+
 
 ACTION_STORED = "stored"
 ACTION_UNCHANGED = "unchanged"
@@ -135,18 +183,19 @@ async def probe_image(url: str, *, expected_width: int | None = None,
     проверки, то есть замораживался на недели из-за чужого получасового сбоя.
 
     PROBE_OK        файл получен и совпал с метаданными;
-    PROBE_REJECTED  файл получен, но негоден (не картинка, обрезан, врут размеры);
-    PROBE_UNKNOWN   до файла не достучались — это про сеть, а не про файл.
+    PROBE_REJECTED  файл получен, но негоден (не картинка, обрезан, врут размеры),
+                    либо CDN доказал, что файла нет (404/410);
+    PROBE_UNKNOWN   до файла не достучались — сеть, DNS, TLS, таймаут, 5xx,
+                    429/408/425 и даже 401/403: это про наш доступ, не про файл.
     """
     owns = session is None
     http = session or aiohttp.ClientSession(timeout=_PROBE_TIMEOUT)
     try:
         async with http.get(url) as response:
-            # 5xx и 429 — это тоже «сейчас не смогли», а не «файл негоден».
-            if response.status >= 500 or response.status == 429:
-                return PROBE_UNKNOWN
-            if response.status != 200:
-                return PROBE_REJECTED
+            status_verdict = _probe_status_verdict(response.status)
+            if status_verdict != PROBE_OK:
+                return status_verdict
+            # Дальше — только про содержимое ответа 200.
             if not str(response.headers.get("Content-Type", "")).lower().startswith("image/"):
                 return PROBE_REJECTED
             head = b""
@@ -252,26 +301,46 @@ async def refresh_due_heroes(*, limit: int | None = None, concurrency: int | Non
     report = HeroReport()
     if not FANART_HERO_ENABLED and not dry_run:
         return report
+    if _circuit_is_open():
+        logger.warning("hero: предохранитель Fanart разомкнут, пачка пропущена")
+        return report
     batch = films if films is not None else await db.list_films_missing_or_stale_hero(
         limit=limit or HERO_REFRESH_BATCH)
     if not batch:
         return report
 
-    gate = asyncio.Semaphore(max(1, concurrency or HERO_REFRESH_CONCURRENCY))
+    wave_size = max(1, concurrency or HERO_REFRESH_CONCURRENCY)
     session = aiohttp.ClientSession(timeout=_PROBE_TIMEOUT)
+    consecutive_unknown = 0
     try:
         async def _one(film: dict) -> HeroOutcome:
-            async with gate:
-                try:
-                    return await enrich_film_hero(film, probe_session=session,
-                                                  dry_run=dry_run, verify=verify)
-                except Exception:
-                    logger.warning("hero: фильм %s не обработан", film.get("id"), exc_info=True)
-                    return HeroOutcome(int(film["id"]), str(film.get("title") or ""),
-                                       ACTION_UNAVAILABLE)
+            try:
+                return await enrich_film_hero(film, probe_session=session,
+                                              dry_run=dry_run, verify=verify)
+            except Exception:
+                logger.warning("hero: фильм %s не обработан", film.get("id"), exc_info=True)
+                return HeroOutcome(int(film["id"]), str(film.get("title") or ""),
+                                   ACTION_UNAVAILABLE)
 
-        for outcome in await asyncio.gather(*(_one(film) for film in batch)):
-            report.add(outcome)
+        # Волнами, а не одним gather на всю пачку: предохранитель обязан уметь
+        # ПЕРЕСТАТЬ ставить новые запросы. Уже запущенные волну доигрывают —
+        # обрывать их незачем, они всё равно ничего не пишут при недоступности.
+        for start in range(0, len(batch), wave_size):
+            wave = batch[start:start + wave_size]
+            for outcome in await asyncio.gather(*(_one(film) for film in wave)):
+                report.add(outcome)
+                if outcome.action == ACTION_UNAVAILABLE:
+                    consecutive_unknown += 1
+                else:
+                    # Любой определённый ответ означает, что источник жив.
+                    consecutive_unknown = 0
+            if consecutive_unknown >= _CIRCUIT_UNKNOWN_LIMIT:
+                _open_circuit()
+                logger.warning(
+                    "hero: предохранитель Fanart разомкнут после %s подряд недоступных ответов; "
+                    "остаток пачки (%s фильмов) не запрашивается",
+                    consecutive_unknown, len(batch) - start - len(wave))
+                break
     finally:
         await session.close()
     return report

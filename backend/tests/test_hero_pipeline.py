@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
+import aiohttp
 import database as db
 import fanart
 import hero_media
@@ -321,6 +322,206 @@ class ImageProbeTests(unittest.TestCase):
 
     def test_an_unknown_format_is_not_a_failure(self):
         self.assertIsNone(hero._sniff_dimensions(b"GIF89a not really"))
+
+
+class _ProbeResponse:
+    def __init__(self, status=200, ctype="image/jpeg", body=b"", error=None):
+        self.status = status
+        self.headers = {"Content-Type": ctype}
+        self._body = body
+        self._error = error
+
+    async def __aenter__(self):
+        if self._error:
+            raise self._error
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    @property
+    def content(self):
+        chunks = [self._body]
+
+        class _Reader:
+            @staticmethod
+            async def iter_chunked(_size):
+                for chunk in chunks:
+                    yield chunk
+        return _Reader()
+
+
+class _ProbeSession:
+    def __init__(self, response):
+        self._response = response
+        self.calls = 0
+
+    def get(self, _url):
+        self.calls += 1
+        return self._response
+
+
+def _jpeg(width=1920, height=1080, size=8192) -> bytes:
+    head = (b"\xff\xd8\xff\xc0" + (17).to_bytes(2, "big") + b"\x08"
+            + height.to_bytes(2, "big") + width.to_bytes(2, "big"))
+    return head + b"\x00" * max(0, size - len(head))
+
+
+class ProbeStatusTests(unittest.IsolatedAsyncioTestCase):
+    """Ответ CDN делится не на «успех/неуспех», а на «это про файл» и «это про
+    то, что мы сейчас не смогли его получить»."""
+
+    async def _probe(self, **kwargs):
+        session = _ProbeSession(_ProbeResponse(**kwargs))
+        return await hero.probe_image("https://assets.fanart.tv/a.jpg",
+                                      expected_width=1920, expected_height=1080,
+                                      session=session)
+
+    async def test_transient_statuses_never_condemn_the_file(self):
+        # 401/403 здесь тоже временные: у CDN картинок нет нашей авторизации,
+        # и такой ответ означает защиту от нагрузки, а не отсутствие файла.
+        for status in (401, 403, 408, 425, 429, 500, 502, 503):
+            self.assertEqual(await self._probe(status=status), hero.PROBE_UNKNOWN, status)
+
+    async def test_a_proven_absence_is_a_rejection(self):
+        for status in (404, 410):
+            self.assertEqual(await self._probe(status=status), hero.PROBE_REJECTED, status)
+
+    async def test_a_network_failure_is_unknown(self):
+        for error in (TimeoutError(), aiohttp.ClientError("boom")):
+            self.assertEqual(await self._probe(error=error), hero.PROBE_UNKNOWN,
+                             type(error).__name__)
+
+    async def test_a_non_image_answer_with_status_200_is_rejected(self):
+        self.assertEqual(await self._probe(ctype="text/html", body=_jpeg()),
+                         hero.PROBE_REJECTED)
+
+    async def test_a_truncated_file_is_rejected(self):
+        self.assertEqual(await self._probe(body=b"\xff\xd8" + b"\x00" * 100),
+                         hero.PROBE_REJECTED)
+
+    async def test_dimensions_that_contradict_the_metadata_are_rejected(self):
+        with self.assertLogs(hero.logger, level="WARNING"):
+            verdict = await self._probe(body=_jpeg(width=640, height=360))
+        self.assertEqual(verdict, hero.PROBE_REJECTED)
+
+    async def test_a_matching_file_passes(self):
+        self.assertEqual(await self._probe(body=_jpeg()), hero.PROBE_OK)
+
+
+class CircuitBreakerTests(unittest.IsolatedAsyncioTestCase):
+    """Глобальный сбой Fanart не должен превращаться в двадцать одинаково
+    безрезультатных запросов каждые пятнадцать минут."""
+
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.old = (db.DB_PATH, db.DATABASE_URL, db._PG)
+        db.DB_PATH = str(Path(self.temp.name) / "circuit.db")
+        db.DATABASE_URL, db._PG = "", False
+        await db.init_db()
+        hero.reset_circuit()
+        self.addCleanup(hero.reset_circuit)
+        self.flag = mock.patch.object(hero, "FANART_HERO_ENABLED", True)
+        self.flag.start()
+        self.addCleanup(self.flag.stop)
+
+    async def asyncTearDown(self):
+        db.DB_PATH, db.DATABASE_URL, db._PG = self.old
+        self.temp.cleanup()
+
+    async def _films(self, count: int) -> None:
+        for index in range(count):
+            await db.get_or_create_film(imdb_id=f"tt900{index:03d}", title=f"Фильм {index}",
+                                        genres="драма", media_type="movie",
+                                        poster_url="https://p/1.jpg", year="2010")
+
+    def _pipeline(self, verdict):
+        """Возвращает список фильмов, у которых ВООБЩЕ спросили Fanart."""
+        asked: list[str] = []
+
+        async def _api(imdb_id, session=None):
+            asked.append(imdb_id)
+            return [image()]
+
+        return (asked,
+                mock.patch.object(fanart, "get_movie_backgrounds", new=_api),
+                mock.patch.object(hero, "probe_image",
+                                  new=mock.AsyncMock(return_value=verdict)))
+
+    async def test_three_consecutive_outages_open_the_circuit(self):
+        await self._films(9)
+        asked, patch_api, patch_probe = self._pipeline(hero.PROBE_UNKNOWN)
+        with patch_api, patch_probe, self.assertLogs(hero.logger, level="WARNING"):
+            report = await hero.refresh_due_heroes(limit=9, concurrency=3)
+        self.assertTrue(hero._circuit_is_open())
+        self.assertEqual(report.unavailable, 3)
+        self.assertEqual(report.examined, 3, "остаток пачки не должен запрашиваться")
+        self.assertEqual(len(asked), 3)
+
+    async def test_an_open_circuit_makes_zero_external_calls(self):
+        await self._films(4)
+        hero._open_circuit()
+        called = mock.AsyncMock(return_value=[image()])
+        with mock.patch.object(fanart, "get_movie_backgrounds", new=called), \
+                self.assertLogs(hero.logger, level="WARNING"):
+            report = await hero.refresh_due_heroes(limit=4)
+        self.assertEqual(report.examined, 0)
+        called.assert_not_awaited()
+
+    async def test_an_outage_leaves_every_hero_column_untouched(self):
+        await self._films(3)
+        _asked, patch_api, patch_probe = self._pipeline(hero.PROBE_UNKNOWN)
+        with patch_api, patch_probe, self.assertLogs(hero.logger, level="WARNING"):
+            await hero.refresh_due_heroes(limit=3, concurrency=3)
+        for film in await db.list_films_for_hero_backfill(limit=3):
+            self.assertIsNone(film["hero_url"])
+            self.assertIsNone(film["hero_type"])
+            self.assertIsNone(film["hero_checked_at"])
+            self.assertIsNone(film["hero_updated_at"])
+
+    async def test_a_stored_hero_survives_an_outage(self):
+        await self._films(1)
+        film_id = (await db.list_films_for_hero_backfill(limit=1))[0]["id"]
+        await db.update_film_hero(film_id, hero_url="https://assets.fanart.tv/old.jpg",
+                                  hero_type="backdrop", hero_source="fanart",
+                                  hero_quality_score=0.9, hero_width=1920, hero_height=1080)
+        before = await db.get_film(film_id)
+        _asked, patch_api, patch_probe = self._pipeline(hero.PROBE_UNKNOWN)
+        with patch_api, patch_probe:
+            await hero.refresh_due_heroes(films=[before])
+        after = await db.get_film(film_id)
+        self.assertEqual(after["hero_url"], before["hero_url"])
+        self.assertEqual(after["hero_checked_at"], before["hero_checked_at"])
+
+    async def test_a_definite_answer_resets_the_counter(self):
+        await self._films(6)
+        verdicts = [hero.PROBE_UNKNOWN, hero.PROBE_UNKNOWN, hero.PROBE_OK,
+                    hero.PROBE_UNKNOWN, hero.PROBE_UNKNOWN, hero.PROBE_OK]
+        calls = {"n": 0}
+
+        async def _probe(*_args, **_kwargs):
+            verdict = verdicts[min(calls["n"], len(verdicts) - 1)]
+            calls["n"] += 1
+            return verdict
+
+        async def _api(imdb_id, session=None):
+            return [image()]
+
+        with mock.patch.object(fanart, "get_movie_backgrounds", new=_api), \
+                mock.patch.object(hero, "probe_image", new=_probe):
+            report = await hero.refresh_due_heroes(limit=6, concurrency=1)
+        self.assertFalse(hero._circuit_is_open(), "трёх подряд так и не случилось")
+        self.assertEqual(report.examined, 6)
+        self.assertEqual(report.unavailable, 4)
+        self.assertEqual(report.stored, 2)
+
+    async def test_a_dry_run_still_works_with_the_flag_off(self):
+        await self._films(2)
+        _asked, patch_api, patch_probe = self._pipeline(hero.PROBE_OK)
+        with mock.patch.object(hero, "FANART_HERO_ENABLED", False), patch_api, patch_probe:
+            report = await hero.refresh_due_heroes(limit=2, dry_run=True)
+        self.assertEqual(report.examined, 2)
+        self.assertTrue(all(o.action == hero.ACTION_DRY_RUN for o in report.outcomes))
 
 
 if __name__ == "__main__":
