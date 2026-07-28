@@ -821,7 +821,11 @@ async def recommendation_random(body: RandomRecommendationBody, user: dict = Dep
     partner_id = await _active_partner_for_recommendation(user["id"], body.context)
     item = await recommendations.pick_and_record_smart_random(user["id"], language, partner_id)
     if not item:
-        raise HTTPException(status_code=404, detail="Пока недостаточно фильмов для подбора")
+        raise HTTPException(status_code=404, detail={
+            "code": "NO_ELIGIBLE_FILMS",
+            "message": "Пока недостаточно подходящих фильмов для подбора",
+            "recoverable": True,
+        })
     return {"item": item, "context": body.context}
 
 
@@ -1423,6 +1427,11 @@ class PosterDisplayPatch(BaseModel):
     reason: str | None = Field(default=None, max_length=200)
 
 
+class MovieFlowPatch(BaseModel):
+    state: Literal["auto", "allow", "exclude"]
+    reason: str | None = Field(default=None, max_length=200)
+
+
 @app.patch("/api/admin/films/{film_id}/hero-presentation",
            dependencies=[Depends(require_editor)])
 async def admin_update_hero_presentation(
@@ -1445,6 +1454,24 @@ async def admin_update_poster_display(
     if updated is None:
         raise HTTPException(status_code=404, detail="Фильм не найден")
     return hero_media.hero_payload(updated)
+
+
+@app.patch("/api/admin/films/{film_id}/movie-flow",
+           dependencies=[Depends(require_editor)])
+async def admin_update_movie_flow(
+        film_id: int, body: MovieFlowPatch,
+        user: dict = Depends(current_user)):
+    updated = await db.update_film_movie_flow(
+        film_id, state=body.state, reason=body.reason)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Фильм не найден")
+    await _audit(user, "film.movie_flow_updated", film_id, {
+        "state": body.state, "reason": body.reason})
+    return {
+        "id": updated["id"],
+        "movie_flow_state": updated.get("movie_flow_state") or "auto",
+        "movie_flow_reason": updated.get("movie_flow_reason"),
+    }
 
 
 @app.post("/api/admin/films/resolve", dependencies=[Depends(require_editor)])

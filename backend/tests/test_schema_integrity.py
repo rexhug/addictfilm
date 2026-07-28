@@ -43,7 +43,8 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
                          "hero_width", "hero_height", "hero_updated_at",
                          "hero_checked_at", "hero_fit", "hero_focus_x", "hero_focus_y",
                          "poster_display_state", "poster_display_url",
-                         "poster_reject_reason"}.issubset(
+                         "poster_reject_reason", "movie_flow_state",
+                         "movie_flow_reason"}.issubset(
             {row[1] for row in films}))
         self.assertEqual({row[2] for row in user_films_fks}, {"users", "films"})
         self.assertEqual([row[0] for row in migrations], [
@@ -67,6 +68,7 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
             db._SCHEMA_MIGRATION_WORKER_HEARTBEATS,
             db._SCHEMA_MIGRATION_HERO_MEDIA,
             db._SCHEMA_MIGRATION_HERO_PRESENTATION,
+            db._SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION,
         ])
 
     async def test_foreign_keys_reject_orphaned_user_film_rows(self):

@@ -21,6 +21,7 @@ from datetime import UTC, datetime, timedelta
 import aiosqlite
 import db_runtime
 import hero_media
+import media_type
 from config import DATABASE_URL
 
 logger = logging.getLogger(__name__)
@@ -55,11 +56,13 @@ _SCHEMA_MIGRATION_WISHLIST_ROULETTE = "2026-07-27-wishlist-roulette-v1"
 _SCHEMA_MIGRATION_SESSION_VERSIONS = "2026-07-27-session-versions-v1"
 _SCHEMA_MIGRATION_HERO_MEDIA = "2026-07-28-hero-media-v1"
 _SCHEMA_MIGRATION_HERO_PRESENTATION = "2026-07-28-hero-presentation-v1"
+_SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION = "2026-07-28-movie-flow-moderation-v1"
 
 # Значения films.media_type. Дублируются константами, а не импортом media_type,
 # чтобы не затенять одноимённый аргумент get_or_create_film.
 _MEDIA_MOVIE, _MEDIA_SERIES, _MEDIA_EPISODE, _MEDIA_SHORT = "movie", "series", "episode", "short"
 _PAIR_INVITE_TTL = timedelta(days=7)
+_DEFAULT_RECOMMENDATION_COOLDOWN = object()
 
 
 def _now() -> str:
@@ -835,6 +838,12 @@ async def _apply_hero_presentation_migration() -> None:
         await _add_column_if_missing("films", col_def)
 
 
+async def _apply_movie_flow_moderation_migration() -> None:
+    """Durable curator override for recommendation eligibility."""
+    await _add_column_if_missing("films", "movie_flow_state TEXT")
+    await _add_column_if_missing("films", "movie_flow_reason TEXT")
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -858,6 +867,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_SESSION_VERSIONS, _apply_session_versions_migration),
         (_SCHEMA_MIGRATION_HERO_MEDIA, _apply_hero_media_migration),
         (_SCHEMA_MIGRATION_HERO_PRESENTATION, _apply_hero_presentation_migration),
+        (_SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION, _apply_movie_flow_moderation_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -952,6 +962,8 @@ async def _init_schema() -> None:
                 age_rating     TEXT,
                 media_type     TEXT,   -- movie/series/episode/short от провайдера; NULL = нет данных
                 media_type_source TEXT,
+                movie_flow_state TEXT,  -- auto/allow/exclude; NULL behaves as auto
+                movie_flow_reason TEXT,
                 actors_photos  TEXT,   -- JSON-массив name/photo_url под тех же актёров, что в actors
                 directors_photos TEXT, -- JSON-массив name/photo_url под тех же режиссёров, что в directors
                 search_text    TEXT NOT NULL DEFAULT '',
@@ -1733,6 +1745,33 @@ async def update_film_poster_display(
         return dict(row) if row else None
 
 
+async def update_film_movie_flow(
+        film_id: int, *, state: str, reason: str | None = None) -> dict | None:
+    """Apply a durable eligibility override used by every recommendation flow."""
+    state = str(state or "").strip().casefold()
+    if state not in media_type.MOVIE_FLOW_STATES:
+        raise ValueError(f"Invalid movie flow state: {state!r}")
+    normalized_reason = str(reason or "").strip() or None
+    if state == media_type.MOVIE_FLOW_AUTO:
+        normalized_reason = None
+        stored_state = None
+    else:
+        stored_state = state
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "UPDATE films SET movie_flow_state = ?, movie_flow_reason = ? WHERE id = ?",
+            (stored_state, normalized_reason, film_id),
+        )
+        if not cur.rowcount:
+            await db.commit()
+            return None
+        row = await (await db.execute(
+            "SELECT * FROM films WHERE id = ?", (film_id,))).fetchone()
+        await db.commit()
+        return dict(row) if row else None
+
+
 async def mark_film_hero_checked(film_id: int) -> None:
     """Отметить ПОПЫТКУ без результата.
 
@@ -2469,8 +2508,11 @@ async def save_recommendation_session_results(user_id: int, session_id: str, ite
     return await get_recommendation_session(user_id, session_id)
 
 
-async def get_recommendation_candidates(user_id: int, partner_id: int | None = None,
-                                        limit: int = 700) -> list[dict]:
+async def get_recommendation_candidates(
+        user_id: int, partner_id: int | None = None, limit: int = 700, *,
+        exclude_shown_since: str | None | object = _DEFAULT_RECOMMENDATION_COOLDOWN,
+        excluded_film_ids: set[int] | frozenset[int] | None = None,
+        require_art: bool = True) -> list[dict]:
     """Bounded local-catalog candidate pool with personal/pair state attached.
 
     All filters which matter for privacy and history are in SQL.  The scoring
@@ -2478,23 +2520,41 @@ async def get_recommendation_candidates(user_id: int, partner_id: int | None = N
     """
     limit = max(60, min(int(limit), 900))
     partner_id = int(partner_id) if partner_id is not None else None
-    recent_cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    if exclude_shown_since is _DEFAULT_RECOMMENDATION_COOLDOWN:
+        exclude_shown_since = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    excluded_ids = sorted({int(value) for value in (excluded_film_ids or ())})
+    art_clause = " AND COALESCE(TRIM(f.poster_url), '') <> '' " if require_art else " "
+    shown_clause = ""
+    shown_params: list[object] = []
+    if exclude_shown_since is not None:
+        shown_clause = (
+            " AND NOT EXISTS (SELECT 1 FROM recommendation_history h "
+            "WHERE h.user_id{users_operator} AND h.film_id=f.id "
+            "AND h.action='shown' AND h.created_at >= ?)"
+        )
+        shown_params.append(exclude_shown_since)
+    ids_clause = ""
+    if excluded_ids:
+        ids_clause = f" AND f.id NOT IN ({','.join('?' for _ in excluded_ids)})"
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         if partner_id is None:
+            personal_shown = shown_clause.format(users_operator="=?")
             cur = await db.execute(
                 "SELECT f.*, mine.status AS my_status, mine.rating AS my_rating, "
                 "NULL AS partner_status, NULL AS partner_rating, "
                 "CASE WHEN mine.status='want_to_watch' THEN 1 ELSE 0 END AS in_wishlist "
                 "FROM films f LEFT JOIN user_films mine ON mine.film_id=f.id AND mine.user_id=? "
-                "WHERE COALESCE(TRIM(f.title), '') <> '' AND COALESCE(TRIM(f.poster_url), '') <> '' "
+                "WHERE COALESCE(TRIM(f.title), '') <> ''" + art_clause +
                 "AND (mine.status IS NULL OR mine.status <> 'watched') "
                 "AND NOT EXISTS (SELECT 1 FROM recommendation_history h WHERE h.user_id=? AND h.film_id=f.id AND h.action='rejected') "
-                "AND NOT EXISTS (SELECT 1 FROM recommendation_history h WHERE h.user_id=? AND h.film_id=f.id AND h.action='shown' AND h.created_at >= ?) "
+                + personal_shown + ids_clause +
                 "ORDER BY CAST(COALESCE(NULLIF(f.imdb_rating,''), NULLIF(f.kp_rating,''), '0') AS REAL) DESC, f.id DESC LIMIT ?",
-                (user_id, user_id, user_id, recent_cutoff, limit),
+                (user_id, user_id, *([user_id, *shown_params] if exclude_shown_since is not None else []),
+                 *excluded_ids, limit),
             )
         else:
+            pair_shown = shown_clause.format(users_operator=" IN (?,?)")
             cur = await db.execute(
                 "SELECT f.*, mine.status AS my_status, mine.rating AS my_rating, "
                 "partner.status AS partner_status, partner.rating AS partner_rating, "
@@ -2502,14 +2562,37 @@ async def get_recommendation_candidates(user_id: int, partner_id: int | None = N
                 "FROM films f "
                 "LEFT JOIN user_films mine ON mine.film_id=f.id AND mine.user_id=? "
                 "LEFT JOIN user_films partner ON partner.film_id=f.id AND partner.user_id=? "
-                "WHERE COALESCE(TRIM(f.title), '') <> '' AND COALESCE(TRIM(f.poster_url), '') <> '' "
+                "WHERE COALESCE(TRIM(f.title), '') <> ''" + art_clause +
                 "AND (mine.status IS NULL OR mine.status <> 'watched') "
                 "AND (partner.status IS NULL OR partner.status <> 'watched') "
                 "AND NOT EXISTS (SELECT 1 FROM recommendation_history h WHERE h.user_id IN (?,?) AND h.film_id=f.id AND h.action='rejected') "
-                "AND NOT EXISTS (SELECT 1 FROM recommendation_history h WHERE h.user_id IN (?,?) AND h.film_id=f.id AND h.action='shown' AND h.created_at >= ?) "
+                + pair_shown + ids_clause +
                 "ORDER BY CAST(COALESCE(NULLIF(f.imdb_rating,''), NULLIF(f.kp_rating,''), '0') AS REAL) DESC, f.id DESC LIMIT ?",
-                (user_id, partner_id, user_id, partner_id, user_id, partner_id, recent_cutoff, limit),
+                (user_id, partner_id, user_id, partner_id,
+                 *([user_id, partner_id, *shown_params] if exclude_shown_since is not None else []),
+                 *excluded_ids, limit),
             )
+        rows = [dict(row) for row in await cur.fetchall()]
+        # Defence in depth: manual/automatic moderation also applies to callers
+        # that bypass the scoring engine.
+        return [row for row in rows if media_type.is_movie_flow_eligible(row)]
+
+
+async def get_recent_recommendation_history(
+        user_id: int, partner_id: int | None = None, *, limit: int = 700) -> list[dict]:
+    """Newest unique shown films, pair-aware, used to relax only cooldown."""
+    users = [int(user_id)]
+    if partner_id is not None:
+        users.append(int(partner_id))
+    placeholders = ",".join("?" for _ in users)
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"SELECT film_id, MAX(created_at) AS shown_at "
+            f"FROM recommendation_history WHERE user_id IN ({placeholders}) "
+            "AND action='shown' GROUP BY film_id ORDER BY shown_at DESC LIMIT ?",
+            (*users, max(1, min(int(limit), 900))),
+        )
         return [dict(row) for row in await cur.fetchall()]
 
 

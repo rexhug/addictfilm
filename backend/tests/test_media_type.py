@@ -52,6 +52,28 @@ class ClassificationTests(unittest.TestCase):
         """Legacy-записи без типа не должны обнулять подбор до конца бэкфила."""
         self.assertTrue(media_type.is_movie_flow_eligible({"genres": "драма", "runtime": "110 мин"}))
 
+    def test_reality_event_is_excluded_but_narrative_sport_is_not(self):
+        event = {"media_type": "movie", "genres": "реальное ТВ, спорт"}
+        sport_film = {"media_type": "movie", "genres": "драма, спорт"}
+        self.assertFalse(media_type.is_movie_flow_eligible(event))
+        self.assertTrue(media_type.is_movie_flow_eligible(sport_film))
+
+    def test_genre_filter_uses_exact_tokens(self):
+        film = {"media_type": "movie", "genres": "новостийный триллер, драма"}
+        self.assertTrue(media_type.is_movie_flow_eligible(film))
+
+    def test_manual_override_wins_over_automatic_classification(self):
+        event = {"media_type": "movie", "genres": "Reality-TV",
+                 "movie_flow_state": "allow", "movie_flow_reason": "verified_feature"}
+        series = {"media_type": "series", "movie_flow_state": "allow"}
+        excluded = {"media_type": "movie", "genres": "драма",
+                    "movie_flow_state": "exclude", "movie_flow_reason": "live_sports_event"}
+        self.assertTrue(media_type.is_movie_flow_eligible(event))
+        self.assertTrue(media_type.is_movie_flow_eligible(series))
+        decision = media_type.movie_flow_decision(excluded)
+        self.assertFalse(decision.eligible)
+        self.assertEqual(decision.reason, "live_sports_event")
+
 
 class CandidatePoolTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -85,6 +107,14 @@ class CandidatePoolTests(unittest.IsolatedAsyncioTestCase):
         stored = await db.get_film(film_id)
         self.assertEqual(stored["media_type"], "series")
         self.assertEqual(stored["media_type_source"], "provider")
+
+    async def test_manual_exclusion_is_applied_inside_database_pool(self):
+        film_id = await self._film("tt904", "Live event", kind="movie", genres="спорт")
+        await db.update_film_movie_flow(
+            film_id, state="exclude", reason="live_sports_event")
+        self.assertEqual(await db.get_recommendation_candidates(1), [])
+        stored = await db.get_film(film_id)
+        self.assertEqual(stored["movie_flow_state"], "exclude")
 
     async def test_pool_is_not_emptied_when_nothing_is_classified(self):
         """Если тип не проставлен вообще ни у чего, показываем прежний пул, а не
