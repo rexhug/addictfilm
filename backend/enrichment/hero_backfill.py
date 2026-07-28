@@ -13,6 +13,7 @@ import asyncio
 import logging
 
 import database as db
+import fanart
 from config import FANART_HERO_ENABLED
 
 from . import hero
@@ -67,17 +68,22 @@ async def run(args: argparse.Namespace) -> hero.HeroReport:
 
     total = hero.HeroReport()
     batch_size = max(1, args.batch_size)
-    for start in range(0, len(films), batch_size):
-        chunk = films[start:start + batch_size]
-        report = await hero.refresh_due_heroes(
-            films=chunk, concurrency=args.concurrency, dry_run=args.dry_run)
-        for outcome in report.outcomes:
-            print(_format(outcome))
-            total.add(outcome)
-        # Дрожание между пачками: ровный поток запросов к чужому сервису
-        # выглядит хуже, чем неровный, и быстрее упирается в лимит.
-        if start + batch_size < len(films):
-            await asyncio.sleep(1.5)
+    try:
+        for start in range(0, len(films), batch_size):
+            chunk = films[start:start + batch_size]
+            report = await hero.refresh_due_heroes(
+                films=chunk, concurrency=args.concurrency, dry_run=args.dry_run)
+            for outcome in report.outcomes:
+                print(_format(outcome))
+                total.add(outcome)
+            # Дрожание между пачками: ровный поток запросов к чужому сервису
+            # выглядит хуже, чем неровный, и быстрее упирается в лимит.
+            if start + batch_size < len(films):
+                await asyncio.sleep(1.5)
+    finally:
+        # Разовая команда обязана закрыть за собой сессию: воркер живёт долго и
+        # переиспользует её, а здесь процесс выходит и aiohttp ругается.
+        await fanart.close()
 
     print("\nИтог:", total.as_dict())
     if not args.dry_run:
