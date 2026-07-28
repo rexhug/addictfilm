@@ -885,3 +885,70 @@ body.collection-editor-open .admin-indicator{display:none;}
   background:rgba(126,87,255,.12);color:rgba(220,207,255,.96);font-size:10px;font-weight:700;
   line-height:1;letter-spacing:.08em;white-space:nowrap;}
 @media(max-width:360px){.picker-preview-badge{padding-inline:6px;font-size:9px;}}
+
+/* ── Один фильм во весь экран: рулетка «Хочу» и умный случайный ───────────── */
+/* Два режима изображения, один каркас. Широкий кадр заполняет блок целиком;
+   вертикальный постер стоит по центру на собственной размытой копии — так он
+   выглядит осознанно, а не растянуто. Режим приходит от сервера. */
+.single-pick-screen{width:100%;min-width:0;padding:2px 20px var(--nav-clearance);}
+body.admin-indicator-on .single-pick-screen{padding-bottom:var(--nav-clearance-admin);}
+/* Один базовый тон у блока, у подложки изображения и у нижней точки градиента:
+   иначе на границе «картинка кончилась / начался текст» видно горизонтальный шов. */
+.single-pick-hero{--single-pick-base:#08090C;
+  position:relative;isolation:isolate;overflow:hidden;width:100%;
+  border:1px solid var(--hair-2);border-radius:26px;background:var(--single-pick-base);}
+.single-pick-media{position:relative;overflow:hidden;width:100%;background:var(--single-pick-base);}
+/* Пропорции блока заданы заранее: высота не «прыгает» после загрузки файла. */
+.single-pick-media-backdrop{aspect-ratio:16/10;min-height:330px;max-height:58svh;}
+.single-pick-backdrop{display:block;width:100%;height:100%;object-fit:cover;object-position:50% 38%;}
+.single-pick-media-shade{position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(to bottom,rgba(8,9,12,.05) 18%,rgba(8,9,12,.30) 55%,var(--single-pick-base) 100%),
+             linear-gradient(to right,rgba(8,9,12,.14),transparent 52%);}
+.single-pick-media-poster{display:grid;place-items:center;min-height:390px;padding:28px 18px 88px;}
+.single-pick-poster-blur{position:absolute;inset:-42px;width:calc(100% + 84px);height:calc(100% + 84px);
+  object-fit:cover;filter:blur(30px) saturate(.8);opacity:.46;transform:scale(1.08);}
+.single-pick-poster-shade{position:absolute;inset:0;
+  background:linear-gradient(to bottom,rgba(8,9,12,.20),rgba(8,9,12,.52) 65%,var(--single-pick-base)),rgba(8,9,12,.18);}
+.single-pick-poster{position:relative;z-index:1;display:block;width:min(48vw,230px);max-width:68%;
+  aspect-ratio:2/3;object-fit:cover;border:1px solid rgba(255,255,255,.14);border-radius:20px;
+  box-shadow:0 18px 52px rgba(0,0,0,.48);}
+.single-pick-media-empty{display:grid;place-items:center;min-height:300px;color:var(--ink-2);font-size:14px;}
+.single-pick-hero-content{position:relative;z-index:2;margin-top:-86px;padding:0 22px 24px;}
+.single-pick-label{margin:0 0 8px;color:var(--accent-2);font-size:13px;font-weight:700;
+  letter-spacing:.12em;text-transform:uppercase;}
+.single-pick-title{margin:0;color:#fff;font-size:clamp(30px,8vw,42px);font-weight:750;
+  line-height:1.04;letter-spacing:-.035em;}
+.single-pick-original{margin:8px 0 0;color:rgba(221,222,231,.7);font-size:17px;}
+.single-pick-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;}
+.single-pick-chip{display:inline-flex;align-items:center;min-height:30px;padding:5px 10px;
+  border:1px solid rgba(255,255,255,.08);border-radius:999px;background:rgba(255,255,255,.055);
+  color:rgba(244,244,248,.88);font-size:14px;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);}
+.single-pick-rating{color:#B794FF;font-variant-numeric:tabular-nums;}
+.single-pick-genres,.single-pick-reason{margin:13px 0 0;color:rgba(218,219,228,.72);
+  font-size:15px;line-height:1.45;}
+.single-pick-reason{color:rgba(240,240,245,.86);}
+.single-pick-actions{display:grid;gap:12px;padding:18px 4px 0;}
+.single-pick-primary,.single-pick-secondary,.single-pick-alternate,.single-pick-danger{
+  min-height:58px;border-radius:17px;font:650 15px var(--font);cursor:pointer;}
+.single-pick-primary{border:0;background:linear-gradient(135deg,#7050FF,#8D63FF);color:#fff;
+  box-shadow:0 10px 28px rgba(113,76,255,.22);}
+.single-pick-action-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;}
+.single-pick-secondary,.single-pick-alternate{display:inline-flex;align-items:center;
+  justify-content:center;gap:9px;min-width:0;padding:10px 12px;
+  border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);color:rgba(249,249,252,.94);}
+.single-pick-secondary svg,.single-pick-alternate svg{flex:0 0 auto;width:21px;height:21px;}
+.single-pick-alternate{color:var(--accent-2);}
+.single-pick-danger-separator{height:1px;margin:4px 4px 0;background:rgba(255,255,255,.07);}
+.single-pick-danger{border:0;background:transparent;color:#FF7F91;}
+.single-pick-primary:disabled,.single-pick-secondary:disabled,
+.single-pick-alternate:disabled,.single-pick-danger:disabled{opacity:.52;}
+@media(max-width:360px){
+  .single-pick-screen{padding-inline:14px;}
+  .single-pick-hero{border-radius:22px;}
+  .single-pick-media-backdrop{min-height:300px;}
+  .single-pick-media-poster{min-height:350px;}
+  .single-pick-hero-content{padding-inline:17px;}
+  .single-pick-title{font-size:29px;}
+  .single-pick-secondary{font-size:14px;}
+}
+.settings-attribution{margin:22px 4px 0;color:var(--ink-2);font-size:12px;line-height:1.45;}

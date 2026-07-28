@@ -32,6 +32,10 @@ if (tg) {
 
 const screen = document.getElementById("screen");
 let me = null;
+// Состояние интерфейсных возможностей приходит с СЕРВЕРА (/api/me → features) и
+// нигде не выводится из сборки: закешированный Telegram-ом фронтенд пережил бы
+// откат флага и продолжил рисовать экран, которого на сервере уже нет.
+const featureEnabled = (name) => me?.features?.[name] === true;
 let _returnTo = () => { setActiveTab("home"); showHome(); };
 let _heroSource = null;      // {rect, src} стартовой точки hero-transition, захватывается в posterTile()
 let _detailScrollHandler = null;  // текущий scroll-listener страницы фильма (снимается при уходе)
@@ -75,6 +79,9 @@ const DICT = {
     pick_version_changed: "Подбор обновился — начнём опрос заново",
     pick_v2_preview: "V2 PREVIEW",
     pick_v2_preview_hint: "Тестовая версия нового подбора, доступная только администратору",
+    pick_poster_alt: "Постер фильма", pick_backdrop_alt: "Кадр из фильма",
+    pick_image_unavailable: "Изображение недоступно",
+    settings_attribution: "Данные об изображениях предоставлены fanart.tv",
     reason_DARK_COMEDY_TONE: "Чёрный юмор и мрачный тон", reason_SATIRICAL_HUMOR: "Сатира на серьёзные темы",
     reason_ABSURD_DARK_HUMOR: "Абсурдная комедия с мрачной подачей", reason_HIGH_TENSION: "Держит в напряжении",
     reason_INTELLECTUAL: "Требует внимания и размышления", reason_COZY_TONE: "Спокойный и светлый тон",
@@ -209,6 +216,9 @@ const DICT = {
     pick_version_changed: "The picker was updated — let's start the quiz again",
     pick_v2_preview: "V2 PREVIEW",
     pick_v2_preview_hint: "Preview of the new recommendation engine, available only to administrators",
+    pick_poster_alt: "Movie poster", pick_backdrop_alt: "Movie backdrop",
+    pick_image_unavailable: "Image unavailable",
+    settings_attribution: "Artwork data provided by fanart.tv",
     reason_DARK_COMEDY_TONE: "Dark humour with a grim tone", reason_SATIRICAL_HUMOR: "Satire about serious things",
     reason_ABSURD_DARK_HUMOR: "Absurd comedy, grim delivery", reason_HIGH_TENSION: "Keeps the tension up",
     reason_INTELLECTUAL: "Asks for attention and thought", reason_COZY_TONE: "Calm, light tone",
@@ -400,6 +410,7 @@ const RETRYABLE_IMAGE_HOSTS = new Set([
   "m.media-amazon.com", "images-na.ssl-images-amazon.com", "ia.media-imdb.com",
   "avatars.mds.yandex.net", "st.kp.yandex.net", "image.openmoviedb.com",
   "image.tmdb.org", "kinopoiskapiunofficial.tech", "commons.wikimedia.org", "upload.wikimedia.org",
+  "assets.fanart.tv",
 ]);
 function isRetryableImage(img) {
   try {
@@ -564,6 +575,10 @@ document.addEventListener("error", event => {
   const img = event.target;
   if (!(img instanceof HTMLImageElement)) return;
   if (img.hasAttribute("data-person-photo-src")) showNextPersonPhoto(img);
+  // Кадр не загрузился — переключаем ТОЛЬКО слой изображения на постер. Просить
+  // у сервера другой фильм из-за битой картинки нельзя: человек уже увидел этот,
+  // и повторный запрос записал бы второй показ.
+  else if (img.hasAttribute("data-single-pick-media")) degradeSinglePickMedia(img);
   else if (img.hasAttribute("data-img-retry")) window.__imgRetry(img);
   else if (img.hasAttribute("data-img-remove-on-error")) img.remove();
 }, true);
@@ -714,7 +729,8 @@ const appIcon = (name, { label = null } = {}) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" ${label ? `role="img" aria-label="${esc(label)}"` : 'aria-hidden="true"'}>${ICONS[name] || ""}</svg>`;
 // Тонкие обёртки для существующих call-site'ов (чипы каталога и экран «Подбор»).
 const CHIP_ICONS = { pop: appIcon("flame"), top: appIcon("trophy"), gen: appIcon("grid"), coll: appIcon("layers") };
-const PICK_ICONS = { shuffle: appIcon("shuffle"), sliders: appIcon("sliders") };
+const PICK_ICONS = { shuffle: appIcon("shuffle"), sliders: appIcon("sliders"),
+  heart: appIcon("heart"), check: appIcon("checkCircle") };
 async function showHome() {
   unwireDetailScroll();
   window.scrollTo(0, 0);
@@ -938,19 +954,126 @@ function wireRecommendationMovie(container, item, { mode, sessionId = null, role
   if (another) another.onclick = async () => { await feedback("another"); onAnother?.(); };
 }
 
+// ── Один фильм во весь экран ────────────────────────────────────────────────
+// Экран ОДИН на оба сценария (рулетка и умный случайный) — различие только в
+// подписи сверху. Дублировать разметку под каждый сценарий значило бы чинить
+// потом каждую правку дважды.
+//
+// Режим изображения выбирает СЕРВЕР и присылает в hero_type. Клиент не смотрит
+// на backdrop_url и не решает сам, широкая ли картинка: именно эта догадка и
+// растягивала вертикальный постер на всю ширину.
+
+// Текущая карточка — для замены слоя изображения, когда файл не загрузился.
+let _singlePickItem = null;
+
+function singlePickHero(item) {
+  const url = item?.hero_url || item?.poster_url || null;
+  return { url, type: item?.hero_type === "backdrop" ? "backdrop" : "poster_blur" };
+}
+
+function singlePickMediaHTML(item) {
+  const hero = singlePickHero(item);
+  if (!hero.url) {
+    return `<div class="single-pick-media single-pick-media-empty"><span>${esc(t("pick_image_unavailable"))}</span></div>`;
+  }
+  // Резкий постер и его размытая копия — ОДИН и тот же URL: браузер берёт вторую
+  // отрисовку из кэша, сети на неё не тратится.
+  const src = posterSrc(hero.url, hero.type !== "backdrop");
+  const title = esc(item.title || "");
+  if (hero.type === "backdrop") {
+    return `<div class="single-pick-media single-pick-media-backdrop">
+      <img class="single-pick-backdrop" src="${src}" alt="${esc(t("pick_backdrop_alt"))}: ${title}"
+           loading="eager" decoding="async" data-single-pick-media>
+      <div class="single-pick-media-shade" aria-hidden="true"></div>
+    </div>`;
+  }
+  return `<div class="single-pick-media single-pick-media-poster">
+    <img class="single-pick-poster-blur" src="${src}" alt="" aria-hidden="true"
+         loading="eager" decoding="async" data-img-remove-on-error>
+    <div class="single-pick-poster-shade" aria-hidden="true"></div>
+    <img class="single-pick-poster" src="${src}" alt="${esc(t("pick_poster_alt"))}: ${title}"
+         loading="eager" decoding="async" data-single-pick-media>
+  </div>`;
+}
+
+// Одна деградация и ни одной петли: кадр → постер → нейтральная заглушка.
+function degradeSinglePickMedia(img) {
+  const container = img.closest(".single-pick-media");
+  if (!container) return;
+  const item = _singlePickItem;
+  const canFallBack = container.classList.contains("single-pick-media-backdrop")
+    && item && item.poster_url && item.poster_url !== item.hero_url;
+  container.outerHTML = canFallBack
+    ? singlePickMediaHTML({ ...item, hero_url: item.poster_url, hero_type: "poster_blur" })
+    : `<div class="single-pick-media single-pick-media-empty"><span>${esc(t("pick_image_unavailable"))}</span></div>`;
+}
+
+function singlePickScreenHTML(item, { label = "", allowAnother = true } = {}) {
+  const chips = [item.rating ? `<span class="single-pick-chip single-pick-rating">★ ${esc(item.rating)}</span>` : ""]
+    .concat([item.year, item.runtime].filter(Boolean)
+      .map(value => `<span class="single-pick-chip">${esc(value)}</span>`))
+    .join("");
+  const genres = String(item.genres || "").split(",").map(value => value.trim())
+    .filter(Boolean).slice(0, 3).join(" · ");
+  const reasons = recommendationReasons(item);
+  return `<main class="single-pick-screen rise d1">
+    <section class="single-pick-hero">
+      ${singlePickMediaHTML(item)}
+      <div class="single-pick-hero-content">
+        ${label ? `<p class="single-pick-label">${esc(label)}</p>` : ""}
+        <h1 class="single-pick-title">${esc(item.title || "—")}</h1>
+        ${item.title_original ? `<p class="single-pick-original">${esc(item.title_original)}</p>` : ""}
+        ${chips ? `<div class="single-pick-chips">${chips}</div>` : ""}
+        ${genres ? `<p class="single-pick-genres">${esc(genres)}</p>` : ""}
+        ${reasons ? `<p class="single-pick-reason">${esc(reasons)}</p>` : ""}
+      </div>
+    </section>
+    <section class="single-pick-actions">
+      <button type="button" class="single-pick-primary" data-pick-open>${esc(t("pick_open"))}</button>
+      <div class="single-pick-action-grid">
+        <button type="button" class="single-pick-secondary" data-pick-want>${PICK_ICONS.heart}<span>${esc(t("pick_want"))}</span></button>
+        <button type="button" class="single-pick-secondary" data-pick-watched>${PICK_ICONS.check}<span>${esc(t("pick_watched"))}</span></button>
+      </div>
+      ${allowAnother ? `<button type="button" class="single-pick-alternate" data-pick-another>${PICK_ICONS.shuffle}<span>${esc(t("pick_another"))}</span></button>` : ""}
+      <div class="single-pick-danger-separator" aria-hidden="true"></div>
+      <button type="button" class="single-pick-danger" data-pick-reject>${esc(t("pick_not_suggest"))}</button>
+    </section>
+  </main>`;
+}
+
+// Обратная связь, открытие и «другой вариант» остаются общими: полноэкранный
+// экран меняет ВИД, а не поведение.
+function wireSinglePickScreen(item, { label, mode, onAnother }) {
+  _singlePickItem = item;
+  screen.innerHTML = `${pickerHeader()}${singlePickScreenHTML(item, { label, allowAnother: true })}`;
+  window.scrollTo(0, 0);      // новый фильм всегда показывается с начала экрана
+  wireBack(showPicker);
+  wireRecommendationMovie(screen.querySelector(".single-pick-screen"), item,
+    { mode, onAnother, returnTo: showPicker });
+}
+
+function renderLegacyPick(label, item, onAnother, mode) {
+  const box = screen.querySelector(".picker-result");
+  box.innerHTML = `<div class="picker-result-label">${esc(label)}</div>${recommendationMovieCard(item, { onAnother })}`;
+  wireRecommendationMovie(box, item, { mode, onAnother, returnTo: showPicker });
+}
+
 // Рулетка по СВОЕМУ списку «Хочу»: никакого рейтинга и настроения — человек уже
 // выбрал эти фильмы сам. Отдельный экран, чтобы её не путали с умным подбором.
 async function showWishlistRandom() {
   pickerMode(false);
+  _singlePickItem = null;
   screen.innerHTML = `${pickerHeader()}<main class="picker-result"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
   wireBack(showPicker);
   try {
     const { item } = await api("/api/wishlist/random", { method: "POST", body: "{}" });
-    const box = screen.querySelector(".picker-result");
-    box.innerHTML = `<div class="picker-result-label">${esc(t("pick_wishlist_title"))}</div>${recommendationMovieCard(item, { onAnother: showWishlistRandom })}`;
     // Свой режим: сервер подтверждает показ по учёту рулетки, а не по
     // истории рекомендаций каталога.
-    wireRecommendationMovie(box, item, { mode: "wishlist", onAnother: showWishlistRandom, returnTo: showPicker });
+    if (featureEnabled("fullscreen_single_pick")) {
+      wireSinglePickScreen(item, { label: t("pick_wishlist_title"), mode: "wishlist", onAnother: showWishlistRandom });
+      return;
+    }
+    renderLegacyPick(t("pick_wishlist_title"), item, showWishlistRandom, "wishlist");
   } catch (error) {
     const message = error.message === "404" ? t("pick_wishlist_empty") : error.message;
     screen.querySelector(".picker-result").innerHTML = `${pickerError(message)}`;
@@ -961,15 +1084,18 @@ const STRATEGY_LABELS = { reliable: "strategy_reliable", taste_match: "strategy_
 
 async function showRandomRecommendation() {
   pickerMode(false);
+  _singlePickItem = null;
   screen.innerHTML = `${pickerHeader()}<main class="picker-result"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
   wireBack(showPicker);
   try {
     const { item } = await api("/api/recommendations/random", { method: "POST", body: JSON.stringify({ language: lang, context: "solo" }) });
-    const box = screen.querySelector(".picker-result");
     // Стратегия называется честно: «надёжный выбор» и «находка» — разные обещания.
     const strategy = STRATEGY_LABELS[item.strategy] ? t(STRATEGY_LABELS[item.strategy]) : t("pick_random_title");
-    box.innerHTML = `<div class="picker-result-label">${esc(strategy)}</div>${recommendationMovieCard(item, { onAnother: showRandomRecommendation })}`;
-    wireRecommendationMovie(box, item, { mode: "random", onAnother: showRandomRecommendation, returnTo: showPicker });
+    if (featureEnabled("fullscreen_single_pick")) {
+      wireSinglePickScreen(item, { label: strategy, mode: "random", onAnother: showRandomRecommendation });
+      return;
+    }
+    renderLegacyPick(strategy, item, showRandomRecommendation, "random");
   } catch (error) {
     screen.querySelector(".picker-result").innerHTML = `${pickerError(error.message === "404" ? t("pick_empty") : error.message)}<p class="picker-empty-copy">${esc(t("pick_empty_sub"))}</p>`;
   }
@@ -2925,7 +3051,8 @@ async function showStatsSettings(returnMode = "me", managePair = false) {
       <section class="settings-section" aria-labelledby="settings-pair-title"><h2 id="settings-pair-title">${esc(t("settings_pair"))}</h2><div class="settings-card settings-pair-card">${settingsPairHTML(partner, partnerFailed)}</div></section>
       ${AdminMode.isCapable() ? `<section class="settings-section" aria-labelledby="settings-admin-title"><h2 id="settings-admin-title">${esc(t("admin_section"))}</h2><div class="settings-card">
         ${settingsRow({ title: t("admin_mode_row"), subtitle: t("admin_mode_hint"), action: `<button class="settings-toggle" data-settings-admin type="button" role="switch" aria-checked="${AdminMode.enabled}" aria-label="${esc(t("admin_mode_row"))}"></button>` })}
-      </div></section>` : ""}`;
+      </div></section>` : ""}
+      <p class="settings-attribution">${esc(t("settings_attribution"))}</p>`;
 
     const telegramToggle = page.querySelector("[data-settings-telegram]");
     if (telegramToggle) telegramToggle.onclick = async () => {
