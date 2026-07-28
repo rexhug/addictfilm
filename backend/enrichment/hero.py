@@ -23,7 +23,12 @@ import aiohttp
 import database as db
 import fanart
 import hero_media
-from config import FANART_HERO_ENABLED, HERO_REFRESH_BATCH, HERO_REFRESH_CONCURRENCY
+from config import (
+    FANART_HERO_ENABLED,
+    HERO_REFRESH_BATCH,
+    HERO_REFRESH_CONCURRENCY,
+    KINOPOISK_HERO_ENABLED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +40,11 @@ _PROBE_MAX_BYTES = 12 * 1024 * 1024
 _PROBE_MIN_BYTES = 2048
 # Расхождение с метаданными в пределах округления допустимо, кратное — нет.
 _PROBE_SIZE_TOLERANCE = 0.05
+# 64 КиБ, а не 4: у JPEG сегмент SOF идёт ПОСЛЕ EXIF и цветового профиля, и в
+# первые 4 КиБ он помещается далеко не всегда. Для kinopoisk это критично —
+# нераспознанный размер там означает «кадр не доказан», то есть потерю годного
+# изображения на ровном месте.
+_PROBE_HEAD_BYTES = 64 * 1024
 
 PROBE_OK = "ok"
 PROBE_REJECTED = "rejected"
@@ -96,6 +106,13 @@ ACTION_DRY_RUN = "dry_run"
 
 
 @dataclass(frozen=True)
+class ImageProbeResult:
+    verdict: str
+    width: int | None = None
+    height: int | None = None
+
+
+@dataclass(frozen=True)
 class HeroOutcome:
     film_id: int
     title: str
@@ -106,12 +123,18 @@ class HeroOutcome:
     width: int | None = None
     height: int | None = None
     candidates: int = 0
+    # Отдельно от action: фильм может УСПЕШНО получить кадр от kinopoisk в тот
+    # самый момент, когда Fanart лежит. Если считать сбой Fanart по общему
+    # результату, предохранитель никогда не сработает и воркер продолжит
+    # долбить упавший сервис.
+    fanart_unavailable: bool = False
 
     def as_dict(self) -> dict:
         return {"film_id": self.film_id, "title": self.title, "action": self.action,
                 "hero_type": self.hero_type, "hero_source": self.hero_source,
                 "quality_score": self.quality_score, "width": self.width,
-                "height": self.height, "candidates": self.candidates}
+                "height": self.height, "candidates": self.candidates,
+                "fanart_unavailable": self.fanart_unavailable}
 
 
 @dataclass
@@ -173,20 +196,24 @@ def _sniff_dimensions(head: bytes) -> tuple[int, int] | None:
     return None
 
 
-async def probe_image(url: str, *, expected_width: int | None = None,
-                      expected_height: int | None = None, session=None) -> str:
-    """Проверка выбранного файла. Три исхода, а не два.
+async def probe_image_info(url: str, *, expected_width: int | None = None,
+                           expected_height: int | None = None, session=None) -> ImageProbeResult:
+    """Проверка файла с ВОЗВРАТОМ настоящих размеров.
 
-    Различие принципиальное, и оно проявилось сразу на проде: CDN Fanart лежал,
-    проверка не проходила — и «не смог проверить» трактовалось как «файл плохой».
-    В итоге весь каталог уезжал в запасной постер И получал свежую отметку
-    проверки, то есть замораживался на недели из-за чужого получасового сбоя.
+    Три исхода, а не два. Различие принципиальное, и оно проявилось сразу на
+    проде: CDN Fanart лежал, проверка не проходила — и «не смог проверить»
+    трактовалось как «файл плохой». В итоге весь каталог уезжал в запасной
+    постер И получал свежую отметку проверки, то есть замораживался на недели
+    из-за чужого получасового сбоя.
 
-    PROBE_OK        файл получен и совпал с метаданными;
-    PROBE_REJECTED  файл получен, но негоден (не картинка, обрезан, врут размеры),
-                    либо CDN доказал, что файла нет (404/410);
+    PROBE_OK        файл получен, распознан и не противоречит метаданным;
+    PROBE_REJECTED  файл получен и негоден (не картинка, обрезан, врут размеры),
+                    либо источник доказал, что файла нет (404/410);
     PROBE_UNKNOWN   до файла не достучались — сеть, DNS, TLS, таймаут, 5xx,
                     429/408/425 и даже 401/403: это про наш доступ, не про файл.
+
+    Размеры нужны наружу ради kinopoisk: там нет метаданных вообще, и
+    единственное доказательство пригодности кадра — заголовок самого файла.
     """
     owns = session is None
     http = session or aiohttp.ClientSession(timeout=_PROBE_TIMEOUT)
@@ -194,36 +221,44 @@ async def probe_image(url: str, *, expected_width: int | None = None,
         async with http.get(url) as response:
             status_verdict = _probe_status_verdict(response.status)
             if status_verdict != PROBE_OK:
-                return status_verdict
+                return ImageProbeResult(status_verdict)
             # Дальше — только про содержимое ответа 200.
             if not str(response.headers.get("Content-Type", "")).lower().startswith("image/"):
-                return PROBE_REJECTED
+                return ImageProbeResult(PROBE_REJECTED)
             head = b""
             size = 0
             async for chunk in response.content.iter_chunked(64 * 1024):
                 size += len(chunk)
                 if size > _PROBE_MAX_BYTES:
-                    return PROBE_REJECTED
-                if len(head) < 4096:
+                    return ImageProbeResult(PROBE_REJECTED)
+                if len(head) < _PROBE_HEAD_BYTES:
                     head += chunk
     except (TimeoutError, aiohttp.ClientError) as exc:
         logger.info("hero: файл не удалось проверить (%s)", type(exc).__name__)
-        return PROBE_UNKNOWN
+        return ImageProbeResult(PROBE_UNKNOWN)
     finally:
         if owns:
             await http.close()
 
     if size < _PROBE_MIN_BYTES:
-        return PROBE_REJECTED
+        return ImageProbeResult(PROBE_REJECTED)
     sniffed = _sniff_dimensions(head)
+    width, height = sniffed if sniffed else (None, None)
     if sniffed and expected_width and expected_height:
-        width, height = sniffed
         if (abs(width - expected_width) / expected_width > _PROBE_SIZE_TOLERANCE
                 or abs(height - expected_height) / expected_height > _PROBE_SIZE_TOLERANCE):
-            logger.warning("hero: файл не совпал с метаданными Fanart (%sx%s против %sx%s)",
+            logger.warning("hero: файл не совпал с метаданными источника (%sx%s против %sx%s)",
                            width, height, expected_width, expected_height)
-            return PROBE_REJECTED
-    return PROBE_OK
+            return ImageProbeResult(PROBE_REJECTED, width, height)
+    return ImageProbeResult(PROBE_OK, width, height)
+
+
+async def probe_image(url: str, *, expected_width: int | None = None,
+                      expected_height: int | None = None, session=None) -> str:
+    """Совместимая обёртка: только вердикт, без размеров."""
+    result = await probe_image_info(url, expected_width=expected_width,
+                                    expected_height=expected_height, session=session)
+    return result.verdict
 
 
 def _unchanged(film: dict, selection: hero_media.HeroSelection) -> bool:
@@ -232,50 +267,98 @@ def _unchanged(film: dict, selection: hero_media.HeroSelection) -> bool:
             and film.get("hero_source") == selection.source)
 
 
+async def _try_kinopoisk(film: dict, *, probe_session) -> tuple[hero_media.HeroSelection | None, bool]:
+    """(выбор, был ли временный сбой).
+
+    Ходит только за файлом, ссылка на который УЖЕ лежит в каталоге: никакого
+    стороннего API здесь нет. Поэтому канал продолжает работать, когда Fanart
+    недоступен, — ради этого он и заведён.
+    """
+    url = str(film.get("backdrop_url") or "").strip()
+    if not url:
+        return None, False
+    result = await probe_image_info(url, session=probe_session)
+    if result.verdict == PROBE_UNKNOWN:
+        return None, True
+    if result.verdict == PROBE_REJECTED:
+        return None, False
+    # Размеры взяты из заголовка файла. Их отсутствие — не «наверное подойдёт»,
+    # а «не доказано»: такой кадр в полноэкранный блок не попадает.
+    return hero_media.choose_kinopoisk_background(
+        url, width=result.width, height=result.height), False
+
+
+async def _try_fanart(film: dict, *, session, probe_session,
+                      verify: bool) -> tuple[hero_media.HeroSelection | None, bool, int]:
+    """(выбор, был ли временный сбой, сколько кандидатов вернуло API)."""
+    if not fanart.normalize_imdb_id(film.get("imdb_id")):
+        return None, False, 0
+    try:
+        images = await fanart.get_movie_backgrounds(film["imdb_id"], session=session)
+    except fanart.FanartUnavailable:
+        return None, True, 0
+    selection = hero_media.choose_fanart_background(images)
+    if selection is None or not verify:
+        return selection, False, len(images)
+    result = await probe_image_info(selection.url, expected_width=selection.width,
+                                    expected_height=selection.height, session=probe_session)
+    if result.verdict == PROBE_UNKNOWN:
+        return None, True, len(images)
+    if result.verdict == PROBE_REJECTED:
+        return None, False, len(images)
+    return selection, False, len(images)
+
+
 async def enrich_film_hero(film: dict, *, session=None, probe_session=None,
                            dry_run: bool = False, verify: bool = True) -> HeroOutcome:
+    """Порядок источников: проверенный kinopoisk → проверенный Fanart → постер.
+
+    Kinopoisk идёт первым не из-за качества, а из-за независимости: его ссылка
+    уже в каталоге, и она не перестаёт работать, когда чужой сервис лежит.
+    Годный кадр от kinopoisk полностью избавляет от запроса к Fanart.
+    """
     film_id = int(film["id"])
     title = str(film.get("title") or "")
     # Флаг решает, делает ли систему это САМА. Осмотр (--dry-run) он не запрещает:
     # он ничего не записывает, а посмотреть на качество отбора нужно ДО включения,
-    # иначе прапорец пришлось бы включать вслепую.
-    if not FANART_HERO_ENABLED and not dry_run:
+    # иначе флаг пришлось бы включать вслепую.
+    if not (FANART_HERO_ENABLED or KINOPOISK_HERO_ENABLED) and not dry_run:
         return HeroOutcome(film_id, title, ACTION_DISABLED)
 
-    images: list[fanart.FanartImage] = []
-    if fanart.normalize_imdb_id(film.get("imdb_id")):
-        try:
-            images = await fanart.get_movie_backgrounds(film["imdb_id"], session=session)
-        except fanart.FanartUnavailable:
-            # Временный сбой источника. Сохранённый выбор не трогаем и отметку
-            # проверки не ставим — иначе фильм ушёл бы на 30 дней из-за таймаута.
-            return HeroOutcome(film_id, title, ACTION_UNAVAILABLE)
+    selection: hero_media.HeroSelection | None = None
+    kinopoisk_unavailable = False
+    fanart_unavailable = False
+    candidates = 0
 
-    selection = hero_media.choose_hero(fanart_images=images, poster_url=film.get("poster_url"))
-    if (selection is not None and verify and not dry_run
-            and selection.source == hero_media.SOURCE_FANART):
-        verdict = await probe_image(selection.url, expected_width=selection.width,
-                                    expected_height=selection.height, session=probe_session)
-        if verdict == PROBE_UNKNOWN:
-            # До CDN не достучались. Записать сейчас запасной постер значило бы
-            # заморозить фильм на недели из-за чужого получасового сбоя — и, что
-            # хуже, сделать это молча. Оставляем как есть и вернёмся позже.
-            return HeroOutcome(film_id, title, ACTION_UNAVAILABLE, candidates=len(images))
-        if verdict == PROBE_REJECTED:
-            # Файл получен и негоден — вот это уже про сам файл: уходим в
-            # запасной режим, а не показываем человеку битую ссылку.
-            selection = hero_media.poster_fallback(film.get("poster_url"))
+    if KINOPOISK_HERO_ENABLED or dry_run:
+        selection, kinopoisk_unavailable = await _try_kinopoisk(film, probe_session=probe_session)
+
+    # Предохранитель гасит ТОЛЬКО Fanart: проверка kinopoisk выше от него не
+    # зависит и продолжает работать во время чужого сбоя.
+    if selection is None and (FANART_HERO_ENABLED or dry_run) and not _circuit_is_open():
+        selection, fanart_unavailable, candidates = await _try_fanart(
+            film, session=session, probe_session=probe_session, verify=verify)
+
+    if selection is None:
+        if kinopoisk_unavailable or fanart_unavailable:
+            # Хотя бы один источник не ответил, и ни один не дал определённого
+            # результата. Записать сейчас запасной постер значило бы заморозить
+            # фильм на недели из-за чужого получасового сбоя — и молча.
+            return HeroOutcome(film_id, title, ACTION_UNAVAILABLE, candidates=candidates,
+                               fanart_unavailable=fanart_unavailable)
+        selection = hero_media.poster_fallback(film.get("poster_url"))
 
     if selection is None:
         if not dry_run:
             await db.mark_film_hero_checked(film_id)
-        return HeroOutcome(film_id, title, ACTION_NONE, candidates=len(images))
+        return HeroOutcome(film_id, title, ACTION_NONE, candidates=candidates,
+                           fanart_unavailable=fanart_unavailable)
 
     outcome = HeroOutcome(film_id, title, ACTION_DRY_RUN if dry_run else ACTION_STORED,
                           hero_type=selection.hero_type, hero_source=selection.source,
                           quality_score=selection.quality_score,
                           width=selection.width, height=selection.height,
-                          candidates=len(images))
+                          candidates=candidates, fanart_unavailable=fanart_unavailable)
     if dry_run:
         return outcome
     if _unchanged(film, selection):
@@ -299,11 +382,13 @@ async def refresh_due_heroes(*, limit: int | None = None, concurrency: int | Non
     определению, и один таймаут не повод бросать остальные 19.
     """
     report = HeroReport()
-    if not FANART_HERO_ENABLED and not dry_run:
+    if not (FANART_HERO_ENABLED or KINOPOISK_HERO_ENABLED) and not dry_run:
         return report
+    # Пачку из-за предохранителя больше НЕ пропускаем: он гасит только Fanart,
+    # а проверка сохранённых backdrop_url от kinopoisk во время чужого сбоя
+    # обязана продолжаться — ради этого второй канал и заведён.
     if _circuit_is_open():
-        logger.warning("hero: предохранитель Fanart разомкнут, пачка пропущена")
-        return report
+        logger.info("hero: предохранитель Fanart разомкнут, работаем только по kinopoisk")
     batch = films if films is not None else await db.list_films_missing_or_stale_hero(
         limit=limit or HERO_REFRESH_BATCH)
     if not batch:
@@ -329,10 +414,13 @@ async def refresh_due_heroes(*, limit: int | None = None, concurrency: int | Non
             wave = batch[start:start + wave_size]
             for outcome in await asyncio.gather(*(_one(film) for film in wave)):
                 report.add(outcome)
-                if outcome.action == ACTION_UNAVAILABLE:
+                # Считаем сбои ИМЕННО Fanart, а не общий результат: фильм мог
+                # успешно получить кадр от kinopoisk ровно в тот момент, когда
+                # Fanart лежит, и такой успех не должен прятать чужой сбой.
+                if outcome.fanart_unavailable:
                     consecutive_unknown += 1
-                else:
-                    # Любой определённый ответ означает, что источник жив.
+                elif outcome.action != ACTION_UNAVAILABLE:
+                    # Определённый ответ означает, что Fanart жив.
                     consecutive_unknown = 0
             if consecutive_unknown >= _CIRCUIT_UNKNOWN_LIMIT:
                 _open_circuit()

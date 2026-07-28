@@ -17,7 +17,7 @@ import database as db
 from config import ENRICHMENT_BATCH_SIZE as BATCH_SIZE
 from config import ENRICHMENT_IDLE_SLEEP as IDLE_SLEEP_SECONDS
 from config import ENRICHMENT_RECONCILE_INTERVAL as RECONCILE_INTERVAL_SECONDS
-from config import FANART_HERO_ENABLED
+from config import FANART_HERO_ENABLED, KINOPOISK_HERO_ENABLED
 from config import HERO_REFRESH_INTERVAL as HERO_INTERVAL_SECONDS
 
 from . import hero, queue, reconciliation, repository, service
@@ -95,6 +95,10 @@ async def run_worker(state: WorkerState | None = None, *, max_cycles: int | None
     # согласованием. Первый проход намеренно отложен на интервал — воркер после
     # деплоя сначала доводит профили.
     last_hero = time.monotonic()
+    # Два независимых источника кадров. Проверка сохранённых backdrop_url от
+    # kinopoisk не требует Fanart вообще, поэтому один выключенный источник не
+    # должен глушить второй — раньше весь проход висел на FANART_HERO_ENABLED.
+    hero_enabled = FANART_HERO_ENABLED or KINOPOISK_HERO_ENABLED
 
     cycles = 0
     while state.running:
@@ -108,7 +112,7 @@ async def run_worker(state: WorkerState | None = None, *, max_cycles: int | None
                 report = await reconciliation.reconcile(batch_size=200)
                 logger.info("enrichment worker: периодическое согласование %s", report.as_dict())
                 last_reconcile = time.monotonic()
-            if FANART_HERO_ENABLED and time.monotonic() - last_hero > HERO_INTERVAL_SECONDS:
+            if hero_enabled and time.monotonic() - last_hero > HERO_INTERVAL_SECONDS:
                 hero_report = await hero.refresh_due_heroes()
                 logger.info("enrichment worker: подбор кадров %s", hero_report.as_dict())
                 last_hero = time.monotonic()

@@ -14,7 +14,7 @@ import logging
 
 import database as db
 import fanart
-from config import FANART_HERO_ENABLED
+from config import FANART_HERO_ENABLED, KINOPOISK_HERO_ENABLED
 
 from . import hero
 
@@ -59,13 +59,12 @@ async def run(args: argparse.Namespace) -> hero.HeroReport:
     await db.init_db()
     # Осмотр разрешён и при выключенном флаге: он ничего не пишет, а посмотреть
     # на качество отбора нужно ДО включения. Запись — только с флагом.
-    if not FANART_HERO_ENABLED and not args.dry_run:
-        print("FANART_HERO_ENABLED выключен — запись отключена. "
-              "Посмотреть отбор можно с --dry-run.")
+    if not (FANART_HERO_ENABLED or KINOPOISK_HERO_ENABLED) and not args.dry_run:
+        print("Оба источника выключены (KINOPOISK_HERO_ENABLED / FANART_HERO_ENABLED) — "
+              "запись отключена. Посмотреть отбор можно с --dry-run.")
         return hero.HeroReport()
-    if not fanart.configured():
+    if FANART_HERO_ENABLED and not fanart.configured():
         print("Ключи Fanart не настроены (FANART_PROJECT_KEY / FANART_CLIENT_KEY).")
-        return hero.HeroReport()
 
     films = await _candidates(args)
     if not films:

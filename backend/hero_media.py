@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from fanart import FanartImage
 
-HERO_POLICY_VERSION = "hero-policy-v1"
+HERO_POLICY_VERSION = "hero-policy-v2"
 
 HERO_BACKDROP = "backdrop"
 HERO_POSTER_BLUR = "poster_blur"
@@ -134,6 +134,44 @@ def choose_fanart_background(images: Iterable[FanartImage]) -> HeroSelection | N
                          quality_score=score, width=best.width, height=best.height)
 
 
+# Порог тот же, что у Fanart: «достаточно хорошо для широкого блока» не зависит
+# от того, кто отдал файл.
+MIN_KINOPOISK_HERO_SCORE = 0.72
+
+
+def score_kinopoisk_background(width: int, height: int) -> float:
+    """У kinopoisk нет ни лайков, ни языка кадра — только размеры.
+
+    Поэтому вес перераспределён между теми двумя измерениями, которые есть, а
+    не выдуман из воздуха: разрешение 0.65, соотношение 0.35. Порог остаётся
+    прежним, то есть кадру от kinopoisk приходится быть объективно крупнее,
+    чтобы его добрать без «социальных» очков.
+    """
+    score = _resolution_score(width, height) * 0.65 + _ratio_score(width, height) * 0.35
+    return round(max(0.0, min(1.0, score)), 4)
+
+
+def choose_kinopoisk_background(url: str | None, *, width: int | None,
+                                height: int | None) -> HeroSelection | None:
+    """Размеры здесь приходят ИЗ САМОГО ФАЙЛА, а не из поля каталога.
+
+    Наличие backdrop_url по-прежнему ничего не доказывает — доказывает только
+    скачанный и распознанный заголовок изображения. Нет размеров — нет кадра.
+    """
+    normalized = str(url or "").strip()
+    if not normalized or not width or not height:
+        return None
+    if width < MIN_HERO_WIDTH or height < MIN_HERO_HEIGHT:
+        return None
+    if not MIN_HERO_RATIO <= width / height <= MAX_HERO_RATIO:
+        return None
+    score = score_kinopoisk_background(width, height)
+    if score < MIN_KINOPOISK_HERO_SCORE:
+        return None
+    return HeroSelection(url=normalized, hero_type=HERO_BACKDROP, source=SOURCE_KINOPOISK,
+                         quality_score=score, width=width, height=height)
+
+
 def poster_fallback(poster_url: str | None) -> HeroSelection | None:
     url = str(poster_url or "").strip()
     if not url:
@@ -146,11 +184,11 @@ def poster_fallback(poster_url: str | None) -> HeroSelection | None:
 
 def choose_hero(*, fanart_images: Iterable[FanartImage],
                 poster_url: str | None) -> HeroSelection | None:
-    """Старый kinopoisk `backdrop_url` здесь сознательно НЕ участвует.
+    """Только Fanart и запасной постер.
 
-    Ровно его непроверенность и была исходным дефектом: поле есть, а что за
-    ним — неизвестно. Источник `kinopoisk` остаётся допустимым значением в
-    схеме, чтобы позже подключить его, когда появятся реальные размеры.
+    Kinopoisk сюда не входит намеренно: его кадр можно выбрать лишь ПОСЛЕ
+    скачивания файла, а эта функция чисто вычислительная и в сеть не ходит.
+    Порядок источников целиком живёт в enrichment/hero.py.
     """
     return choose_fanart_background(fanart_images) or poster_fallback(poster_url)
 

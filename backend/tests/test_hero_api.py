@@ -141,6 +141,34 @@ class HeroApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(flags["fanart_configured"], True)
         self.assertIn("fanart_hero_enabled", flags)
 
+    async def test_no_external_image_call_happens_inside_a_user_request(self):
+        """Человек нажимает кнопку и получает результат из каталога.
+
+        Ни Fanart, ни скачивание файла на этом пути быть не должно: иначе
+        рулетка начала бы зависеть от доступности чужого сервиса.
+        """
+        await self._wishlist_film()
+        await self._seed_catalog()
+        from enrichment import hero as hero_pipeline
+        fanart_api = mock.AsyncMock(return_value=[])
+        probe = mock.AsyncMock(return_value=hero_pipeline.ImageProbeResult("ok", 1920, 1080))
+        with mock.patch.object(main.fanart, "get_movie_backgrounds", new=fanart_api), \
+             mock.patch.object(hero_pipeline, "probe_image_info", new=probe):
+            await main.wishlist_random(user={"id": 1})
+            body = main.RandomRecommendationBody(language="ru", context="solo")
+            await main.recommendation_random(body, user={"id": 1})
+        fanart_api.assert_not_awaited()
+        probe.assert_not_awaited()
+
+    async def test_a_kinopoisk_backdrop_is_exposed_as_such(self):
+        film_id = await self._wishlist_film()
+        await db.update_film_hero(film_id, hero_url="https://kp/wide.jpg", hero_type="backdrop",
+                                  hero_source="kinopoisk", hero_quality_score=0.935,
+                                  hero_width=1920, hero_height=1080)
+        item = (await main.wishlist_random(user={"id": 1}))["item"]
+        self.assertEqual(item["hero_source"], "kinopoisk")
+        self.assertEqual(item["hero_type"], "backdrop")
+
     async def test_the_fanart_cdn_is_the_only_host_added_to_the_image_proxy(self):
         self.assertIn("assets.fanart.tv", main._ALLOWED_IMG_HOSTS)
         self.assertTrue(main._is_allowed_image_url("https://assets.fanart.tv/fanart/movies/1/a.jpg"))

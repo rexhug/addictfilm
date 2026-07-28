@@ -51,10 +51,11 @@ class HeroPipelineTests(unittest.IsolatedAsyncioTestCase):
             return list(images)
         return mock.patch.object(fanart, "get_movie_backgrounds", new=_fake)
 
-    def _probe(self, verdict=None):
+    def _probe(self, verdict=None, *, width=1920, height=1080):
         return mock.patch.object(
-            hero, "probe_image",
-            new=mock.AsyncMock(return_value=verdict or hero.PROBE_OK))
+            hero, "probe_image_info",
+            new=mock.AsyncMock(return_value=hero.ImageProbeResult(
+                verdict or hero.PROBE_OK, width, height)))
 
     # ── схема ────────────────────────────────────────────────────────────────
     async def test_migration_is_idempotent(self):
@@ -156,7 +157,8 @@ class HeroPipelineTests(unittest.IsolatedAsyncioTestCase):
         # Иначе флаг пришлось бы включать вслепую: посмотреть на качество отбора
         # было бы нечем, а осмотр ничего не записывает.
         film_id = await self._film()
-        with mock.patch.object(hero, "FANART_HERO_ENABLED", False), self._fanart([image()]):
+        with mock.patch.object(hero, "FANART_HERO_ENABLED", False), \
+                self._fanart([image()]), self._probe():
             report = await hero.refresh_due_heroes(limit=10, dry_run=True)
         self.assertEqual(report.examined, 1)
         self.assertEqual(report.outcomes[0].hero_type, "backdrop")
@@ -288,12 +290,25 @@ class HeroPipelineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_dry_run_changes_nothing(self):
         film_id = await self._film()
-        with self._fanart([image()]):
+        with self._fanart([image()]), self._probe():
             report = await hero.refresh_due_heroes(limit=10, dry_run=True)
         self.assertEqual(report.outcomes[0].action, hero.ACTION_DRY_RUN)
         film = await db.get_film(film_id)
         self.assertIsNone(film["hero_url"])
         self.assertIsNone(film["hero_checked_at"])
+
+    async def test_dry_run_predicts_the_same_outcome_as_a_real_pass(self):
+        """Осмотр обязан проверять файл так же, как настоящий проход.
+
+        Реальный случай с прода: dry-run показал backdrop, а запись дала постер,
+        потому что осмотр пропускал проверку файла. Такой осмотр бесполезен —
+        именно на его основании принимается решение включать флаг.
+        """
+        await self._film()
+        with self._fanart([image()]), self._probe(hero.PROBE_UNKNOWN):
+            dry = await hero.refresh_due_heroes(limit=10, dry_run=True)
+        self.assertEqual(dry.outcomes[0].action, hero.ACTION_UNAVAILABLE)
+        self.assertIsNone(dry.outcomes[0].hero_type)
 
     async def test_distribution_reports_what_is_actually_stored(self):
         first = await self._film("tt0000001")
@@ -445,8 +460,9 @@ class CircuitBreakerTests(unittest.IsolatedAsyncioTestCase):
 
         return (asked,
                 mock.patch.object(fanart, "get_movie_backgrounds", new=_api),
-                mock.patch.object(hero, "probe_image",
-                                  new=mock.AsyncMock(return_value=verdict)))
+                mock.patch.object(hero, "probe_image_info",
+                                  new=mock.AsyncMock(return_value=hero.ImageProbeResult(
+                                      verdict, 1920, 1080))))
 
     async def test_three_consecutive_outages_open_the_circuit(self):
         await self._films(9)
@@ -458,15 +474,17 @@ class CircuitBreakerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report.examined, 3, "остаток пачки не должен запрашиваться")
         self.assertEqual(len(asked), 3)
 
-    async def test_an_open_circuit_makes_zero_external_calls(self):
+    async def test_an_open_circuit_makes_zero_fanart_calls(self):
+        """Предохранитель гасит ТОЛЬКО Fanart. Фильмы всё равно обрабатываются:
+        запасной постер и проверка kinopoisk от чужого сбоя не зависят."""
         await self._films(4)
         hero._open_circuit()
         called = mock.AsyncMock(return_value=[image()])
-        with mock.patch.object(fanart, "get_movie_backgrounds", new=called), \
-                self.assertLogs(hero.logger, level="WARNING"):
+        with mock.patch.object(fanart, "get_movie_backgrounds", new=called):
             report = await hero.refresh_due_heroes(limit=4)
-        self.assertEqual(report.examined, 0)
         called.assert_not_awaited()
+        self.assertEqual(report.examined, 4)
+        self.assertEqual(report.stored, 4, "постер должен сохраняться и при сбое Fanart")
 
     async def test_an_outage_leaves_every_hero_column_untouched(self):
         await self._films(3)
@@ -502,13 +520,13 @@ class CircuitBreakerTests(unittest.IsolatedAsyncioTestCase):
         async def _probe(*_args, **_kwargs):
             verdict = verdicts[min(calls["n"], len(verdicts) - 1)]
             calls["n"] += 1
-            return verdict
+            return hero.ImageProbeResult(verdict, 1920, 1080)
 
         async def _api(imdb_id, session=None):
             return [image()]
 
         with mock.patch.object(fanart, "get_movie_backgrounds", new=_api), \
-                mock.patch.object(hero, "probe_image", new=_probe):
+                mock.patch.object(hero, "probe_image_info", new=_probe):
             report = await hero.refresh_due_heroes(limit=6, concurrency=1)
         self.assertFalse(hero._circuit_is_open(), "трёх подряд так и не случилось")
         self.assertEqual(report.examined, 6)
@@ -522,6 +540,198 @@ class CircuitBreakerTests(unittest.IsolatedAsyncioTestCase):
             report = await hero.refresh_due_heroes(limit=2, dry_run=True)
         self.assertEqual(report.examined, 2)
         self.assertTrue(all(o.action == hero.ACTION_DRY_RUN for o in report.outcomes))
+
+
+class KinopoiskHeroTests(unittest.IsolatedAsyncioTestCase):
+    """Второй, независимый источник кадров.
+
+    Смысл канала — не качество, а НЕЗАВИСИМОСТЬ: ссылка уже лежит в каталоге и
+    не перестаёт работать, когда чужой сервис лежит. Но наличие backdrop_url
+    по-прежнему ничего не доказывает: доказывает только скачанный файл.
+    """
+
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.old = (db.DB_PATH, db.DATABASE_URL, db._PG)
+        db.DB_PATH = str(Path(self.temp.name) / "kp.db")
+        db.DATABASE_URL, db._PG = "", False
+        await db.init_db()
+        hero.reset_circuit()
+        self.addCleanup(hero.reset_circuit)
+        for name, value in (("KINOPOISK_HERO_ENABLED", True), ("FANART_HERO_ENABLED", True)):
+            patcher = mock.patch.object(hero, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    async def asyncTearDown(self):
+        db.DB_PATH, db.DATABASE_URL, db._PG = self.old
+        self.temp.cleanup()
+
+    async def _film(self, *, backdrop="https://kp/wide.jpg", poster="https://p/1.jpg") -> int:
+        return await db.get_or_create_film(imdb_id="tt0000001", title="Фильм", genres="драма",
+                                           media_type="movie", poster_url=poster,
+                                           backdrop_url=backdrop, year="2010")
+
+    def _probes(self, kinopoisk, fanart_result=None):
+        """Разные ответы для разных URL: один вызов на kinopoisk, другой на CDN."""
+        async def _probe(url, *, expected_width=None, expected_height=None, session=None):
+            if url.startswith("https://kp/"):
+                return kinopoisk
+            return fanart_result or hero.ImageProbeResult(hero.PROBE_OK, 1920, 1080)
+        return mock.patch.object(hero, "probe_image_info", new=_probe)
+
+    def _fanart(self, images):
+        calls: list[str] = []
+
+        async def _api(imdb_id, session=None):
+            calls.append(imdb_id)
+            return list(images)
+        return calls, mock.patch.object(fanart, "get_movie_backgrounds", new=_api)
+
+    async def test_a_proven_kinopoisk_backdrop_is_stored(self):
+        film_id = await self._film()
+        _calls, patch_api = self._fanart([])
+        with patch_api, self._probes(hero.ImageProbeResult(hero.PROBE_OK, 1920, 1080)):
+            report = await hero.refresh_due_heroes(limit=1)
+        self.assertEqual(report.stored, 1)
+        film = await db.get_film(film_id)
+        self.assertEqual(film["hero_type"], "backdrop")
+        self.assertEqual(film["hero_source"], "kinopoisk")
+        self.assertEqual((film["hero_width"], film["hero_height"]), (1920, 1080))
+        self.assertEqual(film["hero_url"], "https://kp/wide.jpg")
+
+    async def test_a_small_kinopoisk_image_is_not_a_backdrop(self):
+        film_id = await self._film()
+        _calls, patch_api = self._fanart([])
+        with patch_api, self._probes(hero.ImageProbeResult(hero.PROBE_OK, 640, 360)):
+            await hero.refresh_due_heroes(limit=1)
+        self.assertEqual((await db.get_film(film_id))["hero_type"], "poster_blur")
+
+    async def test_a_vertical_kinopoisk_image_is_not_a_backdrop(self):
+        film_id = await self._film()
+        _calls, patch_api = self._fanart([])
+        with patch_api, self._probes(hero.ImageProbeResult(hero.PROBE_OK, 1200, 1800)):
+            await hero.refresh_due_heroes(limit=1)
+        self.assertEqual((await db.get_film(film_id))["hero_type"], "poster_blur")
+
+    async def test_unreadable_dimensions_are_not_proof(self):
+        # Формат не распознан — «не доказано», а не «наверное подойдёт».
+        film_id = await self._film()
+        _calls, patch_api = self._fanart([])
+        with patch_api, self._probes(hero.ImageProbeResult(hero.PROBE_OK, None, None)):
+            await hero.refresh_due_heroes(limit=1)
+        self.assertEqual((await db.get_film(film_id))["hero_type"], "poster_blur")
+
+    async def test_a_good_kinopoisk_backdrop_avoids_fanart_entirely(self):
+        await self._film()
+        calls, patch_api = self._fanart([image()])
+        with patch_api, self._probes(hero.ImageProbeResult(hero.PROBE_OK, 1920, 1080)):
+            await hero.refresh_due_heroes(limit=1)
+        self.assertEqual(calls, [], "лишний запрос к чужому сервису")
+
+    async def test_a_rejected_kinopoisk_backdrop_falls_through_to_fanart(self):
+        film_id = await self._film()
+        calls, patch_api = self._fanart([image()])
+        with patch_api, self._probes(hero.ImageProbeResult(hero.PROBE_REJECTED)):
+            await hero.refresh_due_heroes(limit=1)
+        self.assertEqual(calls, ["tt0000001"])
+        film = await db.get_film(film_id)
+        self.assertEqual(film["hero_source"], "fanart")
+
+    async def test_an_unavailable_kinopoisk_still_lets_fanart_work(self):
+        film_id = await self._film()
+        calls, patch_api = self._fanart([image()])
+        with patch_api, self._probes(hero.ImageProbeResult(hero.PROBE_UNKNOWN)):
+            await hero.refresh_due_heroes(limit=1)
+        self.assertEqual(calls, ["tt0000001"])
+        self.assertEqual((await db.get_film(film_id))["hero_source"], "fanart")
+
+    async def test_an_unavailable_fanart_still_lets_kinopoisk_work(self):
+        film_id = await self._film()
+        _calls, patch_api = self._fanart([image()])
+        with patch_api, self._probes(hero.ImageProbeResult(hero.PROBE_OK, 1920, 1080),
+                                     hero.ImageProbeResult(hero.PROBE_UNKNOWN)):
+            await hero.refresh_due_heroes(limit=1)
+        self.assertEqual((await db.get_film(film_id))["hero_source"], "kinopoisk")
+
+    async def test_both_sources_unavailable_writes_nothing(self):
+        film_id = await self._film()
+        _calls, patch_api = self._fanart([image()])
+        with patch_api, self._probes(hero.ImageProbeResult(hero.PROBE_UNKNOWN),
+                                     hero.ImageProbeResult(hero.PROBE_UNKNOWN)):
+            report = await hero.refresh_due_heroes(limit=1)
+        self.assertEqual(report.unavailable, 1)
+        film = await db.get_film(film_id)
+        self.assertIsNone(film["hero_url"])
+        self.assertIsNone(film["hero_checked_at"])
+
+    async def test_both_sources_definitively_empty_falls_back_to_the_poster(self):
+        film_id = await self._film()
+        _calls, patch_api = self._fanart([])
+        with patch_api, self._probes(hero.ImageProbeResult(hero.PROBE_REJECTED)):
+            await hero.refresh_due_heroes(limit=1)
+        film = await db.get_film(film_id)
+        self.assertEqual(film["hero_type"], "poster_blur")
+        self.assertEqual(film["hero_source"], "poster")
+
+    async def test_an_open_fanart_circuit_still_validates_kinopoisk(self):
+        film_id = await self._film()
+        hero._open_circuit()
+        calls, patch_api = self._fanart([image()])
+        with patch_api, self._probes(hero.ImageProbeResult(hero.PROBE_OK, 1920, 1080)):
+            await hero.refresh_due_heroes(limit=1)
+        self.assertEqual(calls, [], "Fanart во время сбоя трогать нельзя")
+        self.assertEqual((await db.get_film(film_id))["hero_source"], "kinopoisk")
+
+    async def test_the_circuit_still_opens_when_kinopoisk_keeps_succeeding(self):
+        """Успех kinopoisk не должен прятать затяжной сбой Fanart."""
+        for index in range(3):
+            await db.get_or_create_film(imdb_id=f"tt00001{index:02d}", title=f"Ф{index}",
+                                        genres="драма", media_type="movie",
+                                        poster_url="https://p/1.jpg",
+                                        backdrop_url="https://kp/small.jpg", year="2010")
+        _calls, patch_api = self._fanart([image()])
+        with patch_api, self._probes(hero.ImageProbeResult(hero.PROBE_OK, 640, 360),
+                                     hero.ImageProbeResult(hero.PROBE_UNKNOWN)), \
+                self.assertLogs(hero.logger, level="WARNING"):
+            report = await hero.refresh_due_heroes(limit=3, concurrency=3)
+        self.assertTrue(hero._circuit_is_open())
+        self.assertEqual(report.unavailable, 3)
+
+    async def test_a_stored_hero_survives_a_double_outage(self):
+        film_id = await self._film()
+        await db.update_film_hero(film_id, hero_url="https://kp/old.jpg", hero_type="backdrop",
+                                  hero_source="kinopoisk", hero_quality_score=0.9,
+                                  hero_width=1920, hero_height=1080)
+        before = await db.get_film(film_id)
+        _calls, patch_api = self._fanart([image()])
+        with patch_api, self._probes(hero.ImageProbeResult(hero.PROBE_UNKNOWN),
+                                     hero.ImageProbeResult(hero.PROBE_UNKNOWN)):
+            await hero.refresh_due_heroes(films=[before])
+        after = await db.get_film(film_id)
+        self.assertEqual(after["hero_url"], before["hero_url"])
+        self.assertEqual(after["hero_checked_at"], before["hero_checked_at"])
+
+    async def test_a_dry_run_writes_nothing(self):
+        film_id = await self._film()
+        _calls, patch_api = self._fanart([])
+        with patch_api, self._probes(hero.ImageProbeResult(hero.PROBE_OK, 1920, 1080)):
+            report = await hero.refresh_due_heroes(limit=1, dry_run=True)
+        self.assertEqual(report.outcomes[0].hero_source, "kinopoisk")
+        film = await db.get_film(film_id)
+        self.assertIsNone(film["hero_url"])
+        self.assertIsNone(film["hero_checked_at"])
+
+    async def test_the_api_payload_reports_the_kinopoisk_source(self):
+        import hero_media as policy
+        film_id = await self._film()
+        await db.update_film_hero(film_id, hero_url="https://kp/wide.jpg", hero_type="backdrop",
+                                  hero_source="kinopoisk", hero_quality_score=0.935,
+                                  hero_width=1920, hero_height=1080)
+        payload = policy.hero_payload(await db.get_film(film_id))
+        self.assertEqual(payload["hero_source"], "kinopoisk")
+        self.assertEqual(payload["hero_type"], "backdrop")
+        self.assertEqual(payload["hero_url"], "https://kp/wide.jpg")
 
 
 if __name__ == "__main__":

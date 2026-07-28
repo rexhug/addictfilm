@@ -43,6 +43,7 @@ from config import (
     DATABASE_URL,
     FANART_HERO_ENABLED,
     FULLSCREEN_SINGLE_PICK_ENABLED,
+    KINOPOISK_HERO_ENABLED,
     SENTRY_DSN,
     SENTRY_TRACES_SAMPLE_RATE,
 )
@@ -1504,6 +1505,7 @@ async def admin_enrichment_status():
             "mood_layer_enabled": recommendations.MOOD_LAYER_ENABLED,
             "mood_layer_admin_preview": recommendations.MOOD_LAYER_ADMIN_PREVIEW,
             "smart_random_strategies": recommendations.SMART_RANDOM_STRATEGIES,
+            "kinopoisk_hero_enabled": KINOPOISK_HERO_ENABLED,
             "fanart_hero_enabled": FANART_HERO_ENABLED,
             "fanart_configured": fanart.configured(),   # НАСТРОЕН ли ключ, а не какой
             "fullscreen_single_pick": FULLSCREEN_SINGLE_PICK_ENABLED,

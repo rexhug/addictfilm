@@ -328,3 +328,26 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
             second = await hero.refresh_due_heroes(limit=10)
         self.assertEqual(second.examined, 0)
         called.assert_not_awaited()
+
+    async def test_kinopoisk_hero_is_stored_and_served_on_postgres(self):
+        """Второй источник пишет те же колонки: убеждаемся, что REAL-счёт и
+        текстовый источник переживают asyncpg так же, как Fanart."""
+        import hero_media
+
+        film_id = await db.get_or_create_film("tt78001", "Кино", genres="драма",
+                                              media_type="movie", year="2010",
+                                              poster_url="https://example.test/p.jpg",
+                                              backdrop_url="https://kp/wide.jpg")
+        stored = await db.update_film_hero(
+            film_id, hero_url="https://kp/wide.jpg", hero_type="backdrop",
+            hero_source="kinopoisk", hero_quality_score=0.935,
+            hero_width=1920, hero_height=1080)
+        self.assertEqual(stored["hero_source"], "kinopoisk")
+        self.assertAlmostEqual(float(stored["hero_quality_score"]), 0.935)
+
+        payload = hero_media.hero_payload(await db.get_film(film_id))
+        self.assertEqual(payload["hero_source"], "kinopoisk")
+        self.assertEqual(payload["hero_type"], "backdrop")
+
+        distribution = await db.hero_distribution()
+        self.assertEqual(distribution["by_source"]["kinopoisk"]["count"], 1)
