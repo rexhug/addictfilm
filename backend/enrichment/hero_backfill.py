@@ -33,6 +33,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="только этот фильм (для точечной проверки)")
     parser.add_argument("--force", action="store_true",
                         help="не смотреть на срок перепроверки")
+    parser.add_argument("--source", choices=("kinopoisk", "fanart", "all"), default=None,
+                        help="явно ограничить источник; по умолчанию — включённые флагами")
     return parser.parse_args(argv)
 
 
@@ -77,7 +79,8 @@ async def run(args: argparse.Namespace) -> hero.HeroReport:
         for start in range(0, len(films), batch_size):
             chunk = films[start:start + batch_size]
             report = await hero.refresh_due_heroes(
-                films=chunk, concurrency=args.concurrency, dry_run=args.dry_run)
+                films=chunk, concurrency=args.concurrency, dry_run=args.dry_run,
+                sources=args.source)
             for outcome in report.outcomes:
                 print(_format(outcome))
                 total.add(outcome)

@@ -828,5 +828,63 @@ class KinopoiskRenditionFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone((await db.get_film(self.film_id))["hero_checked_at"])
 
 
+class SourceSelectionTests(unittest.IsolatedAsyncioTestCase):
+    """Осмотр обязан показывать то, что сделает ПРОД.
+
+    Реальный случай: dry-run лез в Fanart при FANART_HERO_ENABLED=0, четыре
+    фильма получили «недоступно» из-за лежащего чужого CDN, и предохранитель
+    оборвал порцию — при том, что в проде этих запросов не было бы вовсе.
+    """
+
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.old = (db.DB_PATH, db.DATABASE_URL, db._PG)
+        db.DB_PATH = str(Path(self.temp.name) / "src.db")
+        db.DATABASE_URL, db._PG = "", False
+        await db.init_db()
+        hero.reset_circuit()
+        self.addCleanup(hero.reset_circuit)
+        self.film_id = await db.get_or_create_film(
+            imdb_id="tt0000001", title="Фильм", genres="драма", media_type="movie",
+            poster_url="https://p/1.jpg", year="2010", backdrop_url="https://kp/wide.jpg")
+
+    async def asyncTearDown(self):
+        db.DB_PATH, db.DATABASE_URL, db._PG = self.old
+        self.temp.cleanup()
+
+    def _flags(self, *, kinopoisk, fanart_flag):
+        return (mock.patch.object(hero, "KINOPOISK_HERO_ENABLED", kinopoisk),
+                mock.patch.object(hero, "FANART_HERO_ENABLED", fanart_flag))
+
+    def test_a_dry_run_follows_the_enabled_sources(self):
+        kp, fa = self._flags(kinopoisk=True, fanart_flag=False)
+        with kp, fa:
+            self.assertEqual(hero.resolve_sources(True), (True, False))
+            self.assertEqual(hero.resolve_sources(False), (True, False))
+
+    def test_a_dry_run_before_the_first_enable_inspects_everything(self):
+        kp, fa = self._flags(kinopoisk=False, fanart_flag=False)
+        with kp, fa:
+            self.assertEqual(hero.resolve_sources(True), (True, True))
+            self.assertEqual(hero.resolve_sources(False), (False, False))
+
+    def test_an_explicit_source_overrides_the_flags(self):
+        kp, fa = self._flags(kinopoisk=True, fanart_flag=True)
+        with kp, fa:
+            self.assertEqual(hero.resolve_sources(True, "kinopoisk"), (True, False))
+            self.assertEqual(hero.resolve_sources(True, "fanart"), (False, True))
+            self.assertEqual(hero.resolve_sources(True, "all"), (True, True))
+
+    async def test_a_kinopoisk_only_run_never_touches_fanart(self):
+        called = mock.AsyncMock(return_value=[image()])
+        probe = mock.AsyncMock(return_value=hero.ImageProbeResult(hero.PROBE_REJECTED))
+        kp, fa = self._flags(kinopoisk=False, fanart_flag=False)
+        with kp, fa, mock.patch.object(fanart, "get_movie_backgrounds", new=called), \
+                mock.patch.object(hero, "probe_image_info", new=probe):
+            report = await hero.refresh_due_heroes(limit=1, dry_run=True, sources="kinopoisk")
+        called.assert_not_awaited()
+        self.assertEqual(report.examined, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

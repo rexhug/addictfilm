@@ -315,8 +315,30 @@ async def _try_fanart(film: dict, *, session, probe_session,
     return selection, False, len(images)
 
 
+SOURCE_ALL = "all"
+
+
+def resolve_sources(dry_run: bool, requested: str | None = None) -> tuple[bool, bool]:
+    """(проверять kinopoisk, проверять fanart).
+
+    Осмотр обязан показывать то, что сделает ПРОД, а не то, что теоретически
+    возможно: иначе он врёт ровно в тот момент, когда по нему принимают решение.
+    Поэтому dry-run идёт по включённым источникам. Исключение одно — когда не
+    включён ни один: это осмотр «до первого включения», и смотреть тогда нужно
+    на всё. Явный --source перекрывает и то, и другое.
+    """
+    if requested and requested != SOURCE_ALL:
+        return requested == hero_media.SOURCE_KINOPOISK, requested == hero_media.SOURCE_FANART
+    if requested == SOURCE_ALL:
+        return True, True
+    inspect_everything = dry_run and not (FANART_HERO_ENABLED or KINOPOISK_HERO_ENABLED)
+    return (KINOPOISK_HERO_ENABLED or inspect_everything,
+            FANART_HERO_ENABLED or inspect_everything)
+
+
 async def enrich_film_hero(film: dict, *, session=None, probe_session=None,
-                           dry_run: bool = False, verify: bool = True) -> HeroOutcome:
+                           dry_run: bool = False, verify: bool = True,
+                           sources: str | None = None) -> HeroOutcome:
     """Порядок источников: проверенный kinopoisk → проверенный Fanart → постер.
 
     Kinopoisk идёт первым не из-за качества, а из-за независимости: его ссылка
@@ -331,17 +353,18 @@ async def enrich_film_hero(film: dict, *, session=None, probe_session=None,
     if not (FANART_HERO_ENABLED or KINOPOISK_HERO_ENABLED) and not dry_run:
         return HeroOutcome(film_id, title, ACTION_DISABLED)
 
+    use_kinopoisk, use_fanart = resolve_sources(dry_run, sources)
     selection: hero_media.HeroSelection | None = None
     kinopoisk_unavailable = False
     fanart_unavailable = False
     candidates = 0
 
-    if KINOPOISK_HERO_ENABLED or dry_run:
+    if use_kinopoisk:
         selection, kinopoisk_unavailable = await _try_kinopoisk(film, probe_session=probe_session)
 
     # Предохранитель гасит ТОЛЬКО Fanart: проверка kinopoisk выше от него не
     # зависит и продолжает работать во время чужого сбоя.
-    if selection is None and (FANART_HERO_ENABLED or dry_run) and not _circuit_is_open():
+    if selection is None and use_fanart and not _circuit_is_open():
         selection, fanart_unavailable, candidates = await _try_fanart(
             film, session=session, probe_session=probe_session, verify=verify)
 
@@ -381,7 +404,7 @@ async def enrich_film_hero(film: dict, *, session=None, probe_session=None,
 
 async def refresh_due_heroes(*, limit: int | None = None, concurrency: int | None = None,
                              dry_run: bool = False, films: list[dict] | None = None,
-                             verify: bool = True) -> HeroReport:
+                             verify: bool = True, sources: str | None = None) -> HeroReport:
     """Обойти пачку кандидатов с ограниченным параллелизмом.
 
     Падение одного фильма не останавливает пачку: внешний источник ненадёжен по
@@ -407,7 +430,8 @@ async def refresh_due_heroes(*, limit: int | None = None, concurrency: int | Non
         async def _one(film: dict) -> HeroOutcome:
             try:
                 return await enrich_film_hero(film, probe_session=session,
-                                              dry_run=dry_run, verify=verify)
+                                              dry_run=dry_run, verify=verify,
+                                              sources=sources)
             except Exception:
                 logger.warning("hero: фильм %s не обработан", film.get("id"), exc_info=True)
                 return HeroOutcome(int(film["id"]), str(film.get("title") or ""),
