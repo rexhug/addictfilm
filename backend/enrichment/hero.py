@@ -45,6 +45,15 @@ _PROBE_SIZE_TOLERANCE = 0.05
 # нераспознанный размер там означает «кадр не доказан», то есть потерю годного
 # изображения на ровном месте.
 _PROBE_HEAD_BYTES = 64 * 1024
+# Порог детализации: байт файла на пиксель. Kinopoisk отдаёт по обычной ссылке
+# заглушку со своим логотипом — тёмная плашка 1920x1080 весом 15 КБ. Формально
+# это «картинка нужного размера», и все прежние проверки она проходит; на
+# полный экран человеку показали бы серый квадрат вместо кадра.
+#
+# Замер на живом каталоге: заглушка 0.007 Б/пкс, самый «лёгкий» настоящий кадр
+# 0.119 Б/пкс. Порог 0.02 лежит между ними с шестикратным запасом до реального
+# и трёхкратным до заглушки.
+_MIN_BYTES_PER_PIXEL = 0.02
 
 PROBE_OK = "ok"
 PROBE_REJECTED = "rejected"
@@ -244,6 +253,13 @@ async def probe_image_info(url: str, *, expected_width: int | None = None,
         return ImageProbeResult(PROBE_REJECTED)
     sniffed = _sniff_dimensions(head)
     width, height = sniffed if sniffed else (None, None)
+    if sniffed and size / max(1, width * height) < _MIN_BYTES_PER_PIXEL:
+        # Картинка нужного размера, но без содержимого: почти наверняка
+        # логотип-заглушка источника. Это про сам файл — значит отказ, а не
+        # «попробуем позже».
+        logger.info("hero: файл слишком «пустой» для кадра (%sx%s, %s байт)",
+                    width, height, size)
+        return ImageProbeResult(PROBE_REJECTED, width, height)
     if sniffed and expected_width and expected_height:
         if (abs(width - expected_width) / expected_width > _PROBE_SIZE_TOLERANCE
                 or abs(height - expected_height) / expected_height > _PROBE_SIZE_TOLERANCE):

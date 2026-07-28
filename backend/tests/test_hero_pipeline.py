@@ -376,7 +376,9 @@ class _ProbeSession:
         return self._response
 
 
-def _jpeg(width=1920, height=1080, size=8192) -> bytes:
+# По умолчанию — правдоподобный вес настоящего кадра: у фикстуры не должно быть
+# свойств, которых не бывает у реального файла (заглушка весит на порядок меньше).
+def _jpeg(width=1920, height=1080, size=300 * 1024) -> bytes:
     head = (b"\xff\xd8\xff\xc0" + (17).to_bytes(2, "big") + b"\x08"
             + height.to_bytes(2, "big") + width.to_bytes(2, "big"))
     return head + b"\x00" * max(0, size - len(head))
@@ -410,6 +412,17 @@ class ProbeStatusTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_non_image_answer_with_status_200_is_rejected(self):
         self.assertEqual(await self._probe(ctype="text/html", body=_jpeg()),
                          hero.PROBE_REJECTED)
+
+    async def test_a_placeholder_plate_is_rejected_however_correct_its_size(self):
+        """Реальный случай: kinopoisk отдаёт по обычной ссылке тёмную плашку со
+        своим логотипом — честные 1920x1080 весом 15 КБ. Формально это картинка
+        нужного размера, а на весь экран человек увидел бы серый квадрат."""
+        verdict = await self._probe(body=_jpeg(size=15_233))
+        self.assertEqual(verdict, hero.PROBE_REJECTED)
+
+    async def test_a_real_photograph_passes_the_detail_floor(self):
+        # Самый «лёгкий» настоящий кадр в каталоге — 247 КБ на 1920x1080.
+        self.assertEqual(await self._probe(body=_jpeg(size=247 * 1024)), hero.PROBE_OK)
 
     async def test_a_truncated_file_is_rejected(self):
         self.assertEqual(await self._probe(body=b"\xff\xd8" + b"\x00" * 100),
