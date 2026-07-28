@@ -73,7 +73,10 @@ const DICT = {
     pick_tab: "Подбор", pick_title: "Что посмотреть?", pick_sub: "Быстрый вариант или подборка по настроению.", pick_wishlist_title: "Случайный из «Хочу»", pick_wishlist_sub: "Рулетка по твоему списку — без повторов",
     pick_random_title: "Умный случайный фильм", pick_random_sub: "Одно хорошее кино из каталога, без вопросов", pick_quiz_title: "Подбор по настроению", pick_quiz_sub: "7–8 коротких вопросов — и три варианта на вечер", pick_start: "Начать", pick_loading: "Подбираю фильм…", pick_another: "Другой вариант", pick_not_suggest: "Не предлагать", pick_open: "Открыть фильм", pick_want: "В «Хочу»", pick_watched: "Уже смотрел", pick_back: "Назад", pick_restart: "Начать заново", pick_progress: (n, total) => `${n} из ${total}`, pick_best: "Лучший выбор", pick_reliable: "Надёжный вариант", pick_unexpected: "Неожиданный вариант", pick_best_sub: "Максимально совпадает с твоим запросом", pick_reliable_sub: "Высокий рейтинг и уверенный выбор", pick_unexpected_sub: "Чуть необычнее, но может приятно удивить", pick_empty: "Пока не хватает фильмов для подбора", pick_empty_sub: "Добавь несколько фильмов через поиск — каталог будет расти вместе с приложением.", pick_pair: "Смотреть с партнёром", pick_solo: "Смотреть одному", pick_pair_unavailable: "Пара сейчас не подключена",
     pick_wishlist_empty: "В списке «Хочу посмотреть» пока пусто",
-    strategy_reliable: "Надёжный выбор", strategy_taste_match: "Под твой вкус", strategy_discovery: "Находка",
+    strategy_reliable: "Надёжный выбор", strategy_taste_match: "Под твой вкус", strategy_discovery: "Находка", strategy_available: "Доступный вариант",
+    pick_recovery_title: "Не удалось подобрать фильм", pick_retry: "Попробовать ещё раз",
+    pick_back_to_picker: "Назад к выбору", pick_change_answers: "Изменить ответы",
+    pick_smart_random: "Умный случайный фильм",
     pick_partial: "Под такой запрос в каталоге нашлось меньше вариантов, чем обычно — показываем только то, что действительно подходит.",
     pick_rejected: "Больше не предложим",
     pick_version_changed: "Подбор обновился — начнём опрос заново",
@@ -87,6 +90,8 @@ const DICT = {
     art_save: "Сохранить", art_reset: "Сбросить", art_close: "Закрыть",
     art_reject_poster: "Отклонить этот постер",
     art_approve_poster: "Разрешить этот постер", art_auto_poster: "Автоматически",
+    art_movie_flow: "В рекомендациях", art_movie_auto: "Автоматически",
+    art_movie_allow: "Разрешить", art_movie_exclude: "Исключить",
     settings_attribution: "Данные об изображениях предоставлены fanart.tv",
     reason_DARK_COMEDY_TONE: "Чёрный юмор и мрачный тон", reason_SATIRICAL_HUMOR: "Сатира на серьёзные темы",
     reason_ABSURD_DARK_HUMOR: "Абсурдная комедия с мрачной подачей", reason_HIGH_TENSION: "Держит в напряжении",
@@ -99,7 +104,7 @@ const DICT = {
     reason_IN_WISHLIST: "Уже в твоём списке «Хочу посмотреть»", reason_PAIR_FRIENDLY: "Подходит вам обоим",
     reason_UNSEEN_PICK: "Из фильмов, которых ты ещё не видел",
     reason_RANDOM_RELIABLE: "Надёжный выбор", reason_RANDOM_TASTE_MATCH: "Похоже на то, что ты любишь",
-    reason_RANDOM_DISCOVERY: "Находка не на слуху",
+    reason_RANDOM_DISCOVERY: "Находка не на слуху", reason_RANDOM_AVAILABLE: "Доступный вариант",
     notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся важные события вашей пары", notif_mark_all: "Прочитать все", notif_load_more: "Показать ещё", notif_loading: "Загружаю уведомления…", notif_error: "Не удалось загрузить уведомления", notif_retry: "Повторить", notif_now: "только что", notif_min_ago: (n) => `${n} мин назад`, notif_hour_ago: (n) => `${n} ч назад`, notif_day_ago: (n) => `${n} дн назад`, notif_inapp: "В приложении", notif_telegram: "В Telegram", notif_telegram_hint: "События пары от бота Addict Film", notif_telegram_unavailable: "Бот сейчас недоступен", notif_browser: "В браузере", notif_browser_hint: "Локальные напоминания на этом устройстве",
     back: "Назад", settings_title: "Настройки", settings_loading: "Загружаю настройки…",
     settings_notifications: "Уведомления", settings_notifications_hint: "Важные события пары всегда видны в приложении", settings_notifications_on: "Включены", settings_notifications_off: "Выключены", settings_notifications_permission: "Нужно разрешение", settings_notifications_denied: "Разрешения отключены в Telegram или браузере", settings_notifications_unavailable: "Недоступны на этом устройстве", settings_notifications_error: "Не удалось запросить разрешение",
@@ -216,7 +221,10 @@ const DICT = {
     pick_tab: "Pick", pick_title: "What should we watch?", pick_sub: "A quick pick or a mood-based selection.", pick_wishlist_title: "Random from wishlist", pick_wishlist_sub: "A roulette over your own list — no repeats",
     pick_random_title: "Smart random film", pick_random_sub: "One good film from the catalog, no questions", pick_quiz_title: "Pick by mood", pick_quiz_sub: "7–8 quick questions, then three options for tonight", pick_start: "Start", pick_loading: "Finding a film…", pick_another: "Another option", pick_not_suggest: "Don't suggest", pick_open: "Open film", pick_want: "Add to wishlist", pick_watched: "Already watched", pick_back: "Back", pick_restart: "Start over", pick_progress: (n, total) => `${n} of ${total}`, pick_best: "Best match", pick_reliable: "Reliable choice", pick_unexpected: "Unexpected choice", pick_best_sub: "The closest match for your request", pick_reliable_sub: "A highly rated, confident pick", pick_unexpected_sub: "A little more unusual, potentially rewarding", pick_empty: "There are not enough films to recommend yet", pick_empty_sub: "Add a few films through search — the catalog grows with the app.", pick_pair: "Watch with partner", pick_solo: "Watch alone", pick_pair_unavailable: "Your pair is not connected right now",
     pick_wishlist_empty: "Your watchlist is empty for now",
-    strategy_reliable: "Reliable choice", strategy_taste_match: "Matches your taste", strategy_discovery: "Discovery",
+    strategy_reliable: "Reliable choice", strategy_taste_match: "Matches your taste", strategy_discovery: "Discovery", strategy_available: "Available option",
+    pick_recovery_title: "Couldn’t pick a movie", pick_retry: "Try again",
+    pick_back_to_picker: "Back to picker", pick_change_answers: "Change answers",
+    pick_smart_random: "Smart random film",
     pick_partial: "This request has fewer good matches in the catalog than usual — we only show what genuinely fits.",
     pick_rejected: "We won't suggest it again",
     pick_version_changed: "The picker was updated — let's start the quiz again",
@@ -229,6 +237,8 @@ const DICT = {
     art_focus_y: "Vertical focus", art_save: "Save", art_reset: "Reset",
     art_close: "Close", art_reject_poster: "Reject this poster",
     art_approve_poster: "Allow this poster", art_auto_poster: "Automatic",
+    art_movie_flow: "In recommendations", art_movie_auto: "Automatic",
+    art_movie_allow: "Allow", art_movie_exclude: "Exclude",
     settings_attribution: "Artwork data provided by fanart.tv",
     reason_DARK_COMEDY_TONE: "Dark humour with a grim tone", reason_SATIRICAL_HUMOR: "Satire about serious things",
     reason_ABSURD_DARK_HUMOR: "Absurd comedy, grim delivery", reason_HIGH_TENSION: "Keeps the tension up",
@@ -241,7 +251,7 @@ const DICT = {
     reason_IN_WISHLIST: "Already on your watchlist", reason_PAIR_FRIENDLY: "Works for both of you",
     reason_UNSEEN_PICK: "From films you have not seen yet",
     reason_RANDOM_RELIABLE: "A reliable choice", reason_RANDOM_TASTE_MATCH: "Close to what you love",
-    reason_RANDOM_DISCOVERY: "An off-the-radar find",
+    reason_RANDOM_DISCOVERY: "An off-the-radar find", reason_RANDOM_AVAILABLE: "An available choice",
     notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "Important pair events will appear here", notif_mark_all: "Mark all read", notif_load_more: "Show more", notif_loading: "Loading notifications…", notif_error: "Couldn't load notifications", notif_retry: "Try again", notif_now: "just now", notif_min_ago: (n) => `${n}m ago`, notif_hour_ago: (n) => `${n}h ago`, notif_day_ago: (n) => `${n}d ago`, notif_inapp: "In app", notif_telegram: "In Telegram", notif_telegram_hint: "Pair events from the Addict Film bot", notif_telegram_unavailable: "The bot is unavailable right now", notif_browser: "In browser", notif_browser_hint: "Local reminders on this device",
     back: "Back", settings_title: "Settings", settings_loading: "Loading settings…",
     settings_notifications: "Notifications", settings_notifications_hint: "Important pair events are always shown in the app", settings_notifications_on: "On", settings_notifications_off: "Off", settings_notifications_permission: "Permission needed", settings_notifications_denied: "Notifications are blocked in Telegram or your browser", settings_notifications_unavailable: "Unavailable on this device", settings_notifications_error: "Couldn't request permission",
@@ -1038,6 +1048,14 @@ function singlePickArtControlsHTML(item, hero) {
   if (!AdminMode.isCapable()) return "";
   const opener = `<button class="single-pick-art-open" type="button" data-art-open
     aria-expanded="false">${esc(t("art_frame"))}</button>`;
+  const flowControls = `<div class="single-pick-flow-controls">
+    <b>${esc(t("art_movie_flow"))}</b>
+    <div class="single-pick-art-segments">
+      <button type="button" data-movie-flow-state="auto">${esc(t("art_movie_auto"))}</button>
+      <button type="button" data-movie-flow-state="allow">${esc(t("art_movie_allow"))}</button>
+      <button type="button" data-movie-flow-state="exclude">${esc(t("art_movie_exclude"))}</button>
+    </div>
+  </div>`;
   if (hero.type === "backdrop") {
     const x = clampUnit(item?.hero_focus_x, 0.5);
     const y = clampUnit(item?.hero_focus_y, 0.36);
@@ -1056,6 +1074,7 @@ function singlePickArtControlsHTML(item, hero) {
         <button type="button" data-art-save>${esc(t("art_save"))}</button>
         <button type="button" data-art-reset>${esc(t("art_reset"))}</button>
       </div>
+      ${flowControls}
     </section>`;
   }
   return `${opener}<section class="single-pick-art-panel single-pick-art-poster-panel"
@@ -1065,6 +1084,7 @@ function singlePickArtControlsHTML(item, hero) {
     <button type="button" data-poster-state="rejected">${esc(t("art_reject_poster"))}</button>
     <button type="button" data-poster-state="approved">${esc(t("art_approve_poster"))}</button>
     <button type="button" data-poster-state="auto">${esc(t("art_auto_poster"))}</button>
+    ${flowControls}
   </section>`;
 }
 
@@ -1208,6 +1228,29 @@ function wireSinglePickArtControls() {
       replaceSinglePickMedia();
     };
   });
+  panel.querySelectorAll("[data-movie-flow-state]").forEach(button => {
+    button.setAttribute("aria-pressed", String(
+      button.dataset.movieFlowState === (item.movie_flow_state || "auto")));
+    button.onclick = async () => {
+      const state = button.dataset.movieFlowState;
+      panel.querySelectorAll("[data-movie-flow-state]").forEach(node => { node.disabled = true; });
+      try {
+        const updated = await adminCall(`/api/admin/films/${item.id}/movie-flow`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            state,
+            reason: state === "exclude" ? "manual_admin_exclusion" : null,
+          }),
+        });
+        if (updated && updated !== true) Object.assign(item, updated);
+        panel.querySelectorAll("[data-movie-flow-state]").forEach(node => {
+          node.setAttribute("aria-pressed", String(node.dataset.movieFlowState === state));
+        });
+      } finally {
+        panel.querySelectorAll("[data-movie-flow-state]").forEach(node => { node.disabled = false; });
+      }
+    };
+  });
 }
 
 // В рулетке по «Хочу» фильм УЖЕ в этом списке — кнопка «В „Хочу“» там не может
@@ -1256,13 +1299,28 @@ function singlePickScreenHTML(item, { label = "", allowAnother = true, allowWant
   </main>`;
 }
 
-function singlePickStateHTML(message, { error = false } = {}) {
+function singlePickStateHTML(message, { error = false, recover = false } = {}) {
   return `<main class="single-pick-screen single-pick-state-screen">
     <div class="single-pick-back-slot">${backBtn()}</div>
-    <div class="single-pick-state-copy${error ? " is-error" : ""}"${error ? ' role="alert"' : ""}>
-      ${esc(message)}
+    <div class="single-pick-state-wrap">
+      ${recover ? `<section class="single-pick-recovery-copy"${error ? ' role="alert"' : ""}>
+        <h1>${esc(t("pick_recovery_title"))}</h1>
+        <p>${esc(message)}</p>
+      </section>` : `<div class="single-pick-state-copy${error ? " is-error" : ""}"${error ? ' role="alert"' : ""}>
+        ${esc(message)}
+      </div>`}
+      ${recover ? `<div class="single-pick-recovery">
+        <button type="button" class="single-pick-primary" data-pick-retry>${esc(t("pick_retry"))}</button>
+        <button type="button" class="single-pick-secondary" data-pick-back>${esc(t("pick_back_to_picker"))}</button>
+      </div>` : ""}
     </div>
   </main>`;
+}
+
+function wireSinglePickRecovery(retry) {
+  screen.querySelector("[data-pick-retry]")?.addEventListener("click", retry);
+  screen.querySelector("[data-pick-back]")?.addEventListener("click", showPicker);
+  wireBack(showPicker);
 }
 
 // Обратная связь, открытие и «другой вариант» остаются общими: полноэкранный
@@ -1306,7 +1364,7 @@ async function showWishlistRandom() {
     }
     renderLegacyPick(t("pick_wishlist_title"), item, showWishlistRandom, "wishlist");
   } catch (error) {
-    const message = error.message === "404" ? t("pick_wishlist_empty") : error.message;
+    const message = error.status === 404 ? t("pick_wishlist_empty") : error.message;
     if (fullscreen) {
       screen.innerHTML = singlePickStateHTML(message, { error: true });
       wireBack(showPicker);
@@ -1316,17 +1374,29 @@ async function showWishlistRandom() {
   }
 }
 
-const STRATEGY_LABELS = { reliable: "strategy_reliable", taste_match: "strategy_taste_match", discovery: "strategy_discovery" };
+const STRATEGY_LABELS = { reliable: "strategy_reliable", taste_match: "strategy_taste_match", discovery: "strategy_discovery", available: "strategy_available" };
 
 async function showRandomRecommendation() {
   pickerMode(false);
-  _singlePickItem = null;
   const fullscreen = featureEnabled("fullscreen_single_pick");
+  const currentCard = fullscreen
+    ? screen.querySelector(".single-pick-card")
+    : screen.querySelector(".picker-result .recommendation-film");
+  const preserveCurrent = Boolean(currentCard);
   singlePickMode(fullscreen);
-  screen.innerHTML = fullscreen
-    ? singlePickStateHTML(t("pick_loading"))
-    : `${pickerHeader()}<main class="picker-result"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
-  wireBack(showPicker);
+  if (!preserveCurrent) {
+    _singlePickItem = null;
+    screen.innerHTML = fullscreen
+      ? singlePickStateHTML(t("pick_loading"))
+      : `${pickerHeader()}<main class="picker-result"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
+    wireBack(showPicker);
+  } else {
+    currentCard.classList.add("is-refreshing");
+    screen.querySelectorAll("[data-pick-another],[data-pick-reject]").forEach(button => {
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+    });
+  }
   try {
     const { item } = await api("/api/recommendations/random", { method: "POST", body: JSON.stringify({ language: lang, context: "solo" }) });
     // Стратегия называется честно: «надёжный выбор» и «находка» — разные обещания.
@@ -1337,12 +1407,24 @@ async function showRandomRecommendation() {
     }
     renderLegacyPick(strategy, item, showRandomRecommendation, "random");
   } catch (error) {
-    const message = error.message === "404" ? t("pick_empty") : error.message;
+    const message = error.status === 404 ? t("pick_empty") : (error.message || t("load_err"));
+    if (preserveCurrent) {
+      currentCard.classList.remove("is-refreshing");
+      screen.querySelectorAll("[data-pick-another],[data-pick-reject]").forEach(button => {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+      });
+      tg?.showAlert?.(String(message));
+      return;
+    }
     if (fullscreen) {
-      screen.innerHTML = singlePickStateHTML(message, { error: true });
-      wireBack(showPicker);
+      screen.innerHTML = singlePickStateHTML(message, { error: true, recover: true });
+      wireSinglePickRecovery(showRandomRecommendation);
     } else {
-      screen.querySelector(".picker-result").innerHTML = `${pickerError(message)}<p class="picker-empty-copy">${esc(t("pick_empty_sub"))}</p>`;
+      screen.querySelector(".picker-result").innerHTML = `${pickerError(message)}
+        <p class="picker-empty-copy">${esc(t("pick_empty_sub"))}</p>
+        <button class="picker-restart" data-pick-retry type="button">${esc(t("pick_retry"))}</button>`;
+      screen.querySelector("[data-pick-retry]")?.addEventListener("click", showRandomRecommendation);
     }
   }
 }
@@ -1387,7 +1469,14 @@ function showQuizQuestion(data) {
 const QUIZ_ROLE_LABELS = { best: ["pick_best", "pick_best_sub"], reliable: ["pick_reliable", "pick_reliable_sub"], unexpected: ["pick_unexpected", "pick_unexpected_sub"] };
 
 function quizResultsHTML(items) {
-  if (!items.length) return `${pickerError(t("pick_empty"))}<p class="picker-empty-copy">${esc(t("pick_empty_sub"))}</p>`;
+  if (!items.length) return `<section class="picker-empty-state">
+    ${pickerError(t("pick_empty"))}<p class="picker-empty-copy">${esc(t("pick_empty_sub"))}</p>
+    <div class="picker-empty-actions">
+      <button class="picker-secondary" data-quiz-back type="button">${esc(t("pick_change_answers"))}</button>
+      <button class="picker-secondary" data-quiz-restart type="button">${esc(t("pick_restart"))}</button>
+      <button class="picker-primary" data-quiz-random type="button">${esc(t("pick_smart_random"))}</button>
+    </div>
+  </section>`;
   // Неполная тройка — не ошибка: под узкий запрос честнее показать меньше
   // вариантов, чем добрать случайными фильмами «чтобы было три».
   const note = items.length < 3 ? `<p class="picker-empty-copy picker-partial">${esc(t("pick_partial"))}</p>` : "";
@@ -1404,6 +1493,16 @@ async function showQuizResults(sessionId) {
     rememberQuizEngine(data);
     pickerMode(false);
     let current = data.items || [];
+    const restartQuiz = async () => {
+      try {
+        pickerMode(true);
+        // Перезапуск — новая сессия: версию берём из свежего ответа сервера.
+        const restarted = await api(`/api/recommendations/quiz/${encodeURIComponent(sessionId)}/restart`, {
+          method: "POST", body: JSON.stringify({ language: lang }),
+        });
+        showQuizQuestion(restarted);
+      } catch (_) { startRecommendationQuiz(); }
+    };
     const renderResults = () => {
       const box = screen.querySelector(".picker-results-list");
       box.innerHTML = quizResultsHTML(current);
@@ -1412,18 +1511,24 @@ async function showQuizResults(sessionId) {
         returnTo: () => showQuizResults(sessionId),
         onReject: () => replaceQuizPick(sessionId, current[index], updated => { current = updated; renderResults(); }),
       }));
+      box.querySelector("[data-quiz-back]")?.addEventListener("click", async () => {
+        try {
+          const previous = await api(`/api/recommendations/quiz/${encodeURIComponent(sessionId)}/back`, {
+            method: "POST", body: JSON.stringify({ language: lang }),
+          });
+          showQuizQuestion(previous);
+        } catch (error) { tg?.showAlert?.(String(error.message || t("load_err"))); }
+      });
+      box.querySelector("[data-quiz-restart]")?.addEventListener("click", restartQuiz);
+      box.querySelector("[data-quiz-random]")?.addEventListener("click", showRandomRecommendation);
     };
-    screen.innerHTML = `${pickerResultsHeader()}<main class="picker-results rise d1"><div class="picker-results-list"></div><button class="picker-restart" id="picker-restart" type="button">${esc(t("pick_restart"))}</button></main>`;
+    const bottomRestart = current.length
+      ? `<button class="picker-restart" id="picker-restart" type="button">${esc(t("pick_restart"))}</button>`
+      : "";
+    screen.innerHTML = `${pickerResultsHeader()}<main class="picker-results rise d1"><div class="picker-results-list"></div>${bottomRestart}</main>`;
     renderResults();
     wireBack(showPicker);
-    document.getElementById("picker-restart").onclick = async () => {
-      try {
-        pickerMode(true);
-        // Перезапуск — новая сессия: версию берём из свежего ответа сервера.
-        const restarted = await api(`/api/recommendations/quiz/${encodeURIComponent(sessionId)}/restart`, { method: "POST", body: JSON.stringify({ language: lang }) });
-        showQuizQuestion(restarted);
-      } catch (_) { startRecommendationQuiz(); }
-    };
+    document.getElementById("picker-restart")?.addEventListener("click", restartQuiz);
   } catch (error) {
     pickerMode(false);
     showPicker();

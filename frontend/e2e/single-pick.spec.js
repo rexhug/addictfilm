@@ -47,7 +47,9 @@ async function openPicker(page, options = {}) {
       ready() {}, expand() {}, setHeaderColor() {}, setBackgroundColor() {},
       disableVerticalSwipes() {},
       HapticFeedback: { impactOccurred() {}, notificationOccurred() {} },
-      showConfirm(_text, callback) { callback(true); }, showAlert() {}, openTelegramLink() {},
+      showConfirm(_text, callback) { callback(true); },
+      showAlert(text) { (window.__telegramAlerts ||= []).push(String(text)); },
+      openTelegramLink() {},
     } };
   });
 
@@ -96,6 +98,15 @@ async function openPicker(page, options = {}) {
           : { ...posterHero, hero_fit: null, hero_focus_x: null, hero_focus_y: null }) });
       return;
     }
+    if (/^\/api\/admin\/films\/\d+\/movie-flow$/.test(path)) {
+      const body = JSON.parse(route.request().postData() || "{}");
+      state.adminMutations.push({ kind: "flow", ...body });
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+        id: Number(path.split("/")[4]), movie_flow_state: body.state,
+        movie_flow_reason: body.reason, eligible: body.state !== "exclude",
+      }) });
+      return;
+    }
     if (path === "/api/wishlist/random") {
       const item = wishlistItems[Math.min(state.wishlistCalls, wishlistItems.length - 1)];
       state.wishlistCalls += 1;
@@ -104,10 +115,51 @@ async function openPicker(page, options = {}) {
       return;
     }
     if (path === "/api/recommendations/random") {
-      const item = randomItems[Math.min(state.randomCalls, randomItems.length - 1)];
+      const call = state.randomCalls;
       state.randomCalls += 1;
+      if (options.randomGates?.[call]) await options.randomGates[call];
+      if (options.randomFailures?.includes(call)) {
+        await route.fulfill({
+          status: 404, contentType: "application/json",
+          body: JSON.stringify({ detail: {
+            code: "NO_ELIGIBLE_FILMS",
+            message: "No eligible films",
+            recoverable: true,
+          } }),
+        });
+        return;
+      }
+      const item = randomItems[Math.min(call, randomItems.length - 1)];
       await route.fulfill({ contentType: "application/json",
         body: JSON.stringify({ item, context: "solo" }) });
+      return;
+    }
+    if (options.quizZero && path === "/api/recommendations/quiz/start") {
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+        id: "zero-session", state: "complete", question: null, progress: 8, total: 8,
+      }) });
+      return;
+    }
+    if (options.quizZero && path === "/api/recommendations/quiz/zero-session/results") {
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+        id: "zero-session", state: "complete", items: [],
+      }) });
+      return;
+    }
+    if (options.quizZero && path === "/api/recommendations/quiz/zero-session/back") {
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+        id: "zero-session", state: "active", progress: 0, total: 8,
+        question: { id: "q1", text: "Что тебе сейчас больше всего хочется?",
+          options: [{ id: "relax", label: "Отключить голову" }] },
+      }) });
+      return;
+    }
+    if (options.quizZero && path === "/api/recommendations/quiz/zero-session/restart") {
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+        id: "zero-session", state: "active", progress: 0, total: 8,
+        question: { id: "q1", text: "Что тебе сейчас больше всего хочется?",
+          options: [{ id: "relax", label: "Отключить голову" }] },
+      }) });
       return;
     }
     if (/^\/api\/recommendations\/\d+\/feedback$/.test(path)) {
@@ -268,6 +320,20 @@ test("rejecting the exact poster rerenders neutral media only", async ({ page })
   }]);
 });
 
+test("admin movie-flow moderation is explicit and does not request another film", async ({ page }) => {
+  const state = await openPicker(page, { admin: true });
+  await openSmartRandom(page);
+  await page.getByRole("button", { name: "Кадр" }).click();
+  await page.getByRole("button", { name: "Исключить" }).click();
+
+  await expect.poll(() => state.adminMutations.some(item => item.kind === "flow")).toBe(true);
+  expect(state.adminMutations.find(item => item.kind === "flow")).toEqual({
+    kind: "flow", state: "exclude", reason: "manual_admin_exclusion",
+  });
+  expect(state.randomCalls).toBe(1);
+  await expect(page.getByRole("heading", { name: "The Last of Us" })).toBeVisible();
+});
+
 test("ambient image failure leaves the sharp backdrop intact", async ({ page }) => {
   const state = await openPicker(page);
   await openWishlist(page);
@@ -351,6 +417,88 @@ test("another option replaces the film, resets the scroll and switches media mod
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
   expect(state.feedback.map(entry => entry.action)).toEqual(["another"]);
   expect(state.feedback[0].mode).toBe("random");
+});
+
+test("another option keeps the current card visible while replacement is pending", async ({ page }) => {
+  let releaseReplacement;
+  const replacementGate = new Promise(resolve => { releaseReplacement = resolve; });
+  const state = await openPicker(page, {
+    randomItems: [
+      { ...baseMovie, title: "First Pick", strategy: "reliable", ...backdropHero },
+      { ...baseMovie, id: 2, title: "Second Pick", strategy: "discovery", ...posterHero },
+    ],
+    randomGates: { 1: replacementGate },
+  });
+  await openSmartRandom(page);
+  const another = page.getByRole("button", { name: "Другой вариант" });
+  await another.click();
+
+  await expect.poll(() => state.randomCalls).toBe(2);
+  await expect(page.getByRole("heading", { name: "First Pick" })).toBeVisible();
+  await expect(another).toBeDisabled();
+  await expect(page.locator(".single-pick-card")).toHaveClass(/is-refreshing/);
+  await expect(page.locator(".single-pick-state-screen")).toHaveCount(0);
+
+  releaseReplacement();
+  await expect(page.getByRole("heading", { name: "Second Pick" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "First Pick" })).toHaveCount(0);
+});
+
+test("failed replacement preserves the card and restores its controls", async ({ page }) => {
+  const state = await openPicker(page, {
+    randomItems: [{ ...baseMovie, title: "Still Here", strategy: "reliable", ...backdropHero }],
+    randomFailures: [1],
+  });
+  await openSmartRandom(page);
+  const another = page.getByRole("button", { name: "Другой вариант" });
+  await another.click();
+
+  await expect.poll(() => state.randomCalls).toBe(2);
+  await expect(page.getByRole("heading", { name: "Still Here" })).toBeVisible();
+  await expect(another).toBeEnabled();
+  await expect(another).not.toHaveAttribute("aria-busy");
+  await expect(page.locator(".single-pick-card")).not.toHaveClass(/is-refreshing/);
+  await expect(page.locator(".single-pick-state-screen")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.__telegramAlerts?.length || 0)).toBe(1);
+});
+
+test("initial random failure has working retry and never renders a dead end", async ({ page }) => {
+  const state = await openPicker(page, {
+    randomItems: [{ ...baseMovie, title: "Recovered Pick", strategy: "available", ...posterHero }],
+    randomFailures: [0],
+  });
+  await openSmartRandom(page);
+
+  await expect(page.getByRole("heading", { name: "Не удалось подобрать фильм" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Попробовать ещё раз" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Назад к выбору" })).toBeVisible();
+  await page.getByRole("button", { name: "Попробовать ещё раз" }).click();
+  await expect(page.getByRole("heading", { name: "Recovered Pick" })).toBeVisible();
+  await expect(page.locator(".single-pick-label")).toHaveText("Доступный вариант");
+  expect(state.randomCalls).toBe(2);
+});
+
+test("initial random failure can return to picker without closing the Mini App", async ({ page }) => {
+  await openPicker(page, { randomFailures: [0] });
+  await openSmartRandom(page);
+  await page.getByRole("button", { name: "Назад к выбору" }).click();
+
+  await expect(page.getByRole("heading", { name: "Что посмотреть?" })).toBeVisible();
+  await expect(page.locator("#tabbar")).toBeVisible();
+  await expect(page.locator("body")).not.toHaveClass(/single-pick-open/);
+});
+
+test("zero quiz results expose all three recovery paths without duplicate restart controls", async ({ page }) => {
+  await openPicker(page, { quizZero: true });
+  await page.getByRole("button", { name: /Подбор по настроению/ }).click();
+
+  await expect(page.getByRole("button", { name: "Изменить ответы" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Начать заново" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Умный случайный фильм" })).toBeVisible();
+  await page.getByRole("button", { name: "Изменить ответы" }).click();
+  await expect(page.getByRole("heading", {
+    name: "Что тебе сейчас больше всего хочется?",
+  })).toBeVisible();
 });
 
 test("feedback keeps the wishlist mode on the wishlist screen", async ({ page }) => {
