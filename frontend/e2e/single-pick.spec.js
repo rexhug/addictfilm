@@ -102,6 +102,57 @@ async function openPicker(page, options = {}) {
 
 const openWishlist = page => page.getByRole("button", { name: /Случайный из «Хочу»/ }).click();
 const openSmartRandom = page => page.getByRole("button", { name: /Умный случайный фильм/ }).click();
+const MOBILE_VIEWPORTS = [
+  { width: 320, height: 568 },
+  { width: 360, height: 667 },
+  { width: 390, height: 844 },
+  { width: 430, height: 932 },
+];
+const ACTION_NAMES = [
+  "Открыть фильм", "В «Хочу»", "Уже смотрел", "Другой вариант", "Не предлагать",
+];
+
+async function expectSinglePickFits(page, title) {
+  await expect(page.locator(".single-pick-screen")).toBeVisible();
+  await expect(page.locator(".picker-head")).toHaveCount(0);
+  await expect(page.locator("#tabbar")).toBeHidden();
+  await expect(page.locator("body")).toHaveClass(/single-pick-open/);
+  await expect(page.locator(".single-pick-back-slot .back")).toBeVisible();
+  await expect(page.getByRole("heading", { name: title })).toBeVisible();
+
+  for (const name of ACTION_NAMES) {
+    await expect(page.getByRole("button", { name })).toBeVisible();
+  }
+
+  const layout = await page.evaluate(names => {
+    const buttons = names.map(name => {
+      const button = [...document.querySelectorAll("button")]
+        .find(node => node.textContent.trim() === name);
+      const rect = button.getBoundingClientRect();
+      return { name, top: rect.top, bottom: rect.bottom };
+    });
+    const titleNode = document.querySelector(".single-pick-title");
+    const titleStyle = getComputedStyle(titleNode);
+    const titleRect = titleNode.getBoundingClientRect();
+    return {
+      htmlScrollHeight: document.documentElement.scrollHeight,
+      bodyScrollHeight: document.body.scrollHeight,
+      viewportHeight: window.innerHeight,
+      tabbarInert: document.getElementById("tabbar").inert,
+      buttons,
+      titleLines: Math.round(titleRect.height / Number.parseFloat(titleStyle.lineHeight)),
+    };
+  }, ACTION_NAMES);
+
+  expect(layout.htmlScrollHeight).toBeLessThanOrEqual(layout.viewportHeight + 2);
+  expect(layout.bodyScrollHeight).toBeLessThanOrEqual(layout.viewportHeight + 2);
+  expect(layout.tabbarInert).toBe(true);
+  expect(layout.titleLines).toBeLessThanOrEqual(2);
+  for (const button of layout.buttons) {
+    expect(button.top, `${button.name} starts above the viewport`).toBeGreaterThanOrEqual(-1);
+    expect(button.bottom, `${button.name} exceeds the viewport`).toBeLessThanOrEqual(layout.viewportHeight);
+  }
+}
 
 test("wishlist roulette shows a qualified backdrop across the full hero", async ({ page }) => {
   await openPicker(page);
@@ -192,6 +243,7 @@ test("another option replaces the film, resets the scroll and switches media mod
   await page.evaluate(() => window.scrollTo(0, 400));
   await page.getByRole("button", { name: "Другой вариант" }).click();
 
+  await expect(page.locator("body")).toHaveClass(/single-pick-open/);
   await expect(page.getByRole("heading", { name: "Second Pick" })).toBeVisible();
   await expect(page.locator(".single-pick-poster")).toBeVisible();
   await expect(page.locator(".single-pick-backdrop")).toHaveCount(0);
@@ -223,6 +275,29 @@ test("opening a film reports the right mode and leaves the picker reachable", as
   await page.getByRole("button", { name: "Открыть фильм" }).click();
   await expect.poll(() => state.feedback.length).toBe(1);
   expect(state.feedback[0]).toMatchObject({ action: "opened", mode: "wishlist" });
+  await expect(page.locator("body")).not.toHaveClass(/single-pick-open/);
+  await expect(page.locator(".detail-v2")).toBeVisible();
+  await expect(page.locator("#tabbar")).toBeVisible();
+});
+
+test("watched opens the regular detail screen outside fullscreen mode", async ({ page }) => {
+  await openPicker(page);
+  await openWishlist(page);
+
+  await page.getByRole("button", { name: "Уже смотрел" }).click();
+  await expect(page.locator("body")).not.toHaveClass(/single-pick-open/);
+  await expect(page.locator(".detail-v2")).toBeVisible();
+  await expect(page.locator("#tabbar")).toBeVisible();
+});
+
+test("back navigation closes fullscreen mode and restores the picker landing", async ({ page }) => {
+  await openPicker(page);
+  await openWishlist(page);
+
+  await page.locator(".single-pick-back-slot .back").click();
+  await expect(page.locator("body")).not.toHaveClass(/single-pick-open/);
+  await expect(page.getByRole("heading", { name: "Что посмотреть?" })).toBeVisible();
+  await expect(page.locator("#tabbar")).toBeVisible();
 });
 
 test("with the feature flag off the legacy card renderer stays in place", async ({ page }) => {
@@ -234,26 +309,37 @@ test("with the feature flag off the legacy card renderer stays in place", async 
   await expect(page.getByRole("button", { name: "Открыть фильм" })).toBeVisible();
 });
 
-test("the screen fits a 320px viewport without horizontal overflow", async ({ page }) => {
-  await page.setViewportSize({ width: 320, height: 640 });
-  await openPicker(page);
-  await openWishlist(page);
-
-  await expect(page.locator(".single-pick-screen")).toBeVisible();
-  const overflow = await page.evaluate(() =>
-    document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  expect(overflow).toBeLessThanOrEqual(0);
-
-  for (const name of ["Открыть фильм", "В «Хочу»", "Уже смотрел", "Не предлагать"]) {
-    await expect(page.getByRole("button", { name })).toBeVisible();
-  }
-  // Прокрутив экран до конца, человек обязан дотянуться до последнего действия:
-  // плавающая навигация не должна его накрывать.
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  const overlap = await page.evaluate(() => {
-    const danger = document.querySelector(".single-pick-danger").getBoundingClientRect();
-    const tabbar = document.getElementById("tabbar").getBoundingClientRect();
-    return danger.bottom - tabbar.top;
+for (const viewport of MOBILE_VIEWPORTS) {
+  test(`backdrop fits ${viewport.width}x${viewport.height} without scrolling`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await openPicker(page);
+    await openWishlist(page);
+    await expect(page.locator(".single-pick-backdrop")).toBeVisible();
+    await expectSinglePickFits(page, "Wishlist Pick");
   });
-  expect(overlap).toBeLessThanOrEqual(0);
+
+  test(`poster blur fits ${viewport.width}x${viewport.height} without scrolling`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await openPicker(page);
+    await openSmartRandom(page);
+    await expect(page.locator(".single-pick-poster")).toBeVisible();
+    await expectSinglePickFits(page, "The Last of Us");
+  });
+}
+
+test("fullscreen loading never flashes the legacy header", async ({ page }) => {
+  await openPicker(page);
+  await page.route("**/api/wishlist/random", async route => {
+    await new Promise(resolve => setTimeout(resolve, 250));
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      item: { ...baseMovie, id: 11, title: "Wishlist Pick", ...backdropHero },
+      cycle: { cycle: 1, wishlist_size: 3, shown_in_cycle: 1, remaining_in_cycle: 2 },
+    }) });
+  });
+
+  void openWishlist(page);
+  await expect(page.locator(".single-pick-state-screen")).toBeVisible();
+  await expect(page.locator(".picker-head")).toHaveCount(0);
+  await expect(page.locator("#tabbar")).toBeHidden();
+  await expect(page.getByRole("heading", { name: "Wishlist Pick" })).toBeVisible();
 });

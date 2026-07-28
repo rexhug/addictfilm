@@ -659,6 +659,10 @@ function returnFromDetail() {
   _returnTo = snap.returnTo;
   unwireDetailScroll();
   screen.replaceChildren(snap.frag);
+  // A fullscreen recommendation temporarily yields to the regular detail
+  // screen.  Restore its presentation mode together with the preserved DOM
+  // snapshot when the user comes back.
+  if (screen.querySelector(".single-pick-screen")) singlePickMode(true);
   if (changed) reconcileFilmCard(film);
   // Форсируем layout реаттаченных узлов: иначе scrollTo клампится по ещё не
   // посчитанной (неполной) высоте документа и позиция теряется.
@@ -866,6 +870,7 @@ async function showPicker() {
   // остаться на следующем, уже обычном проходе.
   _quizEngineMeta = null;
   unwireDetailScroll();
+  singlePickMode(false);
   pickerMode(false);
   window.scrollTo(0, 0);
   screen.innerHTML = `${pickerHeader()}<main class="picker-landing rise d1">
@@ -917,6 +922,7 @@ function wireRecommendationMovie(container, item, { mode, sessionId = null, role
   const feedback = action => api(`/api/recommendations/${item.id}/feedback`, { method: "POST", body: JSON.stringify({ action, mode, session_id: sessionId, role: role || item.role, score: item.score }) }).catch(() => {});
   container.querySelectorAll("[data-pick-open]").forEach(button => button.onclick = () => {
     feedback("opened");
+    singlePickMode(false);
     openDetail(item.id, returnTo, item);
   });
   const want = container.querySelector("[data-pick-want]");
@@ -937,6 +943,7 @@ function wireRecommendationMovie(container, item, { mode, sessionId = null, role
       await feedback("watched");
       // Reuse the existing detail screen so rating, comment and list state have
       // exactly one implementation across the product.
+      singlePickMode(false);
       openDetail(item.id, returnTo, item);
     } catch (error) { watched.disabled = false; tg?.showAlert?.(String(error.message || t("load_err"))); }
   };
@@ -965,6 +972,17 @@ function wireRecommendationMovie(container, item, { mode, sessionId = null, role
 
 // Текущая карточка — для замены слоя изображения, когда файл не загрузился.
 let _singlePickItem = null;
+
+function singlePickMode(active) {
+  const enabled = Boolean(active);
+  document.body.classList.toggle("single-pick-open", enabled);
+
+  const tabbar = document.getElementById("tabbar");
+  if (tabbar) {
+    tabbar.setAttribute("aria-hidden", enabled ? "true" : "false");
+    tabbar.inert = enabled;
+  }
+}
 
 function singlePickHero(item) {
   const url = item?.hero_url || item?.poster_url || null;
@@ -1017,17 +1035,20 @@ function singlePickScreenHTML(item, { label = "", allowAnother = true } = {}) {
     .filter(Boolean).slice(0, 3).join(" · ");
   const reasons = recommendationReasons(item);
   return `<main class="single-pick-screen rise d1">
-    <section class="single-pick-hero">
-      ${singlePickMediaHTML(item)}
-      <div class="single-pick-hero-content">
-        ${label ? `<p class="single-pick-label">${esc(label)}</p>` : ""}
-        <h1 class="single-pick-title">${esc(item.title || "—")}</h1>
-        ${item.title_original ? `<p class="single-pick-original">${esc(item.title_original)}</p>` : ""}
-        ${chips ? `<div class="single-pick-chips">${chips}</div>` : ""}
-        ${genres ? `<p class="single-pick-genres">${esc(genres)}</p>` : ""}
-        ${reasons ? `<p class="single-pick-reason">${esc(reasons)}</p>` : ""}
-      </div>
-    </section>
+    <article class="single-pick-card" data-recommendation-film="${esc(item.id)}">
+      <section class="single-pick-visual">
+        ${singlePickMediaHTML(item)}
+        <div class="single-pick-back-slot">${backBtn()}</div>
+        <div class="single-pick-hero-content">
+          ${label ? `<p class="single-pick-label">${esc(label)}</p>` : ""}
+          <h1 class="single-pick-title">${esc(item.title || "—")}</h1>
+          ${item.title_original ? `<p class="single-pick-original">${esc(item.title_original)}</p>` : ""}
+          ${chips ? `<div class="single-pick-chips">${chips}</div>` : ""}
+          ${genres ? `<p class="single-pick-genres">${esc(genres)}</p>` : ""}
+          ${reasons ? `<p class="single-pick-reason">${esc(reasons)}</p>` : ""}
+        </div>
+      </section>
+    </article>
     <section class="single-pick-actions">
       <button type="button" class="single-pick-primary" data-pick-open>${esc(t("pick_open"))}</button>
       <div class="single-pick-action-grid">
@@ -1035,9 +1056,17 @@ function singlePickScreenHTML(item, { label = "", allowAnother = true } = {}) {
         <button type="button" class="single-pick-secondary" data-pick-watched>${PICK_ICONS.check}<span>${esc(t("pick_watched"))}</span></button>
       </div>
       ${allowAnother ? `<button type="button" class="single-pick-alternate" data-pick-another>${PICK_ICONS.shuffle}<span>${esc(t("pick_another"))}</span></button>` : ""}
-      <div class="single-pick-danger-separator" aria-hidden="true"></div>
       <button type="button" class="single-pick-danger" data-pick-reject>${esc(t("pick_not_suggest"))}</button>
     </section>
+  </main>`;
+}
+
+function singlePickStateHTML(message, { error = false } = {}) {
+  return `<main class="single-pick-screen single-pick-state-screen">
+    <div class="single-pick-back-slot">${backBtn()}</div>
+    <div class="single-pick-state-copy${error ? " is-error" : ""}"${error ? ' role="alert"' : ""}>
+      ${esc(message)}
+    </div>
   </main>`;
 }
 
@@ -1045,7 +1074,8 @@ function singlePickScreenHTML(item, { label = "", allowAnother = true } = {}) {
 // экран меняет ВИД, а не поведение.
 function wireSinglePickScreen(item, { label, mode, onAnother }) {
   _singlePickItem = item;
-  screen.innerHTML = `${pickerHeader()}${singlePickScreenHTML(item, { label, allowAnother: true })}`;
+  singlePickMode(true);
+  screen.innerHTML = singlePickScreenHTML(item, { label, allowAnother: true });
   window.scrollTo(0, 0);      // новый фильм всегда показывается с начала экрана
   wireBack(showPicker);
   wireRecommendationMovie(screen.querySelector(".single-pick-screen"), item,
@@ -1063,20 +1093,29 @@ function renderLegacyPick(label, item, onAnother, mode) {
 async function showWishlistRandom() {
   pickerMode(false);
   _singlePickItem = null;
-  screen.innerHTML = `${pickerHeader()}<main class="picker-result"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
+  const fullscreen = featureEnabled("fullscreen_single_pick");
+  singlePickMode(fullscreen);
+  screen.innerHTML = fullscreen
+    ? singlePickStateHTML(t("pick_loading"))
+    : `${pickerHeader()}<main class="picker-result"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
   wireBack(showPicker);
   try {
     const { item } = await api("/api/wishlist/random", { method: "POST", body: "{}" });
     // Свой режим: сервер подтверждает показ по учёту рулетки, а не по
     // истории рекомендаций каталога.
-    if (featureEnabled("fullscreen_single_pick")) {
+    if (fullscreen) {
       wireSinglePickScreen(item, { label: t("pick_wishlist_title"), mode: "wishlist", onAnother: showWishlistRandom });
       return;
     }
     renderLegacyPick(t("pick_wishlist_title"), item, showWishlistRandom, "wishlist");
   } catch (error) {
     const message = error.message === "404" ? t("pick_wishlist_empty") : error.message;
-    screen.querySelector(".picker-result").innerHTML = `${pickerError(message)}`;
+    if (fullscreen) {
+      screen.innerHTML = singlePickStateHTML(message, { error: true });
+      wireBack(showPicker);
+    } else {
+      screen.querySelector(".picker-result").innerHTML = `${pickerError(message)}`;
+    }
   }
 }
 
@@ -1085,19 +1124,29 @@ const STRATEGY_LABELS = { reliable: "strategy_reliable", taste_match: "strategy_
 async function showRandomRecommendation() {
   pickerMode(false);
   _singlePickItem = null;
-  screen.innerHTML = `${pickerHeader()}<main class="picker-result"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
+  const fullscreen = featureEnabled("fullscreen_single_pick");
+  singlePickMode(fullscreen);
+  screen.innerHTML = fullscreen
+    ? singlePickStateHTML(t("pick_loading"))
+    : `${pickerHeader()}<main class="picker-result"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
   wireBack(showPicker);
   try {
     const { item } = await api("/api/recommendations/random", { method: "POST", body: JSON.stringify({ language: lang, context: "solo" }) });
     // Стратегия называется честно: «надёжный выбор» и «находка» — разные обещания.
     const strategy = STRATEGY_LABELS[item.strategy] ? t(STRATEGY_LABELS[item.strategy]) : t("pick_random_title");
-    if (featureEnabled("fullscreen_single_pick")) {
+    if (fullscreen) {
       wireSinglePickScreen(item, { label: strategy, mode: "random", onAnother: showRandomRecommendation });
       return;
     }
     renderLegacyPick(strategy, item, showRandomRecommendation, "random");
   } catch (error) {
-    screen.querySelector(".picker-result").innerHTML = `${pickerError(error.message === "404" ? t("pick_empty") : error.message)}<p class="picker-empty-copy">${esc(t("pick_empty_sub"))}</p>`;
+    const message = error.message === "404" ? t("pick_empty") : error.message;
+    if (fullscreen) {
+      screen.innerHTML = singlePickStateHTML(message, { error: true });
+      wireBack(showPicker);
+    } else {
+      screen.querySelector(".picker-result").innerHTML = `${pickerError(message)}<p class="picker-empty-copy">${esc(t("pick_empty_sub"))}</p>`;
+    }
   }
 }
 

@@ -886,69 +886,174 @@ body.collection-editor-open .admin-indicator{display:none;}
   line-height:1;letter-spacing:.08em;white-space:nowrap;}
 @media(max-width:360px){.picker-preview-badge{padding-inline:6px;font-size:9px;}}
 
-/* ── Один фильм во весь экран: рулетка «Хочу» и умный случайный ───────────── */
-/* Два режима изображения, один каркас. Широкий кадр заполняет блок целиком;
-   вертикальный постер стоит по центру на собственной размытой копии — так он
-   выглядит осознанно, а не растянуто. Режим приходит от сервера. */
-.single-pick-screen{width:100%;min-width:0;padding:2px 20px var(--nav-clearance);}
-body.admin-indicator-on .single-pick-screen{padding-bottom:var(--nav-clearance-admin);}
-/* Один базовый тон у блока, у подложки изображения и у нижней точки градиента:
-   иначе на границе «картинка кончилась / начался текст» видно горизонтальный шов. */
-.single-pick-hero{--single-pick-base:#08090C;
-  position:relative;isolation:isolate;overflow:hidden;width:100%;
-  border:1px solid var(--hair-2);border-radius:26px;background:var(--single-pick-base);}
-.single-pick-media{position:relative;overflow:hidden;width:100%;background:var(--single-pick-base);}
-/* Пропорции блока заданы заранее: высота не «прыгает» после загрузки файла. */
-.single-pick-media-backdrop{aspect-ratio:16/10;min-height:330px;max-height:58svh;}
-.single-pick-backdrop{display:block;width:100%;height:100%;object-fit:cover;object-position:50% 38%;}
-.single-pick-media-shade{position:absolute;inset:0;pointer-events:none;
-  background:linear-gradient(to bottom,rgba(8,9,12,.05) 18%,rgba(8,9,12,.30) 55%,var(--single-pick-base) 100%),
-             linear-gradient(to right,rgba(8,9,12,.14),transparent 52%);}
-.single-pick-media-poster{display:grid;place-items:center;min-height:390px;padding:28px 18px 88px;}
-.single-pick-poster-blur{position:absolute;inset:-42px;width:calc(100% + 84px);height:calc(100% + 84px);
-  object-fit:cover;filter:blur(30px) saturate(.8);opacity:.46;transform:scale(1.08);}
-.single-pick-poster-shade{position:absolute;inset:0;
-  background:linear-gradient(to bottom,rgba(8,9,12,.20),rgba(8,9,12,.52) 65%,var(--single-pick-base)),rgba(8,9,12,.18);}
-.single-pick-poster{position:relative;z-index:1;display:block;width:min(48vw,230px);max-width:68%;
-  aspect-ratio:2/3;object-fit:cover;border:1px solid rgba(255,255,255,.14);border-radius:20px;
-  box-shadow:0 18px 52px rgba(0,0,0,.48);}
-.single-pick-media-empty{display:grid;place-items:center;min-height:300px;color:var(--ink-2);font-size:14px;}
-.single-pick-hero-content{position:relative;z-index:2;margin-top:-86px;padding:0 22px 24px;}
-.single-pick-label{margin:0 0 8px;color:var(--accent-2);font-size:13px;font-weight:700;
-  letter-spacing:.12em;text-transform:uppercase;}
-.single-pick-title{margin:0;color:#fff;font-size:clamp(30px,8vw,42px);font-weight:750;
-  line-height:1.04;letter-spacing:-.035em;}
-.single-pick-original{margin:8px 0 0;color:rgba(221,222,231,.7);font-size:17px;}
-.single-pick-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;}
-.single-pick-chip{display:inline-flex;align-items:center;min-height:30px;padding:5px 10px;
-  border:1px solid rgba(255,255,255,.08);border-radius:999px;background:rgba(255,255,255,.055);
-  color:rgba(244,244,248,.88);font-size:14px;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);}
-.single-pick-rating{color:#B794FF;font-variant-numeric:tabular-nums;}
-.single-pick-genres,.single-pick-reason{margin:13px 0 0;color:rgba(218,219,228,.72);
-  font-size:15px;line-height:1.45;}
-.single-pick-reason{color:rgba(240,240,245,.86);}
-.single-pick-actions{display:grid;gap:12px;padding:18px 4px 0;}
+/* ── Fullscreen single pick ─────────────────────────────────────────────── */
+/* The result is one viewport-bound decision screen.  Its hero receives only
+   the space left after the actions, so hiding overflow never hides controls. */
+body.single-pick-open{
+  height:100vh;height:100dvh;min-height:100dvh;overflow:hidden;padding-bottom:0;
+  overscroll-behavior:none;
+}
+body.single-pick-open #tabbar,
+body.single-pick-open #top-scrim,
+body.single-pick-open .admin-indicator{display:none!important;}
+body.single-pick-open #screen{
+  width:100%;max-width:520px;height:100vh;height:100dvh;min-height:0;overflow:hidden;
+}
+.single-pick-screen{
+  position:relative;display:grid;grid-template-rows:minmax(0,1fr) auto;gap:9px;
+  width:100%;height:100vh;height:100dvh;min-width:0;min-height:0;
+  padding:calc(var(--safe-top) + 8px) 14px
+    calc(max(env(safe-area-inset-bottom,0px),var(--tg-inset-bottom)) + 10px);
+  overflow:hidden;
+}
+/* A translate-in animation would briefly push the last action below the
+   viewport.  Fullscreen mode fades without moving its fixed-height grid. */
+body.single-pick-open .single-pick-screen.rise{
+  animation:single-pick-fade .24s ease both;
+}
+@keyframes single-pick-fade{from{opacity:0;}to{opacity:1;}}
+.single-pick-card{
+  position:relative;min-width:0;min-height:0;overflow:hidden;
+  border:1px solid rgba(255,255,255,.09);border-radius:24px;background:#08090c;
+}
+.single-pick-visual{
+  position:relative;isolation:isolate;width:100%;height:100%;min-height:0;
+  margin:0;overflow:hidden;
+}
+.single-pick-media{
+  position:absolute;inset:0;width:100%;height:100%;overflow:hidden;background:#08090c;
+}
+.single-pick-media-backdrop{min-height:0;max-height:none;aspect-ratio:auto;}
+.single-pick-backdrop{
+  display:block;width:100%;height:100%;object-fit:cover;object-position:50% 36%;
+}
+.single-pick-media-shade{
+  position:absolute;inset:0;pointer-events:none;
+  background:
+    linear-gradient(180deg,rgba(4,5,8,.20) 0%,rgba(4,5,8,.04) 28%,
+      rgba(5,6,9,.28) 54%,rgba(5,6,9,.94) 82%,#08090c 100%),
+    linear-gradient(90deg,rgba(0,0,0,.22),transparent 58%);
+}
+.single-pick-media-poster{
+  display:grid;place-items:center;min-height:0;padding:18px 18px 138px;
+}
+.single-pick-poster-blur{
+  position:absolute;inset:-42px;width:calc(100% + 84px);height:calc(100% + 84px);
+  object-fit:cover;filter:blur(30px) saturate(.72);opacity:.42;transform:scale(1.08);
+}
+.single-pick-poster-shade{
+  position:absolute;inset:0;
+  background:linear-gradient(180deg,rgba(5,6,9,.18),rgba(5,6,9,.26) 45%,
+    rgba(5,6,9,.92) 82%,#08090c 100%);
+}
+.single-pick-poster{
+  position:relative;z-index:1;display:block;width:auto;
+  height:clamp(170px,34dvh,280px);max-width:54%;max-height:56%;aspect-ratio:2/3;
+  object-fit:cover;border:1px solid rgba(255,255,255,.14);border-radius:16px;
+  box-shadow:0 16px 38px rgba(0,0,0,.46);transform:translateY(-10%);
+}
+.single-pick-media-empty{
+  display:grid;place-items:center;min-height:0;color:var(--ink-2);font-size:13px;
+}
+.single-pick-back-slot{position:absolute;z-index:5;top:12px;left:12px;}
+.single-pick-back-slot .back{
+  width:42px;height:42px;margin:0;border:1px solid rgba(255,255,255,.11);
+  border-radius:13px;background:rgba(8,9,12,.68);color:#fff;
+  -webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);
+}
+.single-pick-hero-content{
+  position:absolute;z-index:3;right:0;bottom:0;left:0;min-width:0;
+  margin:0;padding:22px 20px 19px;
+}
+.single-pick-label{
+  margin:0 0 6px;overflow:hidden;color:var(--accent-2);font-size:10.5px;
+  font-weight:720;line-height:1.2;letter-spacing:.12em;text-overflow:ellipsis;
+  text-transform:uppercase;white-space:nowrap;
+}
+.single-pick-title{
+  display:-webkit-box;overflow:hidden;margin:0;color:#fff;
+  font-size:clamp(26px,7.4vw,36px);font-weight:740;line-height:1.02;
+  letter-spacing:-.038em;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+}
+.single-pick-original{
+  overflow:hidden;margin:5px 0 0;color:rgba(221,222,231,.68);
+  font-size:13px;line-height:1.25;text-overflow:ellipsis;white-space:nowrap;
+}
+.single-pick-chips{
+  display:flex;flex-wrap:nowrap;gap:6px;min-width:0;margin-top:9px;overflow:hidden;
+}
+.single-pick-chip{
+  display:inline-flex;align-items:center;flex:0 0 auto;min-height:25px;padding:4px 9px;
+  border:1px solid rgba(255,255,255,.09);border-radius:999px;
+  background:rgba(255,255,255,.055);color:rgba(244,244,248,.88);
+  font-size:12px;line-height:1;white-space:nowrap;
+  -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+}
+.single-pick-rating{color:#b794ff;font-variant-numeric:tabular-nums;}
+.single-pick-genres{
+  overflow:hidden;margin:9px 0 0;color:rgba(218,219,228,.70);
+  font-size:12.5px;line-height:1.3;text-overflow:ellipsis;white-space:nowrap;
+}
+.single-pick-reason{
+  display:-webkit-box;overflow:hidden;margin:7px 0 0;color:rgba(240,240,245,.84);
+  font-size:12.5px;line-height:1.35;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+}
+.single-pick-actions{display:grid;gap:8px;min-width:0;margin:0;padding:0 1px;}
 .single-pick-primary,.single-pick-secondary,.single-pick-alternate,.single-pick-danger{
-  min-height:58px;border-radius:17px;font:650 15px var(--font);cursor:pointer;}
-.single-pick-primary{border:0;background:linear-gradient(135deg,#7050FF,#8D63FF);color:#fff;
-  box-shadow:0 10px 28px rgba(113,76,255,.22);}
-.single-pick-action-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;}
-.single-pick-secondary,.single-pick-alternate{display:inline-flex;align-items:center;
-  justify-content:center;gap:9px;min-width:0;padding:10px 12px;
-  border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.035);color:rgba(249,249,252,.94);}
-.single-pick-secondary svg,.single-pick-alternate svg{flex:0 0 auto;width:21px;height:21px;}
-.single-pick-alternate{color:var(--accent-2);}
-.single-pick-danger-separator{height:1px;margin:4px 4px 0;background:rgba(255,255,255,.07);}
-.single-pick-danger{border:0;background:transparent;color:#FF7F91;}
+  width:100%;min-width:0;margin:0;border-radius:14px;
+  font-family:var(--font);font-size:13.5px;font-weight:650;cursor:pointer;
+}
+.single-pick-primary{
+  min-height:50px;border:0;background:linear-gradient(135deg,#7050ff,#8d63ff);
+  color:#fff;box-shadow:0 8px 22px rgba(113,76,255,.18);
+}
+.single-pick-action-grid{
+  display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;
+}
+.single-pick-secondary,.single-pick-alternate{
+  display:inline-flex;align-items:center;justify-content:center;gap:7px;
+  min-height:46px;padding:8px 10px;border:1px solid rgba(255,255,255,.10);
+  background:rgba(255,255,255,.032);color:rgba(249,249,252,.94);
+}
+.single-pick-secondary svg,.single-pick-alternate svg{
+  flex:0 0 auto;width:19px;height:19px;
+}
+.single-pick-alternate{min-height:43px;color:var(--accent-2);}
+.single-pick-danger{
+  min-height:38px;border:0;background:transparent;color:#ff7f91;font-size:12.5px;
+}
 .single-pick-primary:disabled,.single-pick-secondary:disabled,
 .single-pick-alternate:disabled,.single-pick-danger:disabled{opacity:.52;}
+.single-pick-state-screen{
+  display:grid;grid-template-rows:1fr;place-items:center;
+}
+.single-pick-state-copy{color:var(--ink-2);font-size:14px;text-align:center;}
+.single-pick-state-copy.is-error{max-width:300px;color:#fca5a5;line-height:1.45;}
 @media(max-width:360px){
-  .single-pick-screen{padding-inline:14px;}
-  .single-pick-hero{border-radius:22px;}
-  .single-pick-media-backdrop{min-height:300px;}
-  .single-pick-media-poster{min-height:350px;}
-  .single-pick-hero-content{padding-inline:17px;}
-  .single-pick-title{font-size:29px;}
-  .single-pick-secondary{font-size:14px;}
+  .single-pick-screen{gap:7px;padding-right:10px;padding-left:10px;}
+  .single-pick-card{border-radius:20px;}
+  .single-pick-hero-content{padding:18px 15px 15px;}
+  .single-pick-title{font-size:25px;}
+  .single-pick-primary,.single-pick-secondary,.single-pick-alternate{font-size:12.5px;}
+}
+@media(max-height:700px){
+  .single-pick-screen{
+    gap:6px;padding-top:calc(var(--safe-top) + 5px);
+    padding-bottom:calc(max(env(safe-area-inset-bottom,0px),var(--tg-inset-bottom)) + 6px);
+  }
+  .single-pick-hero-content{padding:16px 16px 13px;}
+  .single-pick-original{display:none;}
+  .single-pick-reason{-webkit-line-clamp:1;}
+  .single-pick-primary{min-height:45px;}
+  .single-pick-secondary{min-height:42px;}
+  .single-pick-alternate{min-height:40px;}
+  .single-pick-danger{min-height:32px;}
+}
+@media(max-height:620px){
+  .single-pick-reason{display:none;}
+  .single-pick-genres{margin-top:6px;}
+  .single-pick-chips{margin-top:7px;}
+  .single-pick-label{margin-bottom:4px;}
+  .single-pick-title{font-size:23px;}
 }
 .settings-attribution{margin:22px 4px 0;color:var(--ink-2);font-size:12px;line-height:1.45;}
