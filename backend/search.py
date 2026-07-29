@@ -14,6 +14,7 @@ import os
 import re
 import time
 
+import cast as cast_model
 import database as db
 import kinopoisk
 import media_type
@@ -79,8 +80,10 @@ def _kp_details(doc: dict) -> dict:
     name = doc.get("name") or doc.get("alternativeName") or ""
     original = doc.get("alternativeName")
     length = doc.get("movieLength") or doc.get("seriesLength")
-    directors, actors = kinopoisk.extract_credits(doc.get("persons") or [])
-    photos = kinopoisk.extract_actor_photos(doc.get("persons") or [])
+    directors, _ = kinopoisk.extract_credits(doc.get("persons") or [])
+    canonical_cast = kinopoisk.extract_cast(doc.get("persons") or [], limit=12)
+    actors = ", ".join(member["name"] for member in canonical_cast[:8]) or None
+    photos = cast_model.legacy_actor_photos(canonical_cast)
     director_photos = kinopoisk.extract_director_photos(doc.get("persons") or [])
     return {
         "imdb_id": kinopoisk.imdb_id_of(doc),
@@ -100,6 +103,10 @@ def _kp_details(doc: dict) -> dict:
         "backdrop_url": (doc.get("backdrop") or {}).get("url"),
         "age_rating": kinopoisk.age_rating_of(doc),
         "actors_photos": json.dumps(photos, ensure_ascii=False) if photos else None,
+        "cast_json": (
+            json.dumps(canonical_cast, ensure_ascii=False, separators=(",", ":"))
+            if canonical_cast else None
+        ),
         "directors_photos": json.dumps(director_photos, ensure_ascii=False) if director_photos else None,
         # Тип записи сохраняем сразу: без него сериал неотличим от фильма и
         # попадает в подбор ФИЛЬМОВ (см. media_type.py).

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import aiosqlite
+import cast as cast_model
 import db_runtime
 import hero_media
 import media_type
@@ -61,6 +62,7 @@ _SCHEMA_MIGRATION_HERO_PRESENTATION = "2026-07-28-hero-presentation-v1"
 _SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION = "2026-07-28-movie-flow-moderation-v1"
 _SCHEMA_MIGRATION_PUBLIC_REVIEWS = "2026-07-29-public-reviews-v1"
 _SCHEMA_MIGRATION_FILM_IDENTITY = "2026-07-29-film-identity-v1"
+_SCHEMA_MIGRATION_CANONICAL_CAST = "2026-07-29-canonical-cast-v1"
 
 # Значения films.media_type. Дублируются константами, а не импортом media_type,
 # чтобы не затенять одноимённый аргумент get_or_create_film.
@@ -900,6 +902,12 @@ async def _apply_public_reviews_migration() -> None:
         await db.commit()
 
 
+async def _apply_canonical_cast_migration() -> None:
+    """Additive canonical cast storage; legacy fields remain the rollback path."""
+    await _add_column_if_missing("films", "cast_json TEXT")
+    await _add_column_if_missing("films", "cast_checked_at TEXT")
+
+
 def _row_time(row: dict, *fields: str) -> str:
     """Comparable ISO timestamp for conflict resolution during a film merge."""
     return max((str(row.get(field) or "") for field in fields), default="")
@@ -1244,6 +1252,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION, _apply_movie_flow_moderation_migration),
         (_SCHEMA_MIGRATION_PUBLIC_REVIEWS, _apply_public_reviews_migration),
         (_SCHEMA_MIGRATION_FILM_IDENTITY, _apply_film_identity_migration),
+        (_SCHEMA_MIGRATION_CANONICAL_CAST, _apply_canonical_cast_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -1341,6 +1350,8 @@ async def _init_schema() -> None:
                 movie_flow_state TEXT,  -- auto/allow/exclude; NULL behaves as auto
                 movie_flow_reason TEXT,
                 actors_photos  TEXT,   -- JSON-массив name/photo_url под тех же актёров, что в actors
+                cast_json      TEXT,   -- canonical top-billed cast, including stable person identity
+                cast_checked_at TEXT,
                 directors_photos TEXT, -- JSON-массив name/photo_url под тех же режиссёров, что в directors
                 search_text    TEXT NOT NULL DEFAULT '',
                 poster_checked_at TEXT,
@@ -1823,7 +1834,7 @@ async def get_or_create_film(
     kp_rating: str | None = None, directors: str | None = None, actors: str | None = None,
     backdrop_url: str | None = None, age_rating: str | None = None, actors_photos: str | None = None,
     directors_photos: str | None = None, kp_id: str | None = None,
-    media_type: str | None = None,
+    media_type: str | None = None, cast_json: str | None = None,
 ) -> int:
     """Возвращает id фильма в общем каталоге, создавая запись при первом появлении
     (dedup по imdb_id/kp_id). Идемпотентно — один фильм на всех пользователей."""
@@ -1902,6 +1913,7 @@ async def get_or_create_film(
                 "backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
                 "age_rating = COALESCE(age_rating, ?), "
                 "actors_photos = COALESCE(NULLIF(actors_photos, ''), ?), "
+                "cast_json = COALESCE(NULLIF(cast_json, ''), ?), "
                 "directors_photos = COALESCE(NULLIF(directors_photos, ''), ?), "
                 "media_type = COALESCE(NULLIF(media_type, ''), ?), "
                 "media_type_source = CASE WHEN COALESCE(NULLIF(media_type, ''), ?) IS NULL "
@@ -1910,6 +1922,7 @@ async def get_or_create_film(
                 (merged_imdb_id, merged_title, merged_original, merged_year, merged_genres, merged_directors, merged_actors,
                  merged_runtime, merged_imdb_rating, merged_kp_rating, merged_imdb_votes, merged_plot,
                  merged_kp_id, merged_search_text, poster_url, backdrop_url, age_rating, actors_photos,
+                 cast_json,
                  directors_photos, media_type, media_type, row["id"]))
             if merged_genres != row["genres"]:
                 await _set_film_genres(db, row["id"], merged_genres)
@@ -1926,14 +1939,14 @@ async def get_or_create_film(
             INSERT INTO films
                 (imdb_id, kp_id, title, title_original, year, genres, directors, actors, runtime,
                  imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
-                 actors_photos, directors_photos, search_text, media_type, media_type_source, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 actors_photos, cast_json, directors_photos, search_text, media_type, media_type_source, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT DO NOTHING
             RETURNING id
             """,
             (imdb_id, kp_id, title, title_original, year, genres, directors, actors, runtime,
              imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
-             actors_photos, directors_photos, search_text, media_type,
+             actors_photos, cast_json, directors_photos, search_text, media_type,
              "provider" if media_type else None, _now()),
         )
         inserted = await cur.fetchone()
@@ -1970,6 +1983,63 @@ async def get_film(film_id: int) -> dict | None:
         cur = await db.execute("SELECT * FROM films WHERE id = ?", (film_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
+
+
+def decode_film_cast(value: str | None) -> list[dict]:
+    return cast_model.decode_cast(value)
+
+
+async def update_film_cast(
+    film_id: int,
+    canonical_cast: list[dict],
+    *,
+    checked_at: str | None = None,
+) -> bool:
+    """Atomically keep canonical and legacy cast representations in one order."""
+    normalized = cast_model.normalize_cast(canonical_cast)
+    cast_json = (
+        json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+        if normalized else None
+    )
+    actor_names = ", ".join(member["name"] for member in normalized[:8]) or None
+    legacy_photos = (
+        json.dumps(
+            cast_model.legacy_actor_photos(normalized),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if normalized else None
+    )
+    timestamp = checked_at or _now()
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cursor = await db.execute(
+            """
+            UPDATE films
+            SET cast_json = ?, cast_checked_at = ?, actors = ?,
+                actors_photos = ?, actor_photos_checked_at = ?
+            WHERE id = ?
+            """,
+            (cast_json, timestamp, actor_names, legacy_photos, timestamp, film_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def films_for_cast_backfill(
+    *, film_id: int | None = None, limit: int = 20,
+) -> list[dict]:
+    """Bounded catalog candidates for the maintenance command."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        if film_id is not None:
+            cur = await db.execute("SELECT * FROM films WHERE id = ?", (film_id,))
+        else:
+            cur = await db.execute(
+                "SELECT * FROM films ORDER BY "
+                "CASE WHEN cast_checked_at IS NULL THEN 0 ELSE 1 END, id DESC LIMIT ?",
+                (max(1, min(limit, 500)),),
+            )
+        return [dict(row) for row in await cur.fetchall()]
 
 
 async def set_film_artwork(imdb_id: str, backdrop_url: str | None,

@@ -124,6 +124,10 @@ KINOPOISK_HERO_ENABLED: bool = _flag("KINOPOISK_HERO_ENABLED", False)
 # только представление.
 FULLSCREEN_SINGLE_PICK_ENABLED: bool = _flag("FULLSCREEN_SINGLE_PICK_ENABLED", False)
 
+# Canonical, provider-ordered movie cast. The legacy actors/actors_photos
+# contract stays populated so this can be rolled back without a data rollback.
+CAST_V2_ENABLED: bool = _flag("CAST_V2_ENABLED", False)
+
 # Как часто воркер проверяет, кому пора обновить кадр.
 HERO_REFRESH_INTERVAL: float = _bounded_float("HERO_REFRESH_INTERVAL", 900.0, 60.0, 86400.0)
 HERO_REFRESH_BATCH: int = _bounded_int("HERO_REFRESH_BATCH", 20, 1, 200)

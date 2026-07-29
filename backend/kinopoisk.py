@@ -8,6 +8,7 @@ import logging
 from collections import OrderedDict
 
 import aiohttp
+import cast as cast_model
 import ratelimit
 from config import KINOPOISK_TOKENS
 
@@ -23,6 +24,8 @@ _rr = 0
 # Детали по id не меняются — кэшируем (экономим лимит 200 запросов/сутки).
 _cache: OrderedDict[str, dict] = OrderedDict()
 _CACHE_MAX = 500
+_person_cache: OrderedDict[str, dict] = OrderedDict()
+_PERSON_CACHE_MAX = 1000
 
 
 def _cache_put(kp_id: str, doc: dict) -> None:
@@ -78,6 +81,53 @@ def extract_actor_photos(persons: list[dict], max_actors: int = 5) -> list[dict]
         if len(out) >= max_actors:
             break
     return out
+
+
+def extract_cast(persons: list[dict], *, limit: int = 12) -> list[dict]:
+    """Return movie-specific, provider-ordered actors without dropping identity."""
+    result: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_names: set[str] = set()
+    actor_order = 0
+    for person in persons or []:
+        if person.get("enProfession") != "actor":
+            continue
+        name = str(person.get("name") or person.get("enName") or "").strip()
+        if not name:
+            continue
+        person_id = (
+            str(person["id"]).strip() if person.get("id") is not None else None
+        )
+        original_name = str(person.get("enName") or "").strip() or None
+        identity_name = cast_model.normalize_person_name(original_name or name)
+        if person_id:
+            if person_id in seen_ids:
+                continue
+            seen_ids.add(person_id)
+        elif identity_name:
+            if identity_name in seen_names:
+                continue
+            seen_names.add(identity_name)
+        photo_url = cast_model.valid_http_url(person.get("photo"))
+        result.append({
+            "person_id": person_id,
+            "wikidata_id": None,
+            "name": name,
+            "original_name": original_name,
+            "character": str(person.get("description") or "").strip() or None,
+            "billing_order": actor_order,
+            "source": "kinopoisk",
+            "photo_url": photo_url,
+            "fallback_photo_urls": [],
+            "photo_state": (
+                cast_model.PHOTO_UNVERIFIED if photo_url
+                else cast_model.PHOTO_MISSING
+            ),
+        })
+        actor_order += 1
+        if len(result) >= limit:
+            break
+    return cast_model.normalize_cast(result, limit=limit)
 
 
 def extract_director_photos(persons: list[dict], max_directors: int = 2) -> list[dict]:
@@ -180,6 +230,36 @@ async def get_movie(kp_id: str) -> dict | None:
     if data and data.get("id"):
         _cache_put(str(kp_id), data)
     return data
+
+
+def _person_cache_put(person_id: str, person: dict) -> None:
+    key = str(person_id)
+    _person_cache.pop(key, None)
+    _person_cache[key] = person
+    if len(_person_cache) > _PERSON_CACHE_MAX:
+        _person_cache.popitem(last=False)
+
+
+async def get_person(person_id: str) -> dict | None:
+    """Bounded, shared-budget portrait fallback for background enrichment only."""
+    key = str(person_id or "").strip()
+    if not key:
+        return None
+    cached = _person_cache.get(key)
+    if cached is not None:
+        _person_cache.move_to_end(key)
+        return cached
+    params = [
+        ("selectFields", "id"),
+        ("selectFields", "name"),
+        ("selectFields", "enName"),
+        ("selectFields", "photo"),
+    ]
+    data = await _request(f"/person/{key}", params)
+    if data and data.get("id") is not None:
+        _person_cache_put(key, data)
+        return data
+    return None
 
 
 async def ratings_by_imdb(imdb_ids: list[str]) -> dict[str, float]:
