@@ -66,6 +66,11 @@ def _user_ids(name: str) -> set[int]:
 # кто открыл приложение (авторизация по подписи initData, см. auth.py).
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 
+# Окремий ключ для короткоживучих підписаних токенів префетчу рулетки.
+# У проді можна не задавати: main.py безпечно використовує BOT_TOKEN як
+# стабільний fallback. Окрема змінна потрібна CI та середовищам без Telegram.
+WISHLIST_PREPARE_SECRET: str = os.getenv("WISHLIST_PREPARE_SECRET", "").strip()
+
 # Пул токенов kinopoisk.dev: несколько ключей через запятую в KINOPOISK_TOKEN.
 # Ротация в kinopoisk.py суммирует их суточные лимиты и даёт устойчивость к 403/квоте.
 KINOPOISK_TOKENS: list[str] = [t.strip() for t in os.getenv("KINOPOISK_TOKEN", "").split(",") if t.strip()]

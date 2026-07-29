@@ -49,6 +49,7 @@ from config import (
     KINOPOISK_HERO_ENABLED,
     SENTRY_DSN,
     SENTRY_TRACES_SAMPLE_RATE,
+    WISHLIST_PREPARE_SECRET,
 )
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -770,10 +771,10 @@ def _urlsafe_b64decode(value: str) -> bytes:
 
 
 def _wishlist_prepare_signing_key() -> bytes:
-    # BOT_TOKEN is already required to authenticate every public API request
-    # and is stable across deploys.  Domain separation prevents these tokens
-    # from being usable as any other HMAC in the application.
-    secret = BOT_TOKEN or ADMIN_TOKEN
+    # A dedicated key lets CI and non-Telegram environments exercise the real
+    # signing path. Production safely falls back to the stable BOT_TOKEN.
+    # Domain separation prevents these tokens from being useful elsewhere.
+    secret = WISHLIST_PREPARE_SECRET or BOT_TOKEN or ADMIN_TOKEN
     if not secret:
         raise HTTPException(status_code=503, detail="Підготовка фільму тимчасово недоступна")
     return hashlib.sha256(f"wishlist-prepare-v1:{secret}".encode()).digest()
