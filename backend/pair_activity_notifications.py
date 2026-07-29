@@ -40,8 +40,8 @@ def format_partner_rating_notification(*, context: dict, rating: int) -> dict:
     if language == "en":
         if recipient_rating is None:
             text = {
-                "title": "Your partner rated a movie",
-                "body": f'{name} rated “{film_title}”. Rate it too, then compare your scores.',
+                "title": "New partner rating",
+                "body": f'{name} rated “{film_title}”. Now it’s your turn.',
                 "action_label": "Rate movie",
             }
         else:
@@ -55,11 +55,8 @@ def format_partner_rating_notification(*, context: dict, rating: int) -> dict:
             }
     elif recipient_rating is None:
         text = {
-            "title": "Партнёр оценил фильм",
-            "body": (
-                f"У {name} появилась оценка фильма «{film_title}». "
-                "Оцени тоже — потом сравните."
-            ),
+            "title": "Новая оценка партнёра",
+            "body": f"Новая оценка фильма «{film_title}» от {name}. А теперь твоя очередь!",
             "action_label": "Оценить",
         }
     else:

@@ -105,7 +105,15 @@ async function openStats(page, paired = false, options = {}) {
     });
   });
   await page.route("**/api/**", async route => {
-    const path = new URL(route.request().url()).pathname;
+    const requestUrl = new URL(route.request().url());
+    const path = requestUrl.pathname;
+    if (path.startsWith("/api/notifications")) {
+      options.onNotificationRequest?.({
+        method: route.request().method(),
+        path,
+        searchParams: requestUrl.searchParams,
+      });
+    }
     const partnerApi = options.partnerApi;
     if (path === "/api/partner/stats" && options.pairStatsFailure) {
       await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "stats unavailable" }) });
@@ -156,8 +164,10 @@ async function openStats(page, paired = false, options = {}) {
         })()
       : path === "/api/notifications"
         ? (typeof options.notifications === "function"
-          ? options.notifications()
-          : (options.notifications || { items: [], unread_count: 0, next_before_id: null }))
+          ? options.notifications({ requestUrl, method: route.request().method() })
+          : (options.notifications || { items: [], unread_count: 0,
+            unread_by_category: { all: 0, pair: 0, films: 0, system: 0 },
+            next_before_id: null }))
       : path.startsWith("/api/notifications/")
         ? { ok: true }
       : path === "/api/movie/1"
@@ -441,6 +451,7 @@ test("notification inbox shows unread pair events and follows their deep link", 
 });
 
 test("rating notification uses a star and opens the exact film from row or action", async ({ page }) => {
+  let readCalls = 0;
   const notification = {
     id: 77,
     event_type: "pair.film.rated",
@@ -449,31 +460,136 @@ test("rating notification uses a star and opens the exact film from row or actio
     created_at: new Date().toISOString(),
     actor: { name: "Kristina", username: "kristina", photo_url: null },
     payload: {
-      title: "Партнёр оценил фильм",
-      body: "У Kristina появилась оценка фильма «The Last of Us». Оцени тоже — потом сравните.",
+      title: "Новая оценка партнёра",
+      body: "Новая оценка фильма «The Last of Us» от Kristina. А теперь твоя очередь!",
       action_label: "Оценить",
     },
   };
   await openStats(page, false, {
     notifications: { unread_count: 1, next_before_id: null, items: [notification] },
+    onNotificationRequest: ({ method, path }) => {
+      if (method === "POST" && path === "/api/notifications/77/read") readCalls += 1;
+    },
   });
   await page.getByRole("button", { name: "Главная" }).click();
   await page.getByRole("button", { name: "Уведомления" }).click();
   const row = page.locator('[data-notification-id="77"]');
-  await expect(row).toHaveClass(/unread/);
+  await expect(row).toHaveClass(/is-unread/);
   await expect(row.locator(".notification-event-icon path")).toHaveAttribute(
     "d",
     "m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2 7.5 14 3 9.6l6.2-.9L12 3Z",
   );
   await row.click();
+  await expect.poll(() => readCalls).toBe(1);
   await expect(page.getByRole("heading", { name: "The Last of Us" })).toBeVisible();
   await page.locator("#d-back-top").click();
   await expect(page.getByRole("heading", { name: "Уведомления" })).toBeVisible();
-  await expect(page.locator('[data-notification-id="77"]')).not.toHaveClass(/unread/);
+  await expect(page.locator('[data-notification-id="77"]')).toHaveClass(/is-read/);
 
   // The action button follows the same strict movie deep link.
   await page.getByRole("button", { name: "Оценить", exact: true }).click();
+  // It is already read, so reopening must not emit a redundant read request.
+  await expect.poll(() => readCalls).toBe(1);
   await expect(page.getByRole("heading", { name: "The Last of Us" })).toBeVisible();
+});
+
+test("notification filters use real categories, preserve five-tab navigation, and stay mobile safe", async ({ page }) => {
+  const items = [
+    { id: 91, event_type: "pair.invite.accepted", read: false, deep_link: "stats", created_at: new Date().toISOString(),
+      payload: { title: "Теперь вы в паре", body: "Общая статистика уже доступна.", action_label: "Статистика" } },
+    { id: 90, event_type: "pair.film.rated", read: false, deep_link: "movie:1", created_at: new Date().toISOString(),
+      payload: { title: "Новая оценка партнёра", body: "Теперь твоя очередь.", action_label: "Оценить" } },
+    { id: 89, event_type: "account.security", read: false, deep_link: "", created_at: new Date().toISOString(),
+      payload: { title: "Системное сообщение", body: "Важное обновление.", action_label: "" } },
+  ];
+  const requestedCategories = [];
+  await openStats(page, false, {
+    notifications: ({ requestUrl }) => {
+      const category = requestUrl.searchParams.get("category") || "all";
+      if (requestUrl.searchParams.has("category")) requestedCategories.push(category);
+      const filtered = category === "all" ? items : items.filter(item => (
+        category === "films" ? item.event_type === "pair.film.rated"
+          : category === "pair" ? item.event_type.startsWith("pair.") && item.event_type !== "pair.film.rated"
+            : !item.event_type.startsWith("pair.")
+      ));
+      return {
+        items: filtered,
+        unread_count: 3,
+        unread_by_category: { all: 3, pair: 1, films: 1, system: 1 },
+        next_before_id: null,
+      };
+    },
+  });
+  await page.getByRole("button", { name: "Главная" }).click();
+  await page.getByRole("button", { name: "Уведомления" }).click();
+  await expect(page.locator(".notification-card")).toHaveCount(3);
+  await expect(page.locator(".notification-filter")).toHaveCount(4);
+  await expect(page.locator("#tabbar button")).toHaveCount(5);
+  await page.getByRole("button", { name: /Фильмы/ }).click();
+  await expect(page.locator(".notification-card")).toHaveCount(1);
+  await expect(page.getByText("Новая оценка партнёра")).toBeVisible();
+  expect(requestedCategories).toContain("films");
+
+  for (const viewport of [{ width: 320, height: 568 }, { width: 430, height: 932 }]) {
+    await page.setViewportSize(viewport);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+    const navOverlap = await page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+      const nav = document.getElementById("tabbar")?.getBoundingClientRect();
+      const lastCard = [...document.querySelectorAll(".notification-card")].at(-1)?.getBoundingClientRect();
+      return nav && lastCard ? lastCard.bottom <= nav.top : true;
+    });
+    expect(navOverlap).toBeTruthy();
+  }
+});
+
+test("notification pagination keeps the active filter and appends without replacing cards", async ({ page }) => {
+  const requests = [];
+  const makeItem = id => ({
+    id, event_type: "pair.film.rated", read: true, deep_link: "movie:1",
+    created_at: new Date().toISOString(),
+    payload: { title: `Оценка ${id}`, body: "Фильм оценён.", action_label: "Открыть" },
+  });
+  await openStats(page, false, {
+    notifications: ({ requestUrl }) => {
+      const category = requestUrl.searchParams.get("category") || "all";
+      const before = requestUrl.searchParams.get("before_id");
+      if (requestUrl.searchParams.has("category")) requests.push({ category, before });
+      return before
+        ? { items: [makeItem(98)], unread_count: 0, unread_by_category: { all: 0, pair: 0, films: 0, system: 0 }, next_before_id: null }
+        : { items: [makeItem(100), makeItem(99)], unread_count: 0, unread_by_category: { all: 0, pair: 0, films: 0, system: 0 }, next_before_id: 99 };
+    },
+  });
+  await page.getByRole("button", { name: "Главная" }).click();
+  await page.getByRole("button", { name: "Уведомления" }).click();
+  await page.getByRole("button", { name: /Фильмы/ }).click();
+  await expect(page.locator(".notification-card")).toHaveCount(2);
+  await page.getByRole("button", { name: "Показать ещё" }).click();
+  await expect(page.locator(".notification-card")).toHaveCount(3);
+  expect(requests.at(-1)).toEqual({ category: "films", before: "99" });
+});
+
+test("mark all read is optimistic and sends one request", async ({ page }) => {
+  let readAllCalls = 0;
+  await openStats(page, false, {
+    notifications: {
+      unread_count: 1,
+      unread_by_category: { all: 1, pair: 1, films: 0, system: 0 },
+      next_before_id: null,
+      items: [{ id: 111, event_type: "pair.invite.accepted", read: false, deep_link: "stats",
+        created_at: new Date().toISOString(),
+        payload: { title: "Теперь вы в паре", body: "Статистика готова.", action_label: "Статистика" } }],
+    },
+    onNotificationRequest: ({ method, path }) => {
+      if (method === "POST" && path === "/api/notifications/read-all") readAllCalls += 1;
+    },
+  });
+  await page.getByRole("button", { name: "Главная" }).click();
+  await page.getByRole("button", { name: "Уведомления" }).click();
+  await page.getByRole("button", { name: "Прочитать все" }).click();
+  await expect(page.locator('[data-notification-id="111"]')).toHaveClass(/is-read/);
+  await expect(page.getByRole("button", { name: "Прочитать все" })).toBeDisabled();
+  await expect.poll(() => readAllCalls).toBe(1);
 });
 
 test("malformed movie notification links fall back to Home", async ({ page }) => {
@@ -487,7 +603,7 @@ test("malformed movie notification links fall back to Home", async ({ page }) =>
       deep_link: "movie:javascript:alert(1)",
       created_at: new Date().toISOString(),
       actor: { name: "Kristina", username: "kristina", photo_url: null },
-      payload: { title: "Партнёр оценил фильм", body: "Оцени тоже.", action_label: "Оценить" },
+      payload: { title: "Новая оценка партнёра", body: "Оцени тоже.", action_label: "Оценить" },
     }],
   } });
   await page.getByRole("button", { name: "Главная" }).click();

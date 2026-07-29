@@ -125,6 +125,12 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
         inbox = await db.list_notifications(2)
         self.assertEqual(inbox["items"][0]["event_type"], activity.PAIR_FILM_RATED)
         self.assertEqual(inbox["items"][0]["deep_link"], f"movie:{film_id}")
+        self.assertEqual(inbox["unread_by_category"], {
+            "all": 1, "pair": 0, "films": 1, "system": 0,
+        })
+        films = await db.list_notifications(2, category="films")
+        self.assertEqual([item["id"] for item in films["items"]], [inbox["items"][0]["id"]])
+        self.assertEqual((await db.list_notifications(2, category="pair"))["items"], [])
 
 
     async def test_two_workers_never_claim_the_same_enrichment_job(self):

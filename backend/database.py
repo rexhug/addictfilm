@@ -3464,10 +3464,49 @@ async def abandon_stale_notification_deliveries(*, stale_before: str) -> int:
         return int(cur.rowcount)
 
 
-async def list_notifications(user_id: int, *, limit: int = 20, before_id: int | None = None) -> dict:
+_NOTIFICATION_CATEGORIES = frozenset({"all", "pair", "films", "system"})
+_NOTIFICATION_FILMS_SQL = (
+    "(COALESCE(n.event_type, '') = 'pair.film.rated' "
+    "OR COALESCE(n.event_type, '') LIKE 'film.%')"
+)
+_NOTIFICATION_PAIR_SQL = (
+    "(COALESCE(n.event_type, '') LIKE 'pair.%' "
+    "AND COALESCE(n.event_type, '') <> 'pair.film.rated')"
+)
+_NOTIFICATION_SYSTEM_SQL = (
+    f"(NOT {_NOTIFICATION_FILMS_SQL} AND NOT {_NOTIFICATION_PAIR_SQL})"
+)
+_NOTIFICATION_CATEGORY_SQL = {
+    "films": _NOTIFICATION_FILMS_SQL,
+    "pair": _NOTIFICATION_PAIR_SQL,
+    "system": _NOTIFICATION_SYSTEM_SQL,
+}
+
+
+def notification_category(event_type: str | None) -> str:
+    """Return the stable inbox category for a stored notification event."""
+    event_type = str(event_type or "")
+    if event_type == "pair.film.rated" or event_type.startswith("film."):
+        return "films"
+    if event_type.startswith("pair."):
+        return "pair"
+    return "system"
+
+
+async def list_notifications(
+    user_id: int,
+    *,
+    limit: int = 20,
+    before_id: int | None = None,
+    category: str = "all",
+) -> dict:
     limit = max(1, min(int(limit), 50))
+    if category not in _NOTIFICATION_CATEGORIES:
+        raise ValueError(f"Unsupported notification category: {category}")
     params: list = [user_id]
     where = "WHERE n.recipient_id = ?"
+    if category != "all":
+        where += f" AND {_NOTIFICATION_CATEGORY_SQL[category]}"
     if before_id is not None:
         where += " AND n.id < ?"
         params.append(int(before_id))
@@ -3480,7 +3519,12 @@ async def list_notifications(user_id: int, *, limit: int = 20, before_id: int | 
             "FROM notifications n LEFT JOIN users u ON u.id = n.actor_id " + where + " ORDER BY n.id DESC LIMIT ?",
             params)).fetchall()
         unread = await (await db.execute(
-            "SELECT COUNT(*) FROM notifications WHERE recipient_id = ? AND read_at IS NULL", (user_id,))).fetchone()
+            "SELECT COUNT(*) AS all_count, "
+            f"COALESCE(SUM(CASE WHEN {_NOTIFICATION_PAIR_SQL} THEN 1 ELSE 0 END), 0) AS pair_count, "
+            f"COALESCE(SUM(CASE WHEN {_NOTIFICATION_FILMS_SQL} THEN 1 ELSE 0 END), 0) AS films_count, "
+            f"COALESCE(SUM(CASE WHEN {_NOTIFICATION_SYSTEM_SQL} THEN 1 ELSE 0 END), 0) AS system_count "
+            "FROM notifications n WHERE n.recipient_id = ? AND n.read_at IS NULL",
+            (user_id,))).fetchone()
     has_more = len(rows) > limit
     rows = rows[:limit]
     items: list[dict] = []
@@ -3494,7 +3538,14 @@ async def list_notifications(user_id: int, *, limit: int = 20, before_id: int | 
         item["actor"] = {"id": item.pop("actor_id"), "name": item.pop("actor_name") or "",
                          "username": item.pop("actor_username"), "photo_url": item.pop("actor_photo_url")}
         items.append(item)
-    return {"items": items, "unread_count": int(unread[0]),
+    unread_by_category = {
+        "all": int(unread[0]),
+        "pair": int(unread[1]),
+        "films": int(unread[2]),
+        "system": int(unread[3]),
+    }
+    return {"items": items, "unread_count": unread_by_category["all"],
+            "unread_by_category": unread_by_category,
             "next_before_id": items[-1]["id"] if has_more and items else None}
 
 

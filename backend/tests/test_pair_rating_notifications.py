@@ -59,8 +59,7 @@ class PairRatingNotificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["payload"]["action_label"], "Оценить")
         self.assertEqual(
             item["payload"]["body"],
-            "У Alex появилась оценка фильма «Точный фильм». "
-            "Оцени тоже — потом сравните.",
+            "Новая оценка фильма «Точный фильм» от Alex. А теперь твоя очередь!",
         )
 
         async with db.db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
@@ -150,11 +149,11 @@ class PairRatingNotificationTests(unittest.IsolatedAsyncioTestCase):
         await db.update_notification_settings(2, language="en")
         context = await db.get_partner_rating_notification_context(1, self.film_id)
         hidden = activity.format_partner_rating_notification(context=context, rating=8)
-        self.assertEqual(hidden["title"], "Your partner rated a movie")
+        self.assertEqual(hidden["title"], "New partner rating")
         self.assertEqual(hidden["action_label"], "Rate movie")
         self.assertEqual(
             hidden["body"],
-            "Alex rated “Точный фильм”. Rate it too, then compare your scores.",
+            "Alex rated “Точный фильм”. Now it’s your turn.",
         )
 
         await db.set_rating(2, self.film_id, 6)

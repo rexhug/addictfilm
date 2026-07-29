@@ -58,6 +58,8 @@ let _notificationRefreshBound = false;
 let _notificationPollTimer = null;
 let _notificationRefreshGeneration = 0;
 let _notificationAppliedGeneration = 0;
+let _notificationFilter = "all";
+let _notificationUnreadByCategory = { all: 0, pair: 0, films: 0, system: 0 };
 let _viewGeneration = 0;
 
 function cacheableRead(path, opts) {
@@ -110,7 +112,7 @@ const DICT = {
     reason_UNSEEN_PICK: "Из фильмов, которых ты ещё не видел",
     reason_RANDOM_RELIABLE: "Надёжный выбор", reason_RANDOM_TASTE_MATCH: "Похоже на то, что ты любишь",
     reason_RANDOM_DISCOVERY: "Находка не на слуху", reason_RANDOM_AVAILABLE: "Доступный вариант",
-    notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся важные события вашей пары", notif_mark_all: "Прочитать все", notif_load_more: "Показать ещё", notif_loading: "Загружаю уведомления…", notif_error: "Не удалось загрузить уведомления", notif_retry: "Повторить", notif_now: "только что", notif_min_ago: (n) => `${n} мин назад`, notif_hour_ago: (n) => `${n} ч назад`, notif_day_ago: (n) => `${n} дн назад`, notif_inapp: "В приложении", notif_telegram: "В Telegram", notif_telegram_hint: "События пары от бота Addict Film", notif_telegram_unavailable: "Бот сейчас недоступен", notif_browser: "В браузере", notif_browser_hint: "Локальные напоминания на этом устройстве",
+    notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся новые оценки, события пары и важные сообщения", notif_filtered_empty_t: "В этой категории пока пусто", notif_filtered_empty_s: "Новые события появятся здесь автоматически", notif_mark_all: "Прочитать все", notif_load_more: "Показать ещё", notif_loading: "Загружаю уведомления…", notif_error: "Не удалось загрузить уведомления", notif_error_s: "Проверь соединение и попробуй ещё раз", notif_retry: "Повторить", notif_filter_all: "Все", notif_filter_pair: "Пара", notif_filter_films: "Фильмы", notif_filter_system: "Система", notif_now: "Только что", notif_min_ago: (n) => `${n} мин назад`, notif_hour_ago: (n) => `${n} ч назад`, notif_day_ago: (n) => `${n} дн назад`, notif_inapp: "В приложении", notif_telegram: "В Telegram", notif_telegram_hint: "События пары от бота Addict Film", notif_telegram_unavailable: "Бот сейчас недоступен", notif_browser: "В браузере", notif_browser_hint: "Локальные напоминания на этом устройстве",
     back: "Назад", settings_title: "Настройки", settings_loading: "Загружаю настройки…",
     settings_notifications: "Уведомления", settings_notifications_hint: "Важные события пары всегда видны в приложении", settings_notifications_on: "Включены", settings_notifications_off: "Выключены", settings_notifications_permission: "Нужно разрешение", settings_notifications_denied: "Разрешения отключены в Telegram или браузере", settings_notifications_unavailable: "Недоступны на этом устройстве", settings_notifications_error: "Не удалось запросить разрешение",
     settings_language: "Язык", settings_language_hint: "Изменится сразу во всём приложении", settings_language_ru: "Русский", settings_language_en: "English",
@@ -257,7 +259,7 @@ const DICT = {
     reason_UNSEEN_PICK: "From films you have not seen yet",
     reason_RANDOM_RELIABLE: "A reliable choice", reason_RANDOM_TASTE_MATCH: "Close to what you love",
     reason_RANDOM_DISCOVERY: "An off-the-radar find", reason_RANDOM_AVAILABLE: "An available choice",
-    notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "Important pair events will appear here", notif_mark_all: "Mark all read", notif_load_more: "Show more", notif_loading: "Loading notifications…", notif_error: "Couldn't load notifications", notif_retry: "Try again", notif_now: "just now", notif_min_ago: (n) => `${n}m ago`, notif_hour_ago: (n) => `${n}h ago`, notif_day_ago: (n) => `${n}d ago`, notif_inapp: "In app", notif_telegram: "In Telegram", notif_telegram_hint: "Pair events from the Addict Film bot", notif_telegram_unavailable: "The bot is unavailable right now", notif_browser: "In browser", notif_browser_hint: "Local reminders on this device",
+    notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "New ratings, pair activity, and important updates will appear here", notif_filtered_empty_t: "Nothing in this category yet", notif_filtered_empty_s: "New activity will appear here automatically", notif_mark_all: "Mark all read", notif_load_more: "Show more", notif_loading: "Loading notifications…", notif_error: "Couldn't load notifications", notif_error_s: "Check your connection and try again", notif_retry: "Try again", notif_filter_all: "All", notif_filter_pair: "Pair", notif_filter_films: "Films", notif_filter_system: "System", notif_now: "Just now", notif_min_ago: (n) => `${n}m ago`, notif_hour_ago: (n) => `${n}h ago`, notif_day_ago: (n) => `${n}d ago`, notif_inapp: "In app", notif_telegram: "In Telegram", notif_telegram_hint: "Pair events from the Addict Film bot", notif_telegram_unavailable: "The bot is unavailable right now", notif_browser: "In browser", notif_browser_hint: "Local reminders on this device",
     back: "Back", settings_title: "Settings", settings_loading: "Loading settings…",
     settings_notifications: "Notifications", settings_notifications_hint: "Important pair events are always shown in the app", settings_notifications_on: "On", settings_notifications_off: "Off", settings_notifications_permission: "Permission needed", settings_notifications_denied: "Notifications are blocked in Telegram or your browser", settings_notifications_unavailable: "Unavailable on this device", settings_notifications_error: "Couldn't request permission",
     settings_language: "Language", settings_language_hint: "Applies immediately across the app", settings_language_ru: "Русский", settings_language_en: "English",
@@ -837,13 +839,21 @@ async function refreshNotificationBadge() {
     if (generation < _notificationAppliedGeneration) return;
     _notificationAppliedGeneration = generation;
     _notificationUnread = Number(unread_count) || 0;
-    const bell = document.getElementById("bell-btn");
-    if (bell) {
-      let dot = bell.querySelector(".dot");
-      if (_notificationUnread && !dot) { dot = document.createElement("span"); dot.className = "dot"; dot.setAttribute("aria-hidden", "true"); bell.appendChild(dot); }
-      if (!_notificationUnread && dot) dot.remove();
-    }
+    refreshNotificationBadgeVisualOnly();
   } catch (_) { /* The home screen remains usable if the inbox is offline. */ }
+}
+
+function refreshNotificationBadgeVisualOnly() {
+  const bell = document.getElementById("bell-btn");
+  if (!bell) return;
+  let dot = bell.querySelector(".dot");
+  if (_notificationUnread && !dot) {
+    dot = document.createElement("span");
+    dot.className = "dot";
+    dot.setAttribute("aria-hidden", "true");
+    bell.appendChild(dot);
+  }
+  if (!_notificationUnread && dot) dot.remove();
 }
 
 function bindNotificationRefresh() {
@@ -1944,15 +1954,32 @@ async function showAllGenres() {
   } catch (e) { document.getElementById("ag").innerHTML = emptyState("⚠️", t("load_err"), ""); }
 }
 
-function notificationGlyph(eventType) {
-  const paths = eventType === "pair.film.rated"
-    ? '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2 7.5 14 3 9.6l6.2-.9L12 3Z"/>'
-    : eventType === "pair.ended"
-    ? '<path d="m7 7 10 10M17 7 7 17"/><path d="M5 5h14v14H5z"/>'
-    : eventType.includes("invite")
-      ? '<path d="M12 20s-7-4.35-7-10a4 4 0 0 1 7-2.65A4 4 0 0 1 19 10c0 5.65-7 10-7 10Z"/><path d="M12 7v6m-3-3h6"/>'
-      : '<path d="M12 20s-7-4.35-7-10a4 4 0 0 1 7-2.65A4 4 0 0 1 19 10c0 5.65-7 10-7 10Z"/>';
-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+const NOTIFICATION_ICONS = Object.freeze({
+  rating: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2 7.5 14 3 9.6l6.2-.9L12 3Z"/>',
+  paired: '<path d="M12 20s-7-4.35-7-10a4 4 0 0 1 7-2.65A4 4 0 0 1 19 10c0 5.65-7 10-7 10Z"/><path d="m9.2 11.7 1.8 1.8 3.9-4"/>',
+  invite: '<path d="M12 20s-7-4.35-7-10a4 4 0 0 1 7-2.65A4 4 0 0 1 19 10c0 5.65-7 10-7 10Z"/><path d="M12 7v6m-3-3h6"/>',
+  ended: '<path d="M4 6.5h16v11H4z"/><path d="m4 7 8 6 8-6"/>',
+  system: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 20h4"/>',
+  empty: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 20h4"/>',
+  chevron: '<path d="m9 5 7 7-7 7"/>',
+});
+function notificationSvg(name, className = "") {
+  const paths = NOTIFICATION_ICONS[name] || NOTIFICATION_ICONS.system;
+  return `<svg${className ? ` class="${className}"` : ""} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+}
+function notificationIconName(eventType) {
+  const type = String(eventType || "");
+  if (type === "pair.film.rated" || type.startsWith("film.")) return "rating";
+  if (type === "pair.invite.accepted") return "paired";
+  if (type.includes("invite")) return "invite";
+  if (type.startsWith("pair.ended")) return "ended";
+  return "system";
+}
+function notificationCategory(eventType) {
+  const type = String(eventType || "");
+  if (type === "pair.film.rated" || type.startsWith("film.")) return "films";
+  if (type.startsWith("pair.")) return "pair";
+  return "system";
 }
 function relativeNotificationTime(raw) {
   const ms = Date.now() - new Date(raw || 0).getTime();
@@ -1961,21 +1988,21 @@ function relativeNotificationTime(raw) {
   const hour = Math.floor(min / 60); if (hour < 24) return t("notif_hour_ago", hour);
   return t("notif_day_ago", Math.floor(hour / 24));
 }
-function notificationRow(item) {
+function notificationCard(item) {
   const payload = item.payload || {};
-  const avatar = item.actor?.photo_url ? `<img src="${posterSrc(item.actor.photo_url)}" alt="" data-img-retry>` : "";
-  return `<article class="notification-row ${item.read ? "" : "unread"}" data-notification-id="${Number(item.id)}" data-notification-link="${esc(item.deep_link || "")}" tabindex="0" role="button">
-    <span class="notification-event-icon">${notificationGlyph(item.event_type || "")}</span>
-    <span class="notification-copy"><b>${esc(payload.title || t("notif_title"))}</b><span>${esc(payload.body || "")}</span><time datetime="${esc(item.created_at || "")}">${esc(relativeNotificationTime(item.created_at))}</time></span>
-    ${item.actor ? `<span class="notification-avatar">${avatar || `<span>${esc(initials(item.actor.name || ""))}</span>`}</span>` : ""}
-    ${item.deep_link ? `<button type="button" class="notification-action" data-notification-action>${esc(payload.action_label || t("back"))}</button>` : ""}
+  const iconName = notificationIconName(item.event_type);
+  return `<article class="notification-card ${item.read ? "is-read" : "is-unread"}" data-notification-id="${Number(item.id)}" tabindex="0" role="button" aria-label="${esc(payload.title || t("notif_title"))}">
+    <span class="notification-event-icon notification-event-${iconName}">${notificationSvg(iconName)}${item.read ? "" : '<i aria-hidden="true"></i>'}</span>
+    <span class="notification-copy">
+      <b>${esc(payload.title || t("notif_title"))}</b>
+      <span>${esc(payload.body || "")}</span>
+      <time datetime="${esc(item.created_at || "")}">${esc(relativeNotificationTime(item.created_at))}</time>
+    </span>
+    <span class="notification-chevron">${notificationSvg("chevron")}</span>
+    ${item.deep_link ? `<button type="button" class="notification-action" data-notification-open>${esc(payload.action_label || t("back"))}</button>` : ""}
   </article>`;
 }
-async function openNotification(item, page) {
-  try { await api(`/api/notifications/${item.id}/read`, { method: "POST" }); } catch (_) {}
-  _notificationUnread = Math.max(0, _notificationUnread - (item.read ? 0 : 1));
-  item.read = true;
-  page?.querySelector(`[data-notification-id="${Number(item.id)}"]`)?.classList.remove("unread");
+function navigateFromNotification(item) {
   const link = String(item.deep_link || "");
   const movieMatch = /^movie:(\d+)$/.exec(link);
   if (movieMatch) {
@@ -1991,42 +2018,146 @@ async function openNotification(item, page) {
   setActiveTab("home"); showHome();
 }
 async function showNotifications() {
+  const viewGeneration = ++_viewGeneration;
   unwireDetailScroll();
   window.scrollTo(0, 0);
-  screen.innerHTML = `<div class="sub-head notification-head">${backBtn()}<h1>${esc(t("notif_title"))}</h1><button type="button" class="notification-mark-all" disabled>${esc(t("notif_mark_all"))}</button></div><main class="notifications-page"><div class="notifications-loading">${esc(t("notif_loading"))}</div></main>`;
+  screen.innerHTML = `<div class="sub-head notification-head">${backBtn()}<h1>${esc(t("notif_title"))}</h1><button type="button" class="notification-mark-all" disabled>${esc(t("notif_mark_all"))}</button></div>
+    <main class="notifications-page">
+      <nav class="notification-filters" aria-label="${esc(t("notif_title"))}"></nav>
+      <section class="notifications-content" aria-live="polite"></section>
+    </main>`;
   wireBack(() => { setActiveTab("home"); showHome(); });
   const page = screen.querySelector(".notifications-page");
+  const content = page?.querySelector(".notifications-content");
+  const filters = page?.querySelector(".notification-filters");
+  const markAll = screen.querySelector(".notification-mark-all");
+  const itemStore = new Map();
   let nextBeforeId = null;
   let loading = false;
+  const categoryKeys = ["all", "pair", "films", "system"];
+
+  const renderFilters = () => {
+    if (!filters) return;
+    filters.innerHTML = categoryKeys.map(key => {
+      const count = Number(_notificationUnreadByCategory[key]) || 0;
+      return `<button type="button" class="notification-filter${_notificationFilter === key ? " active" : ""}" data-notification-filter="${key}" aria-pressed="${_notificationFilter === key}">
+        <span>${esc(t(`notif_filter_${key}`))}</span>${count ? `<b>${count > 99 ? "99+" : count}</b>` : ""}
+      </button>`;
+    }).join("");
+  };
+  const syncUnreadState = () => {
+    _notificationUnread = Number(_notificationUnreadByCategory.all) || 0;
+    if (markAll) markAll.disabled = !_notificationUnread;
+    refreshNotificationBadgeVisualOnly();
+    renderFilters();
+  };
+  const skeletons = () => `<div class="notifications-list notification-skeleton-list" aria-label="${esc(t("notif_loading"))}">
+    ${Array.from({ length: 4 }, () => '<div class="notification-skeleton"><i></i><span><b></b><em></em><small></small></span></div>').join("")}
+  </div>`;
+  const renderNotificationEmpty = (filtered = false) => `<div class="notifications-empty">
+    <span>${notificationSvg("empty")}</span>
+    <h2>${esc(t(filtered ? "notif_filtered_empty_t" : "notif_empty_t"))}</h2>
+    <p>${esc(t(filtered ? "notif_filtered_empty_s" : "notif_empty_s"))}</p>
+  </div>`;
+  const errorState = () => `<div class="notifications-empty notifications-error">
+    <span>${notificationSvg("system")}</span><h2>${esc(t("notif_error"))}</h2>
+    <p>${esc(t("notif_error_s"))}</p><button class="notifications-more" type="button" data-notification-retry>${esc(t("notif_retry"))}</button>
+  </div>`;
+  const optimisticRead = (item) => {
+    if (item.read) return;
+    item.read = true;
+    content?.querySelector(`[data-notification-id="${Number(item.id)}"]`)?.classList.replace("is-unread", "is-read");
+    content?.querySelector(`[data-notification-id="${Number(item.id)}"] .notification-event-icon i`)?.remove();
+    const category = notificationCategory(item.event_type);
+    _notificationUnreadByCategory.all = Math.max(0, (Number(_notificationUnreadByCategory.all) || 0) - 1);
+    _notificationUnreadByCategory[category] = Math.max(0, (Number(_notificationUnreadByCategory[category]) || 0) - 1);
+    syncUnreadState();
+  };
+  const openItem = async (item) => {
+    if (!item) return;
+    const wasUnread = !item.read;
+    if (wasUnread) {
+      optimisticRead(item);
+      api(`/api/notifications/${item.id}/read`, { method: "POST" }).catch(() => {});
+    }
+    navigateFromNotification(item);
+  };
   const load = async (append = false) => {
-    if (loading || !page) return;
+    if (loading || !content || viewGeneration !== _viewGeneration) return;
     loading = true;
+    if (!append) {
+      nextBeforeId = null;
+      itemStore.clear();
+      content.innerHTML = skeletons();
+    }
     try {
-      const query = `?limit=20${append && nextBeforeId ? `&before_id=${encodeURIComponent(nextBeforeId)}` : ""}`;
+      const query = `?limit=20&category=${encodeURIComponent(_notificationFilter)}${append && nextBeforeId ? `&before_id=${encodeURIComponent(nextBeforeId)}` : ""}`;
       const result = await api(`/api/notifications${query}`);
+      if (viewGeneration !== _viewGeneration) return;
       _notificationUnread = Number(result.unread_count) || 0;
+      _notificationUnreadByCategory = {
+        all: Number(result.unread_by_category?.all ?? result.unread_count) || 0,
+        pair: Number(result.unread_by_category?.pair) || 0,
+        films: Number(result.unread_by_category?.films) || 0,
+        system: Number(result.unread_by_category?.system) || 0,
+      };
       nextBeforeId = result.next_before_id;
       const rows = result.items || [];
-      if (!append) page.innerHTML = rows.length ? `<div class="notifications-list">${rows.map(notificationRow).join("")}</div>` : `<div class="notifications-empty"><span>${notificationGlyph("")}</span><h2>${esc(t("notif_empty_t"))}</h2><p>${esc(t("notif_empty_s"))}</p></div>`;
-      else page.querySelector(".notifications-list")?.insertAdjacentHTML("beforeend", rows.map(notificationRow).join(""));
-      const existing = page.querySelector(".notifications-more"); if (existing) existing.remove();
-      if (nextBeforeId) page.insertAdjacentHTML("beforeend", `<button class="notifications-more" type="button">${esc(t("notif_load_more"))}</button>`);
-      const markAll = screen.querySelector(".notification-mark-all");
-      if (markAll) { markAll.disabled = !_notificationUnread; markAll.onclick = async () => { markAll.disabled = true; await api("/api/notifications/read-all", { method: "POST" }); _notificationUnread = 0; page.querySelectorAll(".notification-row.unread").forEach(row => row.classList.remove("unread")); refreshNotificationBadge(); }; }
-      page.querySelector(".notifications-more")?.addEventListener("click", () => load(true));
-      page.querySelectorAll(".notification-row").forEach(row => {
-        const id = Number(row.dataset.notificationId);
-        const item = rows.find(entry => Number(entry.id) === id) || { id, deep_link: row.dataset.notificationLink, read: !row.classList.contains("unread") };
-        const open = () => openNotification(item, page);
-        row.addEventListener("click", event => { if (event.target.closest("button")) return; open(); });
-        row.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } });
-        row.querySelector("[data-notification-action]")?.addEventListener("click", open);
-      });
+      rows.forEach(item => itemStore.set(Number(item.id), item));
+      const cards = rows.map(notificationCard).join("");
+      if (!append) {
+        content.innerHTML = rows.length
+          ? `<div class="notifications-list">${cards}</div>`
+          : renderNotificationEmpty(_notificationFilter !== "all");
+      } else {
+        content.querySelector(".notifications-list")?.insertAdjacentHTML("beforeend", cards);
+      }
+      content.querySelector(".notifications-more")?.remove();
+      if (nextBeforeId) content.insertAdjacentHTML("beforeend", `<button class="notifications-more" type="button" data-notification-more>${esc(t("notif_load_more"))}</button>`);
+      syncUnreadState();
     } catch (_) {
-      if (!append) page.innerHTML = `<div class="notifications-empty"><h2>${esc(t("notif_error"))}</h2><button class="notifications-more" type="button">${esc(t("notif_retry"))}</button></div>`;
-      page.querySelector(".notifications-more")?.addEventListener("click", () => load(false));
+      if (!append && viewGeneration === _viewGeneration) content.innerHTML = errorState();
     } finally { loading = false; }
   };
+
+  filters?.addEventListener("click", event => {
+    const button = event.target.closest("[data-notification-filter]");
+    if (!button || button.dataset.notificationFilter === _notificationFilter) return;
+    _notificationFilter = button.dataset.notificationFilter;
+    renderFilters();
+    load(false);
+  });
+  content?.addEventListener("click", event => {
+    if (event.target.closest("[data-notification-more]")) { load(true); return; }
+    if (event.target.closest("[data-notification-retry]")) { load(false); return; }
+    const card = event.target.closest("[data-notification-id]");
+    if (card) openItem(itemStore.get(Number(card.dataset.notificationId)));
+  });
+  content?.addEventListener("keydown", event => {
+    const card = event.target.closest("[data-notification-id]");
+    if (!card || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    openItem(itemStore.get(Number(card.dataset.notificationId)));
+  });
+  if (markAll) markAll.onclick = async () => {
+    if (!_notificationUnread || markAll.disabled) return;
+    const previousCounts = { ..._notificationUnreadByCategory };
+    itemStore.forEach(optimisticRead);
+    _notificationUnreadByCategory = { all: 0, pair: 0, films: 0, system: 0 };
+    content?.querySelectorAll(".notification-card.is-unread").forEach(card => {
+      card.classList.replace("is-unread", "is-read");
+      card.querySelector(".notification-event-icon i")?.remove();
+    });
+    syncUnreadState();
+    try {
+      await api("/api/notifications/read-all", { method: "POST" });
+    } catch (_) {
+      _notificationUnreadByCategory = previousCounts;
+      syncUnreadState();
+      await load(false);
+    }
+  };
+  renderFilters();
   await load();
 }
 

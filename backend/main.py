@@ -316,8 +316,10 @@ async def patch_settings(body: SettingsBody, user: dict = Depends(current_user))
 
 @app.get("/api/notifications")
 async def notifications(limit: int = 20, before_id: int | None = None,
+                        category: Literal["all", "pair", "films", "system"] = "all",
                         user: dict = Depends(current_user)):
-    return await db.list_notifications(user["id"], limit=limit, before_id=before_id)
+    return await db.list_notifications(
+        user["id"], limit=limit, before_id=before_id, category=category)
 
 
 @app.post("/api/notifications/read-all")

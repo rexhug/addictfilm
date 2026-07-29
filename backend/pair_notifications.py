@@ -84,16 +84,13 @@ def format_pair_notification(context: RecipientContext) -> dict:
     language = context.language if context.language in ("ru", "en") else "ru"
     inviter_name = display_name(context.inviter, language)
     invitee_name = display_name(context.invitee, language)
-    actor_name = display_name(context.actor, language)
     partner_name = display_name(context.partner, language)
     recipient_id = context.recipient_user_id
     inviter_id = context.event.get("inviter_user_id")
 
     if language == "ru":
         if event_type == "pair.invite.accepted":
-            if recipient_id == inviter_id:
-                return {"title": "Приглашение принято", "body": f"Пользователь {invitee_name} принял ваше приглашение. Теперь вы в паре.", "action_label": "Открыть пару", "deep_link": "stats"}
-            return {"title": "Теперь вы в паре", "body": f"Вы приняли приглашение от {inviter_name}.", "action_label": "Смотреть статистику", "deep_link": "stats"}
+            return {"title": "Теперь вы в паре", "body": f"Вы теперь в паре с {partner_name}. Общая статистика уже доступна.", "action_label": "Статистика", "deep_link": "stats"}
         if event_type == "pair.invite.declined":
             return {"title": "Приглашение отклонено", "body": f"Пользователь {invitee_name} отклонил приглашение в пару.", "action_label": "Открыть приложение", "deep_link": "stats"}
         if event_type == "pair.invite.cancelled":
@@ -105,13 +102,11 @@ def format_pair_notification(context: RecipientContext) -> dict:
                     else f"Приглашение от {inviter_name} больше не активно.")
             return {"title": "Приглашение истекло", "body": body, "action_label": "Открыть приложение", "deep_link": ""}
         if event_type == "pair.ended":
-            return {"title": "Пара завершена", "body": f"{actor_name} завершил вашу пару.", "action_label": "Открыть приложение", "deep_link": "stats"}
-        return {"title": "Пара завершена", "body": f"Ваша пара с {partner_name} была завершена.", "action_label": "Открыть приложение", "deep_link": "stats"}
+            return {"title": "Пара завершена", "body": f"Пара с {partner_name} завершена. Совместная статистика сохранена.", "action_label": "Открыть", "deep_link": "stats"}
+        return {"title": "Пара завершена", "body": f"Пара с {partner_name} завершена. Совместная статистика сохранена.", "action_label": "Открыть", "deep_link": "stats"}
 
     if event_type == "pair.invite.accepted":
-        if recipient_id == inviter_id:
-            return {"title": "Invitation accepted", "body": f"{invitee_name} accepted your invitation. You are now paired.", "action_label": "Open pair", "deep_link": "stats"}
-        return {"title": "You're now paired", "body": f"You accepted {inviter_name}'s invitation.", "action_label": "View stats", "deep_link": "stats"}
+        return {"title": "You're now paired", "body": f"You are now paired with {partner_name}. Your shared stats are ready.", "action_label": "View stats", "deep_link": "stats"}
     if event_type == "pair.invite.declined":
         return {"title": "Invitation declined", "body": f"{invitee_name} declined the pair invitation.", "action_label": "Open app", "deep_link": "stats"}
     if event_type == "pair.invite.cancelled":
@@ -123,8 +118,8 @@ def format_pair_notification(context: RecipientContext) -> dict:
                 else f"The invitation from {inviter_name} is no longer active.")
         return {"title": "Invitation expired", "body": body, "action_label": "Open app", "deep_link": ""}
     if event_type == "pair.ended":
-        return {"title": "Pair ended", "body": f"{actor_name} ended your pair.", "action_label": "Open app", "deep_link": "stats"}
-    return {"title": "Pair ended", "body": f"Your pair with {partner_name} was ended.", "action_label": "Open app", "deep_link": "stats"}
+        return {"title": "Pair ended", "body": f"Your pair with {partner_name} has ended. Your shared stats are saved.", "action_label": "Open", "deep_link": "stats"}
+    return {"title": "Pair ended", "body": f"Your pair with {partner_name} has ended. Your shared stats are saved.", "action_label": "Open", "deep_link": "stats"}
 
 
 async def _send_telegram(*, recipient_id: int, text: dict) -> None:
