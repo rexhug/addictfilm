@@ -286,8 +286,13 @@ def hero_payload(film: dict) -> dict:
     так выглядит любой фильм до бекфила, и он обязан работать."""
     hero_url = str(film.get("hero_url") or "").strip()
     hero_type = film.get("hero_type")
-    if (hero_url and hero_type in HERO_TYPES
-            and not (hero_type == HERO_POSTER_BLUR and poster_is_rejected(film))):
+    # Сохранённый URL — источник правды только для КАДРА: он доказан проверкой
+    # файла, и другого такого же кадра у нас нет. Запасной режим — это решение
+    # «показывать постер», а не копия ссылки на него: постер живёт своей жизнью
+    # и заменяется на лучший (см. upgrade_film_poster). Замороженная копия
+    # означала бы, что экран подбора неделями показывает старый постер, пока
+    # весь остальной продукт показывает новый.
+    if (hero_url and hero_type == HERO_BACKDROP):
         score = film.get("hero_quality_score")
         return {
             "hero_url": hero_url,

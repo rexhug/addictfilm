@@ -14,6 +14,7 @@ import time
 import uuid
 
 import database as db
+import fanart
 from config import ENRICHMENT_BATCH_SIZE as BATCH_SIZE
 from config import ENRICHMENT_IDLE_SLEEP as IDLE_SLEEP_SECONDS
 from config import ENRICHMENT_RECONCILE_INTERVAL as RECONCILE_INTERVAL_SECONDS
@@ -122,6 +123,9 @@ async def run_worker(state: WorkerState | None = None, *, max_cycles: int | None
             continue
         for job in jobs:
             await process_one(job, classifier=classifier)
+    # Долгоживущая сессия Fanart принадлежит процессу: закрыть её обязан тот, кто
+    # его останавливает, иначе каждый деплой пишет в лог «Unclosed client session».
+    await fanart.close()
     logger.info("enrichment worker: остановлен, очередь=%s профили=%s",
                 await queue.stats(), (await repository.distribution())["by_status"])
 

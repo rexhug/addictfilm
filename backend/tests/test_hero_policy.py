@@ -113,6 +113,34 @@ class PayloadTests(unittest.TestCase):
         })
         self.assertEqual(contained["hero_fit"], "contain")
 
+    def test_a_stored_poster_fallback_follows_the_current_poster(self):
+        """Запасной режим — это решение «показывать постер», а не копия ссылки.
+
+        Постер живёт своей жизнью: резолвер заменяет его на лучший. Замороженная
+        копия означала бы, что экран подбора неделями показывает старый постер,
+        пока весь остальной продукт показывает новый.
+        """
+        payload = hero_media.hero_payload({
+            "hero_url": "https://p/old.jpg", "hero_type": "poster_blur",
+            "hero_source": "poster", "hero_quality_score": 0.5,
+            "poster_url": "https://p/upgraded.jpg"})
+        self.assertEqual(payload["hero_url"], "https://p/upgraded.jpg")
+        self.assertEqual(payload["hero_type"], "poster_blur")
+
+    def test_a_stored_backdrop_is_still_trusted_verbatim(self):
+        # У кадра обратное: он ДОКАЗАН проверкой файла, и другого такого нет.
+        payload = hero_media.hero_payload({
+            "hero_url": "https://b/proved.jpg", "hero_type": "backdrop",
+            "hero_source": "kinopoisk", "hero_quality_score": 0.935,
+            "poster_url": "https://p/1.jpg"})
+        self.assertEqual(payload["hero_url"], "https://b/proved.jpg")
+
+    def test_a_stored_fallback_disappears_with_its_poster(self):
+        payload = hero_media.hero_payload({
+            "hero_url": "https://p/old.jpg", "hero_type": "poster_blur",
+            "hero_source": "poster", "poster_url": None})
+        self.assertIsNone(payload["hero_url"])
+
     def test_a_row_without_hero_columns_still_gets_a_usable_mode(self):
         payload = hero_media.hero_payload({"poster_url": "https://p/1.jpg"})
         self.assertEqual(payload, {

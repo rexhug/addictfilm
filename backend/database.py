@@ -3549,6 +3549,9 @@ _RANDOM_PICK_LOCK_NAMESPACE = 0x5241_4E44      # "RAND"
 # Внутрипроцессные замки для SQLite-режима. Их немного: это локальная разработка
 # и тесты, где пользователей единицы.
 _pick_locks: dict[int, asyncio.Lock] = {}
+# Счётчик тех, кто СЕЙЧАС держит замок или стоит в очереди. Без него словарь рос
+# на каждого нового пользователя и не уменьшался никогда: на публике это течь.
+_pick_lock_users: dict[int, int] = {}
 
 
 @asynccontextmanager
@@ -3565,9 +3568,21 @@ async def recommendation_pick_lock(user_id: int):
     а в Postgres — консультативный, он работает и между машинами Fly.
     """
     if not _PG:
-        lock = _pick_locks.setdefault(int(user_id), asyncio.Lock())
-        async with lock:
-            yield
+        key = int(user_id)
+        lock = _pick_locks.setdefault(key, asyncio.Lock())
+        _pick_lock_users[key] = _pick_lock_users.get(key, 0) + 1
+        try:
+            async with lock:
+                yield
+        finally:
+            # Запись убираем, только когда внутри и в очереди никого не осталось:
+            # иначе второй запрос получил бы уже ДРУГОЙ замок и разошёлся с первым.
+            remaining = _pick_lock_users.get(key, 1) - 1
+            if remaining > 0:
+                _pick_lock_users[key] = remaining
+            else:
+                _pick_lock_users.pop(key, None)
+                _pick_locks.pop(key, None)
         return
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as lock_conn:
         await lock_conn.execute("SELECT pg_advisory_lock(?, ?)",
@@ -3577,6 +3592,24 @@ async def recommendation_pick_lock(user_id: int):
         finally:
             await lock_conn.execute("SELECT pg_advisory_unlock(?, ?)",
                                     (_RANDOM_PICK_LOCK_NAMESPACE, int(user_id) % (2 ** 31)))
+
+
+# Сколько живёт строка истории. Анти-повтор смотрит на показы за 7 дней,
+# происхождение обратной связи читается через секунды после показа — 90 дней
+# дают стократный запас обоим. «Не предлагать» не удаляется НИКОГДА: это
+# постоянное решение человека о фильме, а не след показа.
+RECOMMENDATION_HISTORY_RETENTION_DAYS = 90
+
+
+async def prune_recommendation_history(days: int = RECOMMENDATION_HISTORY_RETENTION_DAYS) -> int:
+    """Единственная таблица, которая росла линейно от активности и не чистилась."""
+    cutoff = (datetime.now(UTC) - timedelta(days=max(1, int(days)))).isoformat()
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "DELETE FROM recommendation_history WHERE action <> 'rejected' AND created_at < ?",
+            (cutoff,))
+        await db.commit()
+        return cur.rowcount or 0
 
 
 async def get_recommendation_shown(user_id: int, film_id: int, mode: str) -> dict | None:

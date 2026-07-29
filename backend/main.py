@@ -77,7 +77,11 @@ _HTML_CSP = (
     "default-src 'self'; "
     "script-src 'self' https://telegram.org; "
     "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' https: data:; "
+    # Все картинки идут через собственный /img-прокси с allowlist хостов, а
+    # единственный внешний ресурс — data:-текстура фона. Разрешать https:
+    # целиком значит держать открытым канал для трекинг-пикселя на случай,
+    # если XSS когда-нибудь появится.
+    "img-src 'self' data:; "
     "connect-src 'self'; "
     "object-src 'none'; base-uri 'none'; form-action 'self'; "
     "frame-ancestors https://*.telegram.org"
@@ -152,6 +156,11 @@ async def startup() -> None:
     # returned.  Old links never remain actionable after a restart/deploy.
     await _emit_expired_pair_invites()
     await search.purge_expired()  # подчистить протухший кэш поиска при старте
+    # История подбора росла линейно от активности и не чистилась вовсе.
+    # «Не предлагать» остаётся навсегда, всё остальное живёт 90 дней.
+    removed = await db.prune_recommendation_history()
+    if removed:
+        logger.info("Подчищено записей истории подбора: %s", removed)
     # SQLite требует прикладного бэкапа; PostgreSQL обслуживается провайдером.
     global _backup_task, _pair_expiry_task
     if not DATABASE_URL and (_backup_task is None or _backup_task.done()):
@@ -190,6 +199,14 @@ async def shutdown() -> None:
         await asyncio.gather(*_people_enrichment_tasks, return_exceptions=True)
     _people_enrichment_tasks.clear()
     _people_enrichment_film_ids.clear()
+    # Третий набор фоновых задач гасился не так, как два предыдущих: на SIGTERM
+    # во время деплоя дообогащение портретов обрывалось на полуслове.
+    for task in list(_director_profile_enrichment_tasks):
+        task.cancel()
+    if _director_profile_enrichment_tasks:
+        await asyncio.gather(*_director_profile_enrichment_tasks, return_exceptions=True)
+    _director_profile_enrichment_tasks.clear()
+    _director_profile_enrichment_users.clear()
     for mod in (kinopoisk, omdb, wikidata):
         try:
             await mod.aclose()
