@@ -942,7 +942,13 @@ def _verify_wishlist_prepared(token: str, user_id: int) -> dict:
         expected = hmac.new(
             _wishlist_prepare_signing_key(), encoded.encode("ascii"), hashlib.sha256).digest()
         supplied = _urlsafe_b64decode(encoded_signature)
-        if not hmac.compare_digest(expected, supplied):
+        if (
+            not hmac.compare_digest(
+                encoded_signature,
+                _urlsafe_b64encode(supplied),
+            )
+            or not hmac.compare_digest(expected, supplied)
+        ):
             raise ValueError("signature")
         payload = json.loads(_urlsafe_b64decode(encoded))
         values = {key: int(payload[key]) for key in ("v", "u", "f", "c", "e")}
