@@ -81,7 +81,16 @@ _HTML_CSP = (
     # единственный внешний ресурс — data:-текстура фона. Разрешать https:
     # целиком значит держать открытым канал для трекинг-пикселя на случай,
     # если XSS когда-нибудь появится.
-    "img-src 'self' data:; "
+    # Аватары Telegram в отзывах и профиле. Именованные хосты, а не открытый
+    # https: при XSS трекинг-пиксель можно было бы поставить куда угодно, а сюда
+    # — только к Telegram, который этого человека и так видит.
+    #
+    # Хостов два, и это не перестраховка: t.me отдаёт 302 на cdnN.telesco.pe
+    # (замер по нашим пользователям — cdn1 и cdn4), а браузер проверяет img-src
+    # ЗАНОВО на цели редиректа. Проверено в Chromium: с одним t.me аватар
+    # блокируется. Через собственный /img их не пустить по той же причине —
+    # в анти-SSRF списке пришлось бы разрешать целый суффикс.
+    "img-src 'self' data: https://t.me https://*.telesco.pe; "
     "connect-src 'self'; "
     "object-src 'none'; base-uri 'none'; form-action 'self'; "
     "frame-ancestors https://*.telegram.org"
@@ -2080,10 +2089,6 @@ _ALLOWED_IMG_HOSTS = {
     "commons.wikimedia.org", "upload.wikimedia.org",
     # Единственный CDN Fanart.tv: горизонтальные кадры для экрана подбора.
     fanart.IMAGE_HOST,
-    # Аватары Telegram в публичных отзывах и профиле. Через прокси, а не прямой
-    # ссылкой: иначе CSP пришлось бы открывать весь https, а IP каждого читателя
-    # уходил бы в Telegram на каждый показ ленты отзывов.
-    "t.me",
 }
 _ALLOWED_IMG_TYPES = {"image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"}
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024

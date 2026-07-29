@@ -166,11 +166,18 @@ class WorkerShutdownTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ContentSecurityPolicyTests(unittest.TestCase):
-    def test_images_are_allowed_only_from_our_own_origin(self):
-        """Все картинки идут через собственный /img с allowlist хостов. Открытый
-        https: держал бы канал для трекинг-пикселя на случай будущего XSS."""
-        self.assertIn("img-src 'self' data:", main._HTML_CSP)
-        self.assertNotIn("img-src 'self' https:", main._HTML_CSP)
+    def test_images_come_from_our_origin_or_named_telegram_hosts_only(self):
+        """Открытый https: держал бы канал для трекинг-пикселя на случай XSS.
+
+        Исключение — аватары Telegram, и их обязательно ДВА хоста: t.me отдаёт
+        302 на cdnN.telesco.pe, а браузер проверяет img-src заново на цели
+        редиректа. С одним t.me аватары молча пропадают.
+        """
+        directive = next(part.strip() for part in main._HTML_CSP.split(";")
+                         if part.strip().startswith("img-src"))
+        sources = set(directive.split()[1:])
+        self.assertEqual(sources, {"'self'", "data:", "https://t.me", "https://*.telesco.pe"})
+        self.assertNotIn("https:", sources)
 
     def test_no_literal_external_image_url_is_rendered(self):
         root = Path(__file__).resolve().parents[2] / "frontend"
@@ -194,10 +201,16 @@ class ContentSecurityPolicyTests(unittest.TestCase):
         # локальная переменная singlePickMediaHTML, полученная из singlePickSrc.
         proxied = ("posterSrc(", "singlePickSrc(", "_heroSource.src")
         local = {"src"}
+        # Единственное исключение: аватары Telegram. Через /img их не пустить —
+        # t.me отдаёт 302 на cdnN.telesco.pe, и в анти-SSRF списке пришлось бы
+        # разрешать целый суффикс. Вместо этого оба хоста названы в CSP.
+        # Список намеренно точечный: любое НОВОЕ прямое изображение здесь упадёт.
+        telegram_avatars = {"esc(user.photo_url)", "esc(photo)"}
         offenders = []
         for match in re.finditer(r'<img[^>]*?\ssrc="\$\{([^}]*)\}"', app):
             expression = match.group(1).strip()
-            if expression in local or any(token in expression for token in proxied):
+            if (expression in local or expression in telegram_avatars
+                    or any(token in expression for token in proxied)):
                 continue
             offenders.append(expression)
         self.assertEqual(offenders, [], "источник картинки не проходит через /img")

@@ -3645,7 +3645,7 @@ function reviewCardHTML(review, { pinned = false, filmId } = {}) {
   const user = review.user || {};
   const name = user.name || (lang === "ru" ? "Пользователь" : "User");
   const avatar = user.photo_url
-    ? `<img src="${posterSrc(user.photo_url)}" alt="" loading="lazy" data-img-remove-on-error>`
+    ? `<img src="${esc(user.photo_url)}" alt="" loading="lazy" data-img-remove-on-error>`
     : "";
   const ownMenu = review.is_me ? `<div class="d-comment-menu-wrap">
     <button type="button" class="d-comment-menu-trigger" data-comment-menu-trigger
@@ -4240,7 +4240,7 @@ function pairHighlightsHTML(ps) {
 
 function userAvatarHTML(user, name, className = "profile-avatar") {
   const photo = user?.photo_url || user?.avatar_url;
-  return `<div class="${className}"><span>${esc(initials(name))}</span>${photo ? `<img src="${posterSrc(photo)}" alt="" loading="eager" data-img-remove-on-error>` : ""}</div>`;
+  return `<div class="${className}"><span>${esc(initials(name))}</span>${photo ? `<img src="${esc(photo)}" alt="" loading="eager" data-img-remove-on-error>` : ""}</div>`;
 }
 
 function statsProfileHTML(s) {
