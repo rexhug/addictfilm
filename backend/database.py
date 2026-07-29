@@ -10,6 +10,7 @@ Community-рейтинг = средняя оценка всех юзеров п�
 """
 import asyncio
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -59,6 +60,7 @@ _SCHEMA_MIGRATION_HERO_MEDIA = "2026-07-28-hero-media-v1"
 _SCHEMA_MIGRATION_HERO_PRESENTATION = "2026-07-28-hero-presentation-v1"
 _SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION = "2026-07-28-movie-flow-moderation-v1"
 _SCHEMA_MIGRATION_PUBLIC_REVIEWS = "2026-07-29-public-reviews-v1"
+_SCHEMA_MIGRATION_FILM_IDENTITY = "2026-07-29-film-identity-v1"
 
 # Значения films.media_type. Дублируются константами, а не импортом media_type,
 # чтобы не затенять одноимённый аргумент get_or_create_film.
@@ -898,6 +900,324 @@ async def _apply_public_reviews_migration() -> None:
         await db.commit()
 
 
+def _row_time(row: dict, *fields: str) -> str:
+    """Comparable ISO timestamp for conflict resolution during a film merge."""
+    return max((str(row.get(field) or "") for field in fields), default="")
+
+
+def _merge_user_film_values(current: dict, duplicate: dict) -> dict:
+    """Merge two states of one user's same logical movie without losing history.
+
+    A later explicit rating/comment wins.  Passive list additions never turn a
+    watched movie back into ``want_to_watch`` and the oldest ``added_at`` is
+    retained as the beginning of the user's personal history.
+    """
+    rows = (current, duplicate)
+    rated = [row for row in rows if row.get("rating") is not None]
+    rating_row = max(
+        rated,
+        key=lambda row: _row_time(row, "rated_at", "watched_at", "added_at"),
+        default=current,
+    )
+    commented = [row for row in rows if (row.get("comment") or "").strip()]
+    comment_row = max(
+        commented,
+        key=lambda row: _row_time(row, "commented_at", "rated_at", "added_at"),
+        default=None,
+    )
+    added_values = [str(row.get("added_at")) for row in rows if row.get("added_at")]
+    watched_values = [str(row.get("watched_at")) for row in rows if row.get("watched_at")]
+    rated_values = [str(row.get("rated_at")) for row in rows if row.get("rated_at")]
+    return {
+        "status": "watched" if any(row.get("status") == "watched" for row in rows)
+        else "want_to_watch",
+        "rating": rating_row.get("rating") if rated else None,
+        "comment": comment_row.get("comment") if comment_row else None,
+        "comment_status": comment_row.get("comment_status") if comment_row else None,
+        "added_at": min(added_values) if added_values else None,
+        "watched_at": max(watched_values) if watched_values else None,
+        "rated_at": max(rated_values) if rated_values else None,
+        "commented_at": (
+            _row_time(comment_row, "commented_at") or None
+            if comment_row else None
+        ),
+    }
+
+
+async def _merge_film_duplicate(db, canonical_row: dict, duplicate_row: dict) -> None:
+    """Move every durable reference to ``canonical_row`` and delete a duplicate.
+
+    This function is intentionally conservative: callers only pass rows with
+    the exact same title, year and non-empty poster where one id is a synthetic
+    ``kp_*`` alias and the other is a real IMDb id.
+    """
+    canonical_id = int(canonical_row["id"])
+    duplicate_id = int(duplicate_row["id"])
+
+    # One current state per user/movie.  When both aliases were used, merge the
+    # two rows according to their real activity timestamps.
+    cur = await db.execute("SELECT * FROM user_films WHERE film_id = ?", (duplicate_id,))
+    for duplicate_state_row in await cur.fetchall():
+        duplicate_state = dict(duplicate_state_row)
+        user_id = duplicate_state["user_id"]
+        existing_cur = await db.execute(
+            "SELECT * FROM user_films WHERE user_id = ? AND film_id = ?",
+            (user_id, canonical_id),
+        )
+        existing_row = await existing_cur.fetchone()
+        if existing_row is None:
+            await db.execute(
+                "UPDATE user_films SET film_id = ? WHERE user_id = ? AND film_id = ?",
+                (canonical_id, user_id, duplicate_id),
+            )
+            continue
+        merged = _merge_user_film_values(dict(existing_row), duplicate_state)
+        await db.execute(
+            "UPDATE user_films SET status = ?, rating = ?, comment = ?, added_at = ?, "
+            "watched_at = ?, rated_at = ?, commented_at = ?, comment_status = ? "
+            "WHERE user_id = ? AND film_id = ?",
+            (
+                merged["status"], merged["rating"], merged["comment"], merged["added_at"],
+                merged["watched_at"], merged["rated_at"], merged["commented_at"],
+                merged["comment_status"], user_id, canonical_id,
+            ),
+        )
+        await db.execute(
+            "DELETE FROM user_films WHERE user_id = ? AND film_id = ?",
+            (user_id, duplicate_id),
+        )
+
+    # Stable public-review identities and abuse reports must follow the merged
+    # movie.  Duplicate reports by the same reporter collapse idempotently.
+    cur = await db.execute(
+        "SELECT * FROM review_identities WHERE film_id = ?", (duplicate_id,)
+    )
+    for identity_row in await cur.fetchall():
+        identity = dict(identity_row)
+        existing_cur = await db.execute(
+            "SELECT id FROM review_identities WHERE user_id = ? AND film_id = ?",
+            (identity["user_id"], canonical_id),
+        )
+        existing = await existing_cur.fetchone()
+        if existing is None:
+            await db.execute(
+                "UPDATE review_identities SET film_id = ? WHERE id = ?",
+                (canonical_id, identity["id"]),
+            )
+            continue
+        await db.execute(
+            "INSERT INTO review_reports (review_id, reporter_id, reason, created_at) "
+            "SELECT ?, reporter_id, reason, created_at FROM review_reports WHERE review_id = ? "
+            "ON CONFLICT(review_id, reporter_id) DO NOTHING",
+            (existing["id"], identity["id"]),
+        )
+        await db.execute("DELETE FROM review_reports WHERE review_id = ?", (identity["id"],))
+        await db.execute("DELETE FROM review_identities WHERE id = ?", (identity["id"],))
+
+    # Editorial collections keep their order and authorship.  A pre-existing
+    # canonical entry wins; otherwise the duplicate entry is simply re-keyed.
+    cur = await db.execute(
+        "SELECT * FROM collection_films WHERE film_id = ?", (duplicate_id,)
+    )
+    for collection_row in await cur.fetchall():
+        item = dict(collection_row)
+        existing_cur = await db.execute(
+            "SELECT 1 FROM collection_films WHERE collection_id = ? AND film_id = ?",
+            (item["collection_id"], canonical_id),
+        )
+        if await existing_cur.fetchone():
+            await db.execute(
+                "DELETE FROM collection_films WHERE collection_id = ? AND film_id = ?",
+                (item["collection_id"], duplicate_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE collection_films SET film_id = ? "
+                "WHERE collection_id = ? AND film_id = ?",
+                (canonical_id, item["collection_id"], duplicate_id),
+            )
+
+    # Set-like projections are copied with their natural uniqueness keys.
+    await db.execute(
+        "INSERT INTO film_genres (film_id, genre) "
+        "SELECT ?, genre FROM film_genres WHERE film_id = ? "
+        "ON CONFLICT(film_id, genre) DO NOTHING",
+        (canonical_id, duplicate_id),
+    )
+    await db.execute("DELETE FROM film_genres WHERE film_id = ?", (duplicate_id,))
+    await db.execute(
+        "INSERT INTO film_recommendation_tags "
+        "(film_id, tag, confidence, source, version, updated_at) "
+        "SELECT ?, tag, confidence, source, version, updated_at "
+        "FROM film_recommendation_tags WHERE film_id = ? "
+        "ON CONFLICT(film_id, tag, source, version) DO NOTHING",
+        (canonical_id, duplicate_id),
+    )
+    await db.execute(
+        "DELETE FROM film_recommendation_tags WHERE film_id = ?", (duplicate_id,)
+    )
+
+    # Historical recommendation events are user history, so preserve them.
+    await db.execute(
+        "UPDATE recommendation_history SET film_id = ? WHERE film_id = ?",
+        (canonical_id, duplicate_id),
+    )
+    cur = await db.execute(
+        "SELECT * FROM wishlist_random_picks WHERE film_id = ?", (duplicate_id,)
+    )
+    for pick_row in await cur.fetchall():
+        pick = dict(pick_row)
+        await db.execute(
+            "INSERT INTO wishlist_random_picks "
+            "(user_id, film_id, cycle_number, shown_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(user_id, film_id, cycle_number) DO NOTHING",
+            (pick["user_id"], canonical_id, pick["cycle_number"], pick["shown_at"]),
+        )
+    await db.execute(
+        "DELETE FROM wishlist_random_picks WHERE film_id = ?", (duplicate_id,)
+    )
+
+    # Overrides are human input.  Preserve a duplicate override if the
+    # canonical movie has none; derived profiles/jobs can be safely rebuilt.
+    override_cur = await db.execute(
+        "SELECT 1 FROM movie_recommendation_profile_overrides WHERE film_id = ?",
+        (canonical_id,),
+    )
+    if await override_cur.fetchone():
+        await db.execute(
+            "DELETE FROM movie_recommendation_profile_overrides WHERE film_id = ?",
+            (duplicate_id,),
+        )
+    else:
+        await db.execute(
+            "UPDATE movie_recommendation_profile_overrides SET film_id = ? WHERE film_id = ?",
+            (canonical_id, duplicate_id),
+        )
+    await db.execute("DELETE FROM movie_enrichment_jobs WHERE film_id = ?", (duplicate_id,))
+    await db.execute(
+        "DELETE FROM movie_recommendation_profiles WHERE film_id = ?", (duplicate_id,)
+    )
+
+    # Delete the synthetic row before moving its kp_id; the existing partial
+    # unique index correctly forbids both rows from owning the same kp id.
+    await db.execute("DELETE FROM films WHERE id = ?", (duplicate_id,))
+
+    merged_genres = ", ".join(dict.fromkeys(
+        _split_genres(canonical_row.get("genres"))
+        + _split_genres(duplicate_row.get("genres"))
+    )) or None
+    merged_directors = ", ".join(dict.fromkeys(
+        _split_people(canonical_row.get("directors"))
+        + _split_people(duplicate_row.get("directors"))
+    )) or None
+    merged_actors = ", ".join(dict.fromkeys(
+        _split_people(canonical_row.get("actors"))
+        + _split_people(duplicate_row.get("actors"))
+    )) or None
+    merged_kp_id = canonical_row.get("kp_id") or duplicate_row.get("kp_id")
+    merged_search_text = _catalog_search_text(
+        canonical_row.get("title") or duplicate_row.get("title"),
+        canonical_row.get("title_original") or duplicate_row.get("title_original"),
+        merged_actors, merged_directors, canonical_row.get("imdb_id"), merged_kp_id,
+    )
+    await db.execute(
+        "UPDATE films SET kp_id = ?, genres = ?, directors = ?, actors = ?, search_text = ?, "
+        "title_original = COALESCE(NULLIF(title_original, ''), ?), "
+        "runtime = COALESCE(NULLIF(runtime, ''), ?), "
+        "imdb_rating = COALESCE(NULLIF(imdb_rating, ''), ?), "
+        "kp_rating = COALESCE(NULLIF(kp_rating, ''), ?), "
+        "imdb_votes = COALESCE(NULLIF(imdb_votes, ''), ?), "
+        "plot = COALESCE(NULLIF(plot, ''), ?), "
+        "poster_url = COALESCE(NULLIF(poster_url, ''), ?), "
+        "backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
+        "age_rating = COALESCE(NULLIF(age_rating, ''), ?), "
+        "actors_photos = COALESCE(NULLIF(actors_photos, ''), ?), "
+        "directors_photos = COALESCE(NULLIF(directors_photos, ''), ?), "
+        "media_type = COALESCE(NULLIF(media_type, ''), ?), "
+        "media_type_source = COALESCE(NULLIF(media_type_source, ''), ?) "
+        "WHERE id = ?",
+        (
+            merged_kp_id, merged_genres, merged_directors, merged_actors,
+            merged_search_text, duplicate_row.get("title_original"),
+            duplicate_row.get("runtime"), duplicate_row.get("imdb_rating"),
+            duplicate_row.get("kp_rating"), duplicate_row.get("imdb_votes"),
+            duplicate_row.get("plot"), duplicate_row.get("poster_url"),
+            duplicate_row.get("backdrop_url"), duplicate_row.get("age_rating"),
+            duplicate_row.get("actors_photos"), duplicate_row.get("directors_photos"),
+            duplicate_row.get("media_type"), duplicate_row.get("media_type_source"),
+            canonical_id,
+        ),
+    )
+    await _set_film_genres(db, canonical_id, merged_genres)
+    await _enqueue_enrichment(db, canonical_id, priority=20)
+    logger.warning(
+        "catalog dedupe: merged film_id=%s (%s) into film_id=%s (%s)",
+        duplicate_id, duplicate_row.get("imdb_id"),
+        canonical_id, canonical_row.get("imdb_id"),
+    )
+
+
+async def _apply_film_identity_migration() -> None:
+    """Repair high-confidence IMDb/Kinopoisk aliases and prevent new races."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        # A tiny durable lock registry serializes concurrent catalog inserts
+        # across all Fly machines.  One row per logical catalog identity is a
+        # bounded, auditable cost and works identically in SQLite/Postgres.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS film_identity_locks (
+                identity_key TEXT PRIMARY KEY,
+                created_at   TEXT NOT NULL
+            )
+        """)
+        groups_cur = await db.execute(
+            "SELECT title, COALESCE(year, '') AS year_key, poster_url "
+            "FROM films WHERE poster_url IS NOT NULL AND TRIM(poster_url) <> '' "
+            "GROUP BY title, COALESCE(year, ''), poster_url HAVING COUNT(*) > 1"
+        )
+        for group_row in await groups_cur.fetchall():
+            group = dict(group_row)
+            films_cur = await db.execute(
+                "SELECT * FROM films WHERE title = ? AND COALESCE(year, '') = ? "
+                "AND poster_url = ? ORDER BY id",
+                (group["title"], group["year_key"], group["poster_url"]),
+            )
+            records = [dict(row) for row in await films_cur.fetchall()]
+            real_imdb = [
+                row for row in records
+                if str(row.get("imdb_id") or "").lower().startswith("tt")
+            ]
+            synthetic = [
+                row for row in records
+                if str(row.get("imdb_id") or "").lower().startswith("kp_")
+            ]
+            # Exact poster/title/year plus exactly one real IMDb record is
+            # intentionally strict; ambiguous remakes are left for an operator.
+            if len(real_imdb) != 1 or not synthetic:
+                continue
+            canonical = real_imdb[0]
+            for duplicate in synthetic:
+                await _merge_film_duplicate(db, canonical, duplicate)
+                canonical["kp_id"] = canonical.get("kp_id") or duplicate.get("kp_id")
+                canonical["genres"] = ", ".join(dict.fromkeys(
+                    _split_genres(canonical.get("genres"))
+                    + _split_genres(duplicate.get("genres"))
+                )) or None
+                canonical["directors"] = ", ".join(dict.fromkeys(
+                    _split_people(canonical.get("directors"))
+                    + _split_people(duplicate.get("directors"))
+                )) or None
+                canonical["actors"] = ", ".join(dict.fromkeys(
+                    _split_people(canonical.get("actors"))
+                    + _split_people(duplicate.get("actors"))
+                )) or None
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_films_kp_id "
+            "ON films(kp_id) WHERE kp_id IS NOT NULL"
+        )
+        await db.commit()
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -923,6 +1243,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_HERO_PRESENTATION, _apply_hero_presentation_migration),
         (_SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION, _apply_movie_flow_moderation_migration),
         (_SCHEMA_MIGRATION_PUBLIC_REVIEWS, _apply_public_reviews_migration),
+        (_SCHEMA_MIGRATION_FILM_IDENTITY, _apply_film_identity_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -1322,6 +1643,28 @@ def _prefer_richer_catalog_list(current: str | None, incoming: str | None,
     return current if current_items else incoming
 
 
+def _film_identity_key(imdb_id: str, kp_id: str | None, title: str,
+                       year: str | None, poster_url: str | None) -> str:
+    """Stable lock key shared by IMDb and Kinopoisk representations.
+
+    The exact provider poster is the safest bridge when one provider lookup is
+    temporarily missing the other provider's id.  The digest keeps lock rows
+    compact even for long signed image URLs.
+    """
+    if poster_url and title:
+        raw = "|".join((
+            "poster",
+            " ".join(title.split()).casefold(),
+            str(year or "").strip(),
+            str(poster_url).strip(),
+        ))
+    elif kp_id:
+        raw = f"kp|{kp_id}"
+    else:
+        raw = f"imdb|{imdb_id}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 async def _backfill_catalog_search_text() -> None:
     """Give legacy catalog entries the same local-search behaviour as new ones."""
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
@@ -1484,20 +1827,58 @@ async def get_or_create_film(
 ) -> int:
     """Возвращает id фильма в общем каталоге, создавая запись при первом появлении
     (dedup по imdb_id/kp_id). Идемпотентно — один фильм на всех пользователей."""
+    imdb_id = str(imdb_id or "").strip()
+    if imdb_id.lower().startswith(("tt", "kp_")):
+        imdb_id = imdb_id.lower()
     kp_id = str(kp_id).strip() if kp_id else None
+    if not kp_id and imdb_id.startswith("kp_"):
+        kp_id = imdb_id[3:]
     # Тип записи от провайдера: 'unknown' не сохраняем, чтобы бэкфил потом мог
     # доопределить его, а не считал колонку уже заполненной.
     media_type = media_type if media_type in (_MEDIA_MOVIE, _MEDIA_SERIES, _MEDIA_EPISODE, _MEDIA_SHORT) else None
     search_text = _catalog_search_text(title, title_original, actors, directors, imdb_id, kp_id)
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
+        # INSERT + no-op UPDATE is a portable transaction-scoped mutex.  It
+        # prevents two web machines from inserting IMDb and kp aliases of the
+        # same poster at the same time.
+        identity_key = _film_identity_key(imdb_id, kp_id, title, year, poster_url)
+        await db.execute(
+            "INSERT INTO film_identity_locks (identity_key, created_at) VALUES (?, ?) "
+            "ON CONFLICT(identity_key) DO NOTHING",
+            (identity_key, _now()),
+        )
+        await db.execute(
+            "UPDATE film_identity_locks SET created_at = created_at WHERE identity_key = ?",
+            (identity_key,),
+        )
         cur = await db.execute(
-            "SELECT id, title, title_original, year, genres, directors, actors, runtime, "
+            "SELECT id, imdb_id, title, title_original, year, genres, directors, actors, runtime, "
             "imdb_rating, kp_rating, imdb_votes, plot, kp_id FROM films "
             "WHERE imdb_id = ? OR (kp_id IS NOT NULL AND kp_id = ?) LIMIT 1",
             (imdb_id, kp_id))
         row = await cur.fetchone()
+        # Conservative bridge for provider outages: the same exact non-empty
+        # poster + title + year may join a synthetic kp alias to one IMDb row.
+        # Two candidates are treated as ambiguous and never auto-merged.
+        if row is None and poster_url and title:
+            fingerprint_cur = await db.execute(
+                "SELECT id, imdb_id, title, title_original, year, genres, directors, actors, runtime, "
+                "imdb_rating, kp_rating, imdb_votes, plot, kp_id FROM films "
+                "WHERE LOWER(TRIM(title)) = LOWER(TRIM(?)) "
+                "AND COALESCE(year, '') = COALESCE(?, '') AND poster_url = ? "
+                "AND (imdb_id LIKE 'kp_%' OR ? LIKE 'kp_%') ORDER BY id LIMIT 2",
+                (title, year, poster_url, imdb_id),
+            )
+            candidates = await fingerprint_cur.fetchall()
+            row = candidates[0] if len(candidates) == 1 else None
         if row:
+            current_imdb_id = str(row["imdb_id"] or "")
+            merged_imdb_id = (
+                imdb_id
+                if imdb_id.startswith("tt") and current_imdb_id.startswith("kp_")
+                else current_imdb_id
+            )
             merged_title = _prefer_catalog_value(row["title"], title)
             merged_original = _prefer_catalog_value(row["title_original"], title_original)
             merged_year = _prefer_catalog_value(row["year"], year)
@@ -1511,10 +1892,11 @@ async def get_or_create_film(
             merged_plot = _prefer_catalog_value(row["plot"], plot)
             merged_kp_id = _prefer_catalog_value(row["kp_id"], kp_id)
             merged_search_text = _catalog_search_text(
-                merged_title, merged_original, merged_actors, merged_directors, imdb_id, merged_kp_id,
+                merged_title, merged_original, merged_actors, merged_directors,
+                merged_imdb_id, merged_kp_id,
             )
             await db.execute(
-                "UPDATE films SET title = ?, title_original = ?, year = ?, genres = ?, directors = ?, actors = ?, "
+                "UPDATE films SET imdb_id = ?, title = ?, title_original = ?, year = ?, genres = ?, directors = ?, actors = ?, "
                 "runtime = ?, imdb_rating = ?, kp_rating = ?, imdb_votes = ?, plot = ?, kp_id = ?, search_text = ?, "
                 "poster_url = COALESCE(NULLIF(poster_url, ''), ?), "
                 "backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
@@ -1525,7 +1907,7 @@ async def get_or_create_film(
                 "media_type_source = CASE WHEN COALESCE(NULLIF(media_type, ''), ?) IS NULL "
                 "THEN media_type_source ELSE COALESCE(media_type_source, 'provider') END "
                 "WHERE id = ?",
-                (merged_title, merged_original, merged_year, merged_genres, merged_directors, merged_actors,
+                (merged_imdb_id, merged_title, merged_original, merged_year, merged_genres, merged_directors, merged_actors,
                  merged_runtime, merged_imdb_rating, merged_kp_rating, merged_imdb_votes, merged_plot,
                  merged_kp_id, merged_search_text, poster_url, backdrop_url, age_rating, actors_photos,
                  directors_photos, media_type, media_type, row["id"]))
@@ -1566,7 +1948,20 @@ async def get_or_create_film(
         cur = await db.execute(
             "SELECT id FROM films WHERE imdb_id = ? OR (kp_id IS NOT NULL AND kp_id = ?) LIMIT 1",
             (imdb_id, kp_id))
-        return (await cur.fetchone())["id"]
+        winner = await cur.fetchone()
+        if winner is None and poster_url and title:
+            cur = await db.execute(
+                "SELECT id FROM films WHERE LOWER(TRIM(title)) = LOWER(TRIM(?)) "
+                "AND COALESCE(year, '') = COALESCE(?, '') AND poster_url = ? "
+                "AND (imdb_id LIKE 'kp_%' OR ? LIKE 'kp_%') ORDER BY id LIMIT 1",
+                (title, year, poster_url, imdb_id),
+            )
+            winner = await cur.fetchone()
+        if winner is None:
+            raise RuntimeError(
+                f"catalog insert lost without an identity winner: imdb={imdb_id!r}, kp={kp_id!r}"
+            )
+        return winner["id"]
 
 
 async def get_film(film_id: int) -> dict | None:

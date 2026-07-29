@@ -31,7 +31,8 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
                 "movie_enrichment_jobs, movie_recommendation_profile_overrides, "
                 "wishlist_random_picks, wishlist_random_state, recommendation_history, "
                 "movie_recommendation_profiles, "
-                "user_films, films, users, search_cache, search_budget RESTART IDENTITY CASCADE")
+                "user_films, films, users, search_cache, search_budget, "
+                "film_identity_locks RESTART IDENTITY CASCADE")
             await conn.commit()
 
     async def asyncTearDown(self):
@@ -75,6 +76,20 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await db.mark_film_visuals_checked("tt0133093", None, None))
         film = await db.get_film(film_id)
         self.assertIsNotNone(film["poster_checked_at"])
+
+    async def test_catalog_identity_bridge_matches_sqlite(self):
+        poster = "https://st.kp.yandex.net/postgres-brothers.jpg"
+        synthetic = await db.get_or_create_film(
+            "kp_253761", "Братья", year="2009", kp_id="253761",
+            poster_url=poster,
+        )
+        canonical = await db.get_or_create_film(
+            "tt0765010", "Братья", year="2009", poster_url=poster,
+        )
+
+        self.assertEqual(canonical, synthetic)
+        film = await db.get_film(canonical)
+        self.assertEqual((film["imdb_id"], film["kp_id"]), ("tt0765010", "253761"))
 
     async def test_successful_notification_delivery_uses_a_postgres_boolean(self):
         """A sent delivery must work through asyncpg, not only SQLite.

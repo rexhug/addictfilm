@@ -346,6 +346,9 @@ async def fetch_details(src: str, ref: str) -> dict | None:
         age_rating = rated if rated not in (None, "Not Rated", "Unrated") else None
     return {
         "imdb_id": data["imdbID"],
+        # Cross-provider identity is critical: without it the same movie can be
+        # stored once as tt... and later again as synthetic kp_....
+        "kp_id": asset.get("kp_id"),
         "title": title,
         "title_original": original if original != title else None,
         "year": _clean(data.get("Year")),

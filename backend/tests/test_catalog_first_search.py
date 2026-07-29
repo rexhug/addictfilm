@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 import database as db
+import db_runtime
 import kinopoisk
 import main
 import search
@@ -74,6 +75,122 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(items[0]["ref"], "301")
         self.assertIsNotNone(await db.get_film_id_by_source("k", "301"))
         self.assertEqual((await db.search_catalog("the matrix"))[0]["ref"], "tt0133093")
+
+    async def test_imdb_and_kinopoisk_aliases_share_one_catalog_record(self):
+        poster = "https://st.kp.yandex.net/brothers.jpg"
+        synthetic_id = await db.get_or_create_film(
+            "kp_253761", "Братья", year="2009", kp_id="253761",
+            poster_url=poster,
+        )
+
+        # Simulates a temporary Kinopoisk-assets outage on the IMDb path: even
+        # without kp_id the exact provider poster fingerprint is a safe bridge.
+        imdb_id = await db.get_or_create_film(
+            "tt0765010", "Братья", year="2009", poster_url=poster,
+        )
+
+        self.assertEqual(imdb_id, synthetic_id)
+        film = await db.get_film(imdb_id)
+        self.assertEqual(film["imdb_id"], "tt0765010")
+        self.assertEqual(film["kp_id"], "253761")
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            count = await (await conn.execute(
+                "SELECT COUNT(*) FROM films WHERE title = ? AND year = ?",
+                ("Братья", "2009"),
+            )).fetchone()
+        self.assertEqual(count[0], 1)
+
+    async def test_identity_migration_merges_latest_user_state_and_collection(self):
+        await db.upsert_user({"id": 1, "first_name": "One"})
+        await db.upsert_user({"id": 2, "first_name": "Two"})
+        poster = "https://st.kp.yandex.net/brothers-migration.jpg"
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            canonical = await (await conn.execute(
+                "INSERT INTO films (imdb_id,title,year,poster_url,search_text,created_at) "
+                "VALUES (?,?,?,?,?,?) RETURNING id",
+                ("tt0765010", "Братья", "2009", poster, "братья", "2026-01-01"),
+            )).fetchone()
+            duplicate = await (await conn.execute(
+                "INSERT INTO films (imdb_id,kp_id,title,year,poster_url,search_text,created_at) "
+                "VALUES (?,?,?,?,?,?,?) RETURNING id",
+                ("kp_253761", "253761", "Братья", "2009", poster, "братья", "2026-02-01"),
+            )).fetchone()
+            canonical_id, duplicate_id = canonical[0], duplicate[0]
+            await conn.execute(
+                "INSERT INTO user_films "
+                "(user_id,film_id,status,rating,added_at,watched_at,rated_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (1, canonical_id, "watched", 9, "2026-01-01", "2026-01-02", "2026-01-03"),
+            )
+            await conn.execute(
+                "INSERT INTO user_films "
+                "(user_id,film_id,status,rating,added_at,watched_at,rated_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (1, duplicate_id, "watched", 7, "2026-02-01", "2026-02-02", "2026-02-03"),
+            )
+            await conn.execute(
+                "INSERT INTO user_films (user_id,film_id,status,added_at) VALUES (?,?,?,?)",
+                (2, duplicate_id, "want_to_watch", "2026-02-01"),
+            )
+            collection = await (await conn.execute(
+                "INSERT INTO collections (title,created_by,created_at,status) "
+                "VALUES (?,?,?,?) RETURNING id",
+                ("Test", 1, "2026-01-01", "published"),
+            )).fetchone()
+            collection_id = collection[0]
+            await conn.execute(
+                "INSERT INTO collection_films "
+                "(collection_id,film_id,added_at,position,added_by) VALUES (?,?,?,?,?)",
+                (collection_id, duplicate_id, "2026-02-01", 1, 1),
+            )
+            await conn.commit()
+
+        await db._apply_film_identity_migration()
+
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            conn.row_factory = db.aiosqlite.Row
+            films = await (await conn.execute(
+                "SELECT id,imdb_id,kp_id FROM films WHERE title = ?", ("Братья",)
+            )).fetchall()
+            states = await (await conn.execute(
+                "SELECT user_id,status,rating FROM user_films WHERE film_id = ? ORDER BY user_id",
+                (canonical_id,),
+            )).fetchall()
+            collection_film = await (await conn.execute(
+                "SELECT film_id FROM collection_films WHERE collection_id = ?",
+                (collection_id,),
+            )).fetchone()
+        self.assertEqual(
+            [(row["id"], row["imdb_id"], row["kp_id"]) for row in films],
+            [(canonical_id, "tt0765010", "253761")],
+        )
+        self.assertEqual(
+            [(row["user_id"], row["status"], row["rating"]) for row in states],
+            [(1, "watched", 7), (2, "want_to_watch", None)],
+        )
+        self.assertEqual(collection_film["film_id"], canonical_id)
+
+    async def test_kinopoisk_assets_expose_cross_provider_id(self):
+        old_tokens, old_request = kinopoisk.KINOPOISK_TOKENS, kinopoisk._request
+
+        async def fake_request(_path, _params):
+            return {
+                "docs": [{
+                    "id": 253761,
+                    "externalId": {"imdb": "tt0765010"},
+                    "poster": {"url": "https://st.kp.yandex.net/brothers.jpg"},
+                }]
+            }
+
+        kinopoisk.KINOPOISK_TOKENS = ["test"]
+        kinopoisk._request = fake_request
+        try:
+            assets = await kinopoisk.assets_by_imdb(["tt0765010"])
+        finally:
+            kinopoisk.KINOPOISK_TOKENS = old_tokens
+            kinopoisk._request = old_request
+
+        self.assertEqual(assets["tt0765010"]["kp_id"], "253761")
 
     async def test_budget_gate_stops_http_before_connecting_to_kinopoisk(self):
         old_keys, old_spend = kinopoisk.KINOPOISK_TOKENS, kinopoisk.ratelimit.try_spend_search

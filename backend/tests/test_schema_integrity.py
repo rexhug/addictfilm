@@ -37,7 +37,8 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
                          "movie_recommendation_profile_overrides",
                          "worker_heartbeats", "wishlist_random_state",
                          "wishlist_random_picks", "review_identities",
-                         "review_reports"}.issubset({row[0] for row in tables}))
+                         "review_reports", "film_identity_locks"}.issubset(
+            {row[0] for row in tables}))
         self.assertTrue({"kp_id", "search_text", "poster_checked_at", "artwork_checked_at", "actor_photos_checked_at",
                          "directors_photos", "director_photos_checked_at",
                          "media_type", "media_type_source",
@@ -73,6 +74,7 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
             db._SCHEMA_MIGRATION_HERO_MEDIA,
             db._SCHEMA_MIGRATION_HERO_PRESENTATION,
             db._SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION,
+            db._SCHEMA_MIGRATION_FILM_IDENTITY,
             db._SCHEMA_MIGRATION_PUBLIC_REVIEWS,
         ])
 

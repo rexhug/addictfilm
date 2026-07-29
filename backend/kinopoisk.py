@@ -262,7 +262,7 @@ async def assets_by_imdb(imdb_ids: list[str]) -> dict[str, dict]:
     for start in range(0, len(ids), 40):
         chunk = ids[start:start + 40]
         params = [("externalId.imdb", item) for item in chunk]
-        params += [("selectFields", "externalId"), ("selectFields", "poster"),
+        params += [("selectFields", "id"), ("selectFields", "externalId"), ("selectFields", "poster"),
                    ("selectFields", "backdrop"), ("selectFields", "ageRating"),
                    ("limit", "250"), ("page", "1")]
         data = await _request("/movie", params)
@@ -272,6 +272,7 @@ async def assets_by_imdb(imdb_ids: list[str]) -> dict[str, dict]:
             imdb_id = (movie.get("externalId") or {}).get("imdb")
             if imdb_id:
                 out[imdb_id] = {
+                    "kp_id": str(movie["id"]) if movie.get("id") is not None else None,
                     "poster_url": (movie.get("poster") or {}).get("url"),
                     "backdrop_url": (movie.get("backdrop") or {}).get("url"),
                     "age_rating": age_rating_of(movie),
