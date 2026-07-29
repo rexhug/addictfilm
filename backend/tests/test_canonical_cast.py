@@ -3,12 +3,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import cast
 import database as db
 import kinopoisk
-from enrichment.cast_backfill import enrich_film_cast
+from enrichment.cast_backfill import _run, enrich_film_cast
 
 
 def kp_person(
@@ -274,3 +275,28 @@ class CanonicalCastDatabaseTests(unittest.IsolatedAsyncioTestCase):
         after = await db.get_film(film_id)
         self.assertIsNone(after["cast_json"])
         self.assertIsNone(after["cast_checked_at"])
+
+    async def test_cli_closes_provider_sessions_when_backfill_fails(self):
+        args = SimpleNamespace(
+            film_id=None,
+            limit=20,
+            batch_size=5,
+            concurrency=2,
+            validate_portraits=False,
+            person_detail_limit_per_film=3,
+            dry_run=True,
+        )
+        kinopoisk_close = AsyncMock()
+        wikidata_close = AsyncMock()
+        with (
+            patch(
+                "enrichment.cast_backfill.db.films_for_cast_backfill",
+                AsyncMock(side_effect=RuntimeError("database unavailable")),
+            ),
+            patch("enrichment.cast_backfill.kinopoisk.aclose", kinopoisk_close),
+            patch("enrichment.cast_backfill.wikidata.aclose", wikidata_close),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "database unavailable"):
+                await _run(args)
+        kinopoisk_close.assert_awaited_once_with()
+        wikidata_close.assert_awaited_once_with()

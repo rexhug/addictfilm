@@ -199,42 +199,52 @@ async def enrich_film_cast(
 
 
 async def _run(args: argparse.Namespace) -> int:
-    films = await db.films_for_cast_backfill(film_id=args.film_id, limit=args.limit)
-    imdb_ids = [
-        str(film.get("imdb_id") or "")
-        for film in films
-        if not film.get("kp_id")
-        if str(film.get("imdb_id") or "").startswith("tt")
-    ]
-    wikidata_map = await wikidata.get_cast_by_imdb(imdb_ids, max_actors=12)
-    kinopoisk_map = await kinopoisk.cast_documents_by_imdb(imdb_ids)
-    semaphore = asyncio.Semaphore(max(1, min(args.concurrency, 4)))
+    try:
+        films = await db.films_for_cast_backfill(film_id=args.film_id, limit=args.limit)
+        imdb_ids = [
+            str(film.get("imdb_id") or "")
+            for film in films
+            if not film.get("kp_id")
+            if str(film.get("imdb_id") or "").startswith("tt")
+        ]
+        wikidata_map = await wikidata.get_cast_by_imdb(imdb_ids, max_actors=12)
+        kinopoisk_map = await kinopoisk.cast_documents_by_imdb(imdb_ids)
+        semaphore = asyncio.Semaphore(max(1, min(args.concurrency, 4)))
 
-    async def process(film: dict) -> dict:
-        async with semaphore:
-            outcome = await enrich_film_cast(
-                film,
-                validate_portraits=args.validate_portraits,
-                person_detail_limit=args.person_detail_limit_per_film,
-                dry_run=args.dry_run,
-                wikidata_cast=wikidata_map.get(str(film.get("imdb_id") or ""), []),
-                kinopoisk_document=(
-                    None
-                    if film.get("kp_id")
-                    else kinopoisk_map.get(str(film.get("imdb_id") or ""))
-                ),
-            )
-            payload = outcome.as_dict()
-            payload.update({
-                "imdb_id": film.get("imdb_id"),
-            })
-            return payload
+        async def process(film: dict) -> dict:
+            async with semaphore:
+                outcome = await enrich_film_cast(
+                    film,
+                    validate_portraits=args.validate_portraits,
+                    person_detail_limit=args.person_detail_limit_per_film,
+                    dry_run=args.dry_run,
+                    wikidata_cast=wikidata_map.get(str(film.get("imdb_id") or ""), []),
+                    kinopoisk_document=(
+                        None
+                        if film.get("kp_id")
+                        else kinopoisk_map.get(str(film.get("imdb_id") or ""))
+                    ),
+                )
+                payload = outcome.as_dict()
+                payload.update({
+                    "imdb_id": film.get("imdb_id"),
+                })
+                return payload
 
-    for start in range(0, len(films), args.batch_size):
-        batch = films[start:start + args.batch_size]
-        for payload in await asyncio.gather(*(process(film) for film in batch)):
-            print(json.dumps(payload, ensure_ascii=False))
-    return 0
+        for start in range(0, len(films), args.batch_size):
+            batch = films[start:start + args.batch_size]
+            for payload in await asyncio.gather(*(process(film) for film in batch)):
+                print(json.dumps(payload, ensure_ascii=False))
+        return 0
+    finally:
+        # This module is also a short-lived CLI. Unlike the FastAPI process it
+        # has no application shutdown hook, so provider sessions must be
+        # released here on success, failure, and cancellation.
+        await asyncio.gather(
+            kinopoisk.aclose(),
+            wikidata.aclose(),
+            return_exceptions=True,
+        )
 
 
 def _parser() -> argparse.ArgumentParser:
