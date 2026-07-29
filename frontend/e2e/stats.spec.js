@@ -66,9 +66,11 @@ async function openStats(page, paired = false, options = {}) {
       : { id: "quiz_test", version: "v1", state: "complete", progress: 8, total: 8, pair_available: paired, question: null, ...(engineMeta || {}) };
   };
   await page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
-  await page.addInitScript(({ notification, startParam }) => {
+  await page.addInitScript(({ notification, startParam, confirmResult }) => {
     window.__verticalSwipeDisableCalls = 0;
     window.__tgEventHandlers = {};
+    window.__confirmResult = confirmResult;
+    window.__confirmMessages = [];
     if (notification) {
       let permission = notification.permission;
       window.__notificationRequests = 0;
@@ -90,9 +92,16 @@ async function openStats(page, paired = false, options = {}) {
       },
       disableVerticalSwipes() { window.__verticalSwipeDisableCalls += 1; },
       HapticFeedback: { impactOccurred() {}, notificationOccurred() {} },
-      showConfirm(_text, callback) { callback(true); }, showAlert() {}, openTelegramLink() {},
+      showConfirm(text, callback) {
+        window.__confirmMessages.push(text);
+        callback(window.__confirmResult);
+      }, showAlert() {}, openTelegramLink() {},
     } };
-  }, { notification: options.notification || null, startParam: options.startParam || null });
+  }, {
+    notification: options.notification || null,
+    startParam: options.startParam || null,
+    confirmResult: options.confirmResult ?? true,
+  });
   await page.route("**/img?**", async route => {
     const source = new URL(route.request().url()).searchParams.get("u") || "";
     const [width, height] = source.includes("wide") ? [960, 540]
@@ -806,9 +815,10 @@ test("returning from a film keeps list scroll and loaded cards intact", async ({
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(savedY);
 });
 
-test("public reviews are explicit, paginated, safe and keep the partner pinned", async ({ page }) => {
+test("public comments keep drafts, own-menu deletion, pagination and reporting safe", async ({ page }) => {
   const requests = [];
   let publishedText = null;
+  let failNextPut = false;
   const item = (id, name, rating, text, extra = {}) => ({
     id,
     user: { id: id + 10, name, photo_url: null },
@@ -844,6 +854,10 @@ test("public reviews are explicit, paginated, safe and keep the partner pinned",
         body,
       });
       if (method === "PUT") {
+        if (failNextPut) {
+          failNextPut = false;
+          return { status: 500, body: { detail: "save failed" } };
+        }
         publishedText = body.text;
         return { id: 101, rating: body.rating, text: body.text };
       }
@@ -882,7 +896,15 @@ test("public reviews are explicit, paginated, safe and keep the partner pinned",
 
   await expect(page.locator(".detail-v2")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Ваши оценки" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Отзывы пользователей" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Моя оценка и комментарий" })).toBeVisible();
+  await expect(page.getByText("Поделитесь своим мнением о фильме", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Комментарии пользователей" })).toBeVisible();
+  await expect(page.locator("#d-comment-input")).toHaveAttribute("placeholder", "Напишите свой комментарий…");
+  await expect(page.getByText("Ваш комментарий увидят все пользователи", { exact: true })).toBeVisible();
+  await expect(page.locator("#d-review").getByText(/отзыв/i)).toHaveCount(0);
+  await expect(page.locator("#d-public-reviews").getByText(/отзыв/i)).toHaveCount(0);
+  await expect(page.locator("#d-review").getByRole("button", { name: /Удалить/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Опубликовать" })).toBeDisabled();
   const sectionOrder = await page.evaluate(() => [
     document.querySelector(".d-rating-context"),
     document.querySelector(".d-review"),
@@ -893,8 +915,10 @@ test("public reviews are explicit, paginated, safe and keep the partner pinned",
 
   await expect(page.locator(".d-review-card").first()).toHaveClass(/pinned/);
   await expect(page.locator(".d-review-card").first()).toContainText("Kristina");
+  await expect(page.locator(".d-review-card").first().getByRole("button", { name: "Действия с комментарием" })).toHaveCount(0);
   await expect(page.getByText("<img src=x onerror=alert(1)>", { exact: true })).toBeVisible();
   await expect(page.locator('.d-review-card img[src="x"]')).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Действия с комментарием" })).toHaveCount(0);
 
   await expect(page.locator("[data-review-sort]")).toHaveCount(0);
   await expect.poll(() => requests.some(request => request.method === "GET" && request.sort === "newest")).toBeTruthy();
@@ -904,22 +928,77 @@ test("public reviews are explicit, paginated, safe and keep the partner pinned",
   expect(requests.some(request => request.method === "GET" && request.before === "90")).toBeTruthy();
   expect(requests.filter(request => request.method === "GET").every(request => request.sort === "newest")).toBeTruthy();
 
-  await page.locator("#d-comment-input").fill("Мой публичный отзыв");
-  await page.getByRole("button", { name: "Опубликовать" }).click();
-  await expect.poll(() => publishedText).toBe("Мой публичный отзыв");
-  await expect(page.getByRole("button", { name: "Сохранить" })).toBeVisible();
-  await expect(page.locator("#d-reviews-list").getByText("Мой публичный отзыв", { exact: true })).toBeVisible();
+  await page.locator("#d-comment-input").fill("abc");
+  await expect(page.locator("#d-review-count")).toHaveText("3/500");
+  await expect(page.getByRole("button", { name: "Опубликовать" })).toBeEnabled();
+  await page.locator("#d-comment-input").blur();
+  expect(requests.filter(request => request.method === "PUT")).toHaveLength(0);
 
-  await page.getByRole("button", { name: "Удалить" }).click();
+  // The session draft survives leaving and reopening this movie detail.
+  await page.locator("#d-back-top").click();
+  await expect(page.locator('.pair-favorite-card[data-film-id="1"]')).toBeVisible();
+  await page.locator('.pair-favorite-card[data-film-id="1"]').click();
+  await expect(page.locator("#d-comment-input")).toHaveValue("abc");
+
+  failNextPut = true;
+  await page.getByRole("button", { name: "Опубликовать" }).click();
+  await expect(page.locator("#d-comment-input")).toHaveValue("abc");
+  await expect(page.locator("#d-review-feedback")).toContainText("save failed");
+
+  await page.locator("#d-comment-input").fill("Мой публичный комментарий");
+  await page.getByRole("button", { name: "Опубликовать" }).click();
+  await expect.poll(() => publishedText).toBe("Мой публичный комментарий");
+  await expect(page.getByRole("button", { name: "Сохранить" })).toBeDisabled();
+  await expect(page.locator("#d-reviews-list").getByText("Мой публичный комментарий", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => sessionStorage.getItem("addict-film:comment-draft:1:1"))).toBeNull();
+
+  const ownCard = page.locator('.d-review-card[data-comment-card-id="101"]');
+  const menuTrigger = ownCard.getByRole("button", { name: "Действия с комментарием" });
+  await expect(menuTrigger).toHaveCount(1);
+  await expect(page.locator('.d-review-card[data-comment-card-id="90"]').getByRole("button", { name: "Действия с комментарием" })).toHaveCount(0);
+
+  await menuTrigger.click();
+  await expect(menuTrigger).toHaveAttribute("aria-expanded", "true");
+  await expect(ownCard.getByRole("menuitem", { name: "Удалить комментарий" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(menuTrigger).toHaveAttribute("aria-expanded", "false");
+
+  await menuTrigger.click();
+  await page.locator(".d-title").click();
+  await expect(menuTrigger).toHaveAttribute("aria-expanded", "false");
+
+  await page.evaluate(() => { window.__confirmResult = false; });
+  await menuTrigger.click();
+  await ownCard.getByRole("menuitem", { name: "Удалить комментарий" }).click();
+  expect(requests.filter(request => request.method === "DELETE" && request.path.endsWith("/review"))).toHaveLength(0);
+  await expect(ownCard).toBeVisible();
+
+  await page.evaluate(() => { window.__confirmResult = true; });
+  await menuTrigger.click();
+  await ownCard.getByRole("menuitem", { name: "Удалить комментарий" }).click();
   await expect.poll(() => publishedText).toBeNull();
-  await expect(page.getByRole("button", { name: "Опубликовать" })).toBeVisible();
+  expect(requests.filter(request => request.method === "DELETE" && request.path.endsWith("/review"))).toHaveLength(1);
+  await expect(ownCard).toHaveCount(0);
+  await expect(page.locator("#d-comment-input")).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Опубликовать" })).toBeDisabled();
+  await expect(page.locator('.d-stars button[data-n="8"]')).toHaveAttribute("aria-pressed", "true");
+  expect(await page.evaluate(() => window.__confirmMessages.at(-1))).toBe("Удалить комментарий? Это действие нельзя отменить.");
 
   await page.getByRole("button", { name: "Пожаловаться" }).first().click();
   await expect(page.getByText("Жалоба отправлена", { exact: true })).toBeVisible();
   expect(requests.some(request => request.path.endsWith("/report"))).toBeTruthy();
 
-  await page.setViewportSize({ width: 320, height: 568 });
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+  for (const viewport of [
+    { width: 430, height: 932 },
+    { width: 390, height: 844 },
+    { width: 320, height: 568 },
+  ]) {
+    await page.setViewportSize(viewport);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+  }
+  const starRows = await page.locator(".d-stars button").evaluateAll(buttons =>
+    new Set(buttons.map(button => Math.round(button.getBoundingClientRect().top))).size);
+  expect(starRows).toBe(2);
 });
 
 // ── Крупные (featured) подборки ─────────────────────────────────────────────

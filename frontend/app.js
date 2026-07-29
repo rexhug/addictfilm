@@ -48,6 +48,8 @@ let _tabbarScrollHandler = null;
 const _navStack = [];
 let _detailFilm = null;
 let _detailBaseline = null;
+let syncCommentEditorState = null;
+let commentMenuOutsideBound = false;
 // Короткий session cache для тяжёлых home-rails. Он живёт только пока открыт
 // Mini App и сбрасывается после любого изменения списка/оценки, поэтому UI не
 // показывает устаревший статус фильма.
@@ -174,18 +176,24 @@ const DICT = {
     my_rating: "Моя оценка", rate_hint: " · тап = «Смотрел(а)»", dir: "Режиссёр ",
     act_want: "Хочу посмотреть", act_watched: "Отметить как просмотрено", act_to_want: "В «Хочу»", act_remove: "Убрать из списка",
     already_watched_link: "Уже смотрел? Отметить",
-    my_review: "Моя оценка и отзыв", comment_ph: "Написать публичный отзыв…",
+    my_review: "Моя оценка и комментарий",
+    comment_editor_subtitle: "Поделитесь своим мнением о фильме",
+    comment_rating_label: "Моя оценка",
+    comment_ph: "Напишите свой комментарий…",
     your_ratings: "Ваши оценки", your_rating: "Вы", partner_rating: "Партнёр",
-    review_publish: "Опубликовать", review_save: "Сохранить", review_delete: "Удалить",
-    review_saved: "Отзыв опубликован", review_required: "Поставьте оценку и напишите отзыв",
-    review_public_hint: "Отзыв увидят все пользователи · до 500 символов",
+    review_publish: "Опубликовать", review_save: "Сохранить", review_saving: "Сохраняю…",
+    review_delete: "Удалить комментарий",
+    review_delete_confirm: "Удалить комментарий? Это действие нельзя отменить.",
+    review_deleted: "Комментарий удалён",
+    review_saved: "Комментарий сохранён", review_required: "Выберите оценку и напишите комментарий",
+    review_public_hint: "Ваш комментарий увидят все пользователи",
     review_legacy_title: "Это ваша старая личная заметка",
-    review_legacy_hint: "Опубликовать её как отзыв?", review_legacy_publish: "Опубликовать",
+    review_legacy_hint: "Опубликовать её как комментарий?", review_legacy_publish: "Опубликовать",
     review_legacy_keep: "Оставить личной", review_legacy_delete: "Удалить",
-    reviews_title: "Отзывы пользователей", reviews_partner: "Отзыв партнёра",
-    reviews_empty: "Пока нет публичных отзывов", reviews_load_more: "Показать ещё",
-    reviews_loading: "Загружаю отзывы…", reviews_error: "Не удалось загрузить отзывы",
-    review_report: "Пожаловаться", review_reported: "Жалоба отправлена",
+    reviews_title: "Комментарии пользователей", reviews_partner: "Комментарий партнёра",
+    reviews_empty: "Пока нет публичных комментариев", reviews_load_more: "Показать ещё",
+    reviews_loading: "Загружаю комментарии…", reviews_error: "Не удалось загрузить комментарии",
+    review_report: "Пожаловаться", review_reported: "Жалоба отправлена", review_menu: "Действия с комментарием",
     cast_title: "Актёры", share_text: (title) => `Смотри «${title}» в Addict Film`,
     confirm_remove: (title) => `Убрать «${title}» из своего списка?`,
     search_start_t: "Что смотрим?", search_start_s: "Введи название — минимум 2 буквы",
@@ -332,18 +340,24 @@ const DICT = {
     my_rating: "My rating", rate_hint: " · tap = Watched", dir: "Director ",
     act_want: "Want to watch", act_watched: "Mark as watched", act_to_want: "To wishlist", act_remove: "Remove from list",
     already_watched_link: "Already seen it? Mark watched",
-    my_review: "My rating and review", comment_ph: "Write a public review…",
+    my_review: "My rating and comment",
+    comment_editor_subtitle: "Share your thoughts about the movie",
+    comment_rating_label: "My rating",
+    comment_ph: "Write your comment…",
     your_ratings: "Your ratings", your_rating: "You", partner_rating: "Partner",
-    review_publish: "Publish", review_save: "Save", review_delete: "Delete",
-    review_saved: "Review published", review_required: "Rate the film and write a review",
-    review_public_hint: "Visible to everyone · up to 500 characters",
+    review_publish: "Publish", review_save: "Save", review_saving: "Saving…",
+    review_delete: "Delete comment",
+    review_delete_confirm: "Delete this comment? This action cannot be undone.",
+    review_deleted: "Comment deleted",
+    review_saved: "Comment saved", review_required: "Choose a rating and write a comment",
+    review_public_hint: "Your comment will be visible to everyone",
     review_legacy_title: "This is your old private note",
-    review_legacy_hint: "Publish it as a review?", review_legacy_publish: "Publish",
+    review_legacy_hint: "Publish it as a comment?", review_legacy_publish: "Publish",
     review_legacy_keep: "Keep private", review_legacy_delete: "Delete",
-    reviews_title: "User reviews", reviews_partner: "Partner review",
-    reviews_empty: "No public reviews yet", reviews_load_more: "Show more",
-    reviews_loading: "Loading reviews…", reviews_error: "Could not load reviews",
-    review_report: "Report", review_reported: "Report sent",
+    reviews_title: "User comments", reviews_partner: "Partner comment",
+    reviews_empty: "No public comments yet", reviews_load_more: "Show more",
+    reviews_loading: "Loading comments…", reviews_error: "Could not load comments",
+    review_report: "Report", review_reported: "Report sent", review_menu: "Comment actions",
     cast_title: "Cast", share_text: (title) => `Watch "${title}" on Addict Film`,
     confirm_remove: (title) => `Remove "${title}" from your list?`,
     search_start_t: "What are we watching?", search_start_s: "Type a title — at least 2 letters",
@@ -697,14 +711,18 @@ function captureScreenSnapshot() {
 
 // Сброс стека при смене верхнего экрана (таб/дип-линк): иначе «назад» из фильма
 // восстановил бы уже неактуальный экран.
-function resetNavStack() { _navStack.length = 0; }
+function resetNavStack() {
+  _navStack.length = 0;
+  syncCommentEditorState = null;
+  closeOwnCommentMenus();
+}
 
 function returnFromDetail() {
   const snap = _navStack.pop();
   const film = _detailFilm;
   const changed = film && _detailBaseline &&
     (film.status !== _detailBaseline.status || film.my_rating !== _detailBaseline.my_rating);
-  _detailFilm = null; _detailBaseline = null;
+  _detailFilm = null; _detailBaseline = null; syncCommentEditorState = null;
   if (!snap || snap.empty) { ((snap && snap.returnTo) || _returnTo)(); return; }
   _returnTo = snap.returnTo;
   unwireDetailScroll();
@@ -3277,7 +3295,7 @@ function renderDetailPreview(preview) {
 
 async function showDetail(id, preview = null) {
   unwireDetailScroll();
-  _detailFilm = null; _detailBaseline = null;  // актуальные ставит renderDetail после загрузки
+  _detailFilm = null; _detailBaseline = null; syncCommentEditorState = null;  // актуальные ставит renderDetail после загрузки
   if (preview) renderDetailPreview(preview);
   else {
     screen.innerHTML = `<div class="detail-v2">
@@ -3309,6 +3327,7 @@ function renderDetail(id, m) {
   // если оценка/статус изменились.
   _detailFilm = m;
   _detailBaseline = { status: m.status, my_rating: m.my_rating };
+  syncCommentEditorState = null;
   const genres = (m.genres || "").split(",").map(g => g.trim()).filter(Boolean).join(" · ");
   const metaParts = [m.year, m.age_rating, m.runtime].filter(Boolean);
   const bdUrl = m.backdrop_url || m.poster_url;
@@ -3352,11 +3371,17 @@ function renderDetail(id, m) {
         ${ratingContextHTML(m)}
         ${m.plot ? `<p class="d-overview">${esc(m.plot)}</p>` : ""}
         <div id="d-actions"></div>
-        <div class="d-review" id="d-review">
-          <div class="d-review-h">${esc(t("my_review"))}</div>
-          <div class="d-stars" id="d-stars"></div>
+        <section class="d-review d-comment-editor" id="d-review">
+          <header class="d-comment-editor-head">
+            <h2>${esc(t("my_review"))}</h2>
+            <p>${esc(t("comment_editor_subtitle"))}</p>
+          </header>
+          <div class="d-comment-rating">
+            <span class="d-comment-rating-label">${esc(t("comment_rating_label"))}</span>
+            <div class="d-stars" id="d-stars" role="group" aria-label="${esc(t("comment_rating_label"))}"></div>
+          </div>
           <div id="d-comment-zone"></div>
-        </div>
+        </section>
         ${cast.length ? `<div class="d-cast"><div class="d-cast-h"><h2>${esc(t("cast_title"))}</h2></div>
           <div class="d-cast-rail">${cast.map(a => `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(a.name))}</span>${a.photo_url ? `<img loading="lazy" decoding="async" src="${posterSrc(a.photo_url)}" alt="" data-img-retry data-person-photo>` : ""}</div><div class="n">${esc(a.name)}</div></div>`).join("")}</div></div>` : ""}
         <section class="d-public-reviews" id="d-public-reviews" data-film-id="${id}">
@@ -3439,36 +3464,79 @@ function renderStars(id, m) {
   const el = document.getElementById("d-stars");
   if (!el) return;
   el.innerHTML = Array.from({ length: 10 }, (_, i) => i + 1)
-    .map(n => `<button data-n="${n}" class="${n === m.my_rating ? "on" : ""}">${n}</button>`).join("");
+    .map(n => `<button type="button" data-n="${n}" class="${n === m.my_rating ? "on" : ""}"
+      aria-label="${esc(`${n} ${lang === "ru" ? "из 10" : "out of 10"}`)}"
+      aria-pressed="${n === m.my_rating ? "true" : "false"}">${n}</button>`).join("");
   el.querySelectorAll("button").forEach(b => b.onclick = async () => {
-    tg.HapticFeedback?.impactOccurred("light");
+    const previousRating = m.my_rating;
     const n = +b.dataset.n;
-    if (n === m.my_rating) {
-      // Повторный тап по своей же звезде — снять оценку (статус «Смотрел» не трогаем).
-      await api(`/api/movie/${id}/rate`, { method: "DELETE" });
-      m.my_rating = null;
-    } else {
-      await api(`/api/movie/${id}/rate`, { method: "POST", body: JSON.stringify({ rating: n }) });
-      m.my_rating = n;
-      if (m.status !== "watched") m.status = "watched";  // сервер неявно отмечает «Смотрел» при оценке
+    tg?.HapticFeedback?.impactOccurred("light");
+    try {
+      if (n === m.my_rating) {
+        // Повторный тап по своей же звезде — снять оценку (статус «Смотрел» не трогаем).
+        await api(`/api/movie/${id}/rate`, { method: "DELETE" });
+        m.my_rating = null;
+      } else {
+        await api(`/api/movie/${id}/rate`, { method: "POST", body: JSON.stringify({ rating: n }) });
+        m.my_rating = n;
+        if (m.status !== "watched") m.status = "watched";  // сервер неявно отмечает «Смотрел» при оценке
+      }
+      renderStars(id, m);
+      renderActions(id, m);
+      refreshRatingContext(m);
+      syncCommentEditorState?.();
+      if (m.my_comment_status === "published") wireMovieReviews(id);
+    } catch (error) {
+      m.my_rating = previousRating;
+      renderStars(id, m);
+      syncCommentEditorState?.();
+      tg?.showAlert?.(String(error?.message || t("load_err")));
     }
-    renderStars(id, m);
-    renderActions(id, m);
-    refreshRatingContext(m);
-    if (m.my_comment_status === "published") wireMovieReviews(id);
   });
+}
+
+function commentDraftKey(filmId) {
+  const userId = Number(me?.id) || "anonymous";
+  return `addict-film:comment-draft:${userId}:${filmId}`;
+}
+
+function readCommentDraft(filmId) {
+  try { return sessionStorage.getItem(commentDraftKey(filmId)); }
+  catch (_) { return null; }
+}
+
+function writeCommentDraft(filmId, value) {
+  try {
+    const key = commentDraftKey(filmId);
+    if (value) sessionStorage.setItem(key, value);
+    else sessionStorage.removeItem(key);
+  } catch (_) { /* Storage can be unavailable in strict WebViews. */ }
+}
+
+function publicCommentIcon() {
+  return `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/>
+    <path d="M3.5 12h17M12 3c2.4 2.5 3.6 5.5 3.6 9S14.4 18.5 12 21M12 3C9.6 5.5 8.4 8.5 8.4 12S9.6 18.5 12 21"
+      stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+  </svg>`;
+}
+
+function commentMenuIcon() {
+  return `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/>
+  </svg>`;
 }
 
 function renderReviewEditor(id, m) {
   const zone = document.getElementById("d-comment-zone");
   if (!zone) return;
+  syncCommentEditorState = null;
   if (m.my_comment_status === "private_legacy" && m.my_comment && !m._legacyDismissed) {
     zone.innerHTML = `<div class="d-legacy-note"><strong>${esc(t("review_legacy_title"))}</strong>
       <p>${esc(m.my_comment)}</p><small>${esc(t("review_legacy_hint"))}</small>
       <div class="d-review-buttons">
-        <button class="primary" data-legacy-action="publish">${esc(t("review_legacy_publish"))}</button>
-        <button data-legacy-action="keep_private">${esc(t("review_legacy_keep"))}</button>
-        <button class="danger" data-legacy-action="delete">${esc(t("review_legacy_delete"))}</button>
+        <button type="button" class="primary" data-legacy-action="publish">${esc(t("review_legacy_publish"))}</button>
+        <button type="button" data-legacy-action="keep_private">${esc(t("review_legacy_keep"))}</button>
       </div></div>`;
     zone.querySelectorAll("[data-legacy-action]").forEach(button => button.onclick = async () => {
       button.disabled = true;
@@ -3478,39 +3546,74 @@ function renderReviewEditor(id, m) {
           method: "POST", body: JSON.stringify({ action }),
         });
         if (action === "publish") m.my_comment_status = "published";
-        else if (action === "delete") { m.my_comment = null; m.my_comment_status = "deleted"; }
         else m._legacyDismissed = true;
         renderReviewEditor(id, m);
-        if (action !== "keep_private") wireMovieReviews(id);
+        if (action === "publish") wireMovieReviews(id);
       } catch (error) {
-        tg?.showAlert?.(error.message);
+        tg?.showAlert?.(String(error?.message || t("load_err")));
         button.disabled = false;
       }
     });
     return;
   }
   const published = m.my_comment_status === "published";
-  zone.innerHTML = `<div class="d-review-editor">
-    <textarea class="d-comment-input" id="d-comment-input" rows="3" maxlength="500" placeholder="${esc(t("comment_ph"))}">${esc(published ? (m.my_comment || "") : "")}</textarea>
-    <div class="d-review-meta"><small>${esc(t("review_public_hint"))}</small><span id="d-review-count">0/500</span></div>
-    <div class="d-review-buttons">
-      <button class="primary" id="d-review-save">${esc(t(published ? "review_save" : "review_publish"))}</button>
-      ${published ? `<button class="danger" id="d-review-delete">${esc(t("review_delete"))}</button>` : ""}
+  const storedText = published ? String(m.my_comment || "") : "";
+  const storedDraft = readCommentDraft(id);
+  const initialText = (storedDraft !== null ? storedDraft : storedText).slice(0, 500);
+  zone.innerHTML = `<div class="d-comment-editor-body">
+    <label class="d-comment-field">
+      <span class="sr-only">${esc(t("comment_ph"))}</span>
+      <textarea class="d-comment-input" id="d-comment-input" rows="4" maxlength="500"
+        placeholder="${esc(t("comment_ph"))}">${esc(initialText)}</textarea>
+    </label>
+    <div class="d-comment-meta">
+      <span class="d-comment-public-hint">${publicCommentIcon()}<span>${esc(t("review_public_hint"))}</span></span>
+      <span class="d-comment-count" id="d-review-count">${initialText.length}/500</span>
     </div>
-    <div class="d-review-feedback" id="d-review-feedback" aria-live="polite"></div>
+    <div class="d-comment-actions">
+      <button type="button" class="d-comment-save" id="d-review-save" disabled>${esc(t(published ? "review_save" : "review_publish"))}</button>
+      <span class="d-comment-feedback" id="d-review-feedback" aria-live="polite"></span>
+    </div>
   </div>`;
-  const ta = document.getElementById("d-comment-input");
+  const textarea = document.getElementById("d-comment-input");
   const count = document.getElementById("d-review-count");
+  const saveButton = document.getElementById("d-review-save");
   const feedback = document.getElementById("d-review-feedback");
-  const updateCount = () => { count.textContent = `${ta.value.length}/500`; };
-  ta.addEventListener("input", updateCount); updateCount();
-  document.getElementById("d-review-save").onclick = async event => {
-    const text = ta.value.trim();
-    if (!m.my_rating || !text) {
+  if (!textarea || !count || !saveButton || !feedback) return;
+  let baseline = storedText.trim();
+  let saving = false;
+
+  const resize = () => {
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 190)}px`;
+  };
+
+  syncCommentEditorState = () => {
+    const value = textarea.value.slice(0, 500);
+    if (value !== textarea.value) textarea.value = value;
+    const normalized = value.trim();
+    const dirty = normalized !== baseline;
+    const valid = Boolean(m.my_rating) && Boolean(normalized);
+    count.textContent = `${value.length}/500`;
+    saveButton.disabled = saving || !dirty || !valid;
+    writeCommentDraft(id, dirty ? value : "");
+    resize();
+  };
+
+  textarea.addEventListener("input", () => {
+    feedback.textContent = "";
+    syncCommentEditorState();
+  });
+
+  saveButton.addEventListener("click", async () => {
+    const text = textarea.value.trim();
+    if (!m.my_rating || !text || saving) {
       feedback.textContent = t("review_required");
       return;
     }
-    event.currentTarget.disabled = true;
+    saving = true;
+    saveButton.disabled = true;
+    saveButton.textContent = t("review_saving");
     feedback.textContent = "";
     try {
       await api(`/api/movie/${id}/review`, {
@@ -3518,27 +3621,26 @@ function renderReviewEditor(id, m) {
       });
       m.my_comment = text;
       m.my_comment_status = "published";
+      baseline = text;
+      writeCommentDraft(id, "");
+      saveButton.textContent = t("review_save");
       feedback.textContent = t("review_saved");
-      renderReviewEditor(id, m);
       wireMovieReviews(id);
+      window.setTimeout(() => {
+        if (feedback.isConnected) feedback.textContent = "";
+      }, 1800);
     } catch (error) {
-      feedback.textContent = error.message;
-      event.currentTarget.disabled = false;
-    }
-  };
-  document.getElementById("d-review-delete")?.addEventListener("click", async event => {
-    event.currentTarget.disabled = true;
-    try {
-      await api(`/api/movie/${id}/review`, { method: "DELETE" });
-      m.my_comment = null;
-      m.my_comment_status = "deleted";
-      renderReviewEditor(id, m);
-      wireMovieReviews(id);
-    } catch (error) {
-      feedback.textContent = error.message;
-      event.currentTarget.disabled = false;
+      feedback.textContent = String(error?.message || t("load_err"));
+      tg?.HapticFeedback?.notificationOccurred("error");
+    } finally {
+      saving = false;
+      saveButton.textContent = t(m.my_comment_status === "published" ? "review_save" : "review_publish");
+      syncCommentEditorState();
     }
   });
+
+  resize();
+  syncCommentEditorState();
 }
 
 function reviewDate(value) {
@@ -3549,20 +3651,115 @@ function reviewDate(value) {
   catch (_) { return date.toLocaleDateString(); }
 }
 
-function reviewCardHTML(review, pinned = false) {
+function reviewCardHTML(review, { pinned = false, filmId } = {}) {
   const user = review.user || {};
   const name = user.name || (lang === "ru" ? "Пользователь" : "User");
   const avatar = user.photo_url
     ? `<img src="${esc(user.photo_url)}" alt="" loading="lazy" data-img-remove-on-error>`
     : "";
-  return `<article class="d-review-card${pinned ? " pinned" : ""}">
+  const ownMenu = review.is_me ? `<div class="d-comment-menu-wrap">
+    <button type="button" class="d-comment-menu-trigger" data-comment-menu-trigger
+      aria-label="${esc(t("review_menu"))}" aria-haspopup="menu" aria-expanded="false">${commentMenuIcon()}</button>
+    <div class="d-comment-menu" role="menu" hidden>
+      <button type="button" class="danger" role="menuitem" data-delete-own-comment
+        data-film-id="${esc(String(filmId))}" data-comment-id="${esc(String(review.id))}">
+        ${appIcon("trash")}<span>${esc(t("review_delete"))}</span>
+      </button>
+    </div>
+  </div>` : "";
+  return `<article class="d-review-card${pinned ? " pinned" : ""}${review.is_me ? " own" : ""}"
+      data-comment-card-id="${esc(String(review.id))}">
     ${pinned ? `<div class="d-review-pinned">${esc(t("reviews_partner"))}</div>` : ""}
+    ${ownMenu}
     <div class="d-review-author"><div class="d-review-avatar"><span>${esc(initials(name))}</span>${avatar}</div>
       <div><strong>${esc(name)}</strong><small>${esc(reviewDate(review.commented_at))}</small></div>
       <b>★ ${esc(review.rating ?? "—")}</b></div>
     <p>${esc(review.text || "")}</p>
-    ${!review.is_me ? `<button class="d-review-report" data-review-report="${review.id}">${esc(t("review_report"))}</button>` : ""}
+    ${!review.is_me ? `<button type="button" class="d-review-report" data-review-report="${esc(String(review.id))}">${esc(t("review_report"))}</button>` : ""}
   </article>`;
+}
+
+function closeOwnCommentMenus(except = null) {
+  screen.querySelectorAll(".d-comment-menu-wrap").forEach(wrapper => {
+    if (wrapper === except) return;
+    const trigger = wrapper.querySelector("[data-comment-menu-trigger]");
+    const menu = wrapper.querySelector(".d-comment-menu");
+    if (menu) menu.hidden = true;
+    trigger?.setAttribute("aria-expanded", "false");
+  });
+}
+
+function confirmCommentDelete(callback) {
+  if (tg?.showConfirm) {
+    tg.showConfirm(t("review_delete_confirm"), callback);
+    return;
+  }
+  callback(window.confirm(t("review_delete_confirm")));
+}
+
+function wireOwnCommentMenus(filmId) {
+  screen.querySelectorAll(".d-comment-menu-wrap").forEach(wrapper => {
+    if (wrapper.dataset.menuWired === "true") return;
+    wrapper.dataset.menuWired = "true";
+    const trigger = wrapper.querySelector("[data-comment-menu-trigger]");
+    const menu = wrapper.querySelector(".d-comment-menu");
+    const deleteButton = wrapper.querySelector("[data-delete-own-comment]");
+    let deletePending = false;
+
+    trigger?.addEventListener("click", event => {
+      event.stopPropagation();
+      const opening = Boolean(menu?.hidden);
+      closeOwnCommentMenus(opening ? wrapper : null);
+      if (menu) menu.hidden = !opening;
+      trigger.setAttribute("aria-expanded", opening ? "true" : "false");
+      if (opening) menu?.querySelector("button")?.focus();
+    });
+
+    deleteButton?.addEventListener("click", event => {
+      event.stopPropagation();
+      if (deletePending) return;
+      deletePending = true;
+      closeOwnCommentMenus();
+      confirmCommentDelete(async confirmed => {
+        if (!confirmed) {
+          deletePending = false;
+          trigger?.focus();
+          return;
+        }
+        deleteButton.disabled = true;
+        try {
+          await api(`/api/movie/${filmId}/review`, { method: "DELETE" });
+          if (_detailFilm) {
+            _detailFilm.my_comment = null;
+            _detailFilm.my_comment_status = "deleted";
+          }
+          writeCommentDraft(filmId, "");
+          if (_detailFilm) renderReviewEditor(filmId, _detailFilm);
+          await loadMovieReviews(filmId);
+          tg?.HapticFeedback?.notificationOccurred("success");
+        } catch (error) {
+          deletePending = false;
+          deleteButton.disabled = false;
+          tg?.showAlert?.(String(error?.message || t("load_err")));
+        }
+      });
+    });
+  });
+}
+
+function bindCommentMenuOutsideClose() {
+  if (commentMenuOutsideBound) return;
+  commentMenuOutsideBound = true;
+  document.addEventListener("click", event => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target?.closest(".d-comment-menu-wrap")) closeOwnCommentMenus();
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    const expanded = screen.querySelector('.d-comment-menu-trigger[aria-expanded="true"]');
+    closeOwnCommentMenus();
+    expanded?.focus();
+  });
 }
 
 async function loadMovieReviews(id, beforeId = null, append = false) {
@@ -3578,8 +3775,8 @@ async function loadMovieReviews(id, beforeId = null, append = false) {
     const data = await api(`/api/movie/${id}/reviews?${query}`);
     if (!document.getElementById("d-public-reviews") || String(host.dataset.filmId) !== String(id)) return;
     const cards = [
-      ...(!append && data.partner_review ? [reviewCardHTML(data.partner_review, true)] : []),
-      ...(data.items || []).map(item => reviewCardHTML(item)),
+      ...(!append && data.partner_review ? [reviewCardHTML(data.partner_review, { pinned: true, filmId: id })] : []),
+      ...(data.items || []).map(item => reviewCardHTML(item, { filmId: id })),
     ].join("");
     if (append) list.querySelector(".d-reviews-more")?.remove();
     else list.innerHTML = "";
@@ -3603,6 +3800,7 @@ async function loadMovieReviews(id, beforeId = null, append = false) {
         tg?.showAlert?.(error.message);
       }
     });
+    wireOwnCommentMenus(id);
   } catch (error) {
     if (!append) list.innerHTML = `<div class="d-reviews-state error">${esc(t("reviews_error"))}<small>${esc(error.message)}</small></div>`;
   }
@@ -4337,6 +4535,7 @@ function wireTabbarAutoHide() {
   window.addEventListener("scroll", onScroll, { passive: true });
   _tabbarScrollHandler = onScroll;
 }
+bindCommentMenuOutsideClose();
 // Вне Telegram (нет window.Telegram.WebApp) — не падаем, а объясняем.
 if (!tg) {
   screen.innerHTML = emptyState("💬", "Откройте в Telegram", "Это мини-приложение работает внутри Telegram");
