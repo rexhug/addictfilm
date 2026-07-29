@@ -448,6 +448,11 @@ async function api(path, opts = {}) {
 
 // ── Утилиты ───────────────────────────────────────────────────────────────────
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+function attrEsc(s) {
+  return esc(s)
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 function cap(s) { s = String(s || ""); return s ? s[0].toUpperCase() + s.slice(1) : s; }
 // В Telegram-шапке уже есть «Addict Film» — на самом экране не дублируем название,
 // а здороваемся по имени (реальные данные), иначе мягкий фолбэк на бренд.
@@ -3322,6 +3327,72 @@ async function showDetail(id, preview = null) {
   }
 }
 
+function normalizeDetailCast(movie) {
+  const canonical = (
+    featureEnabled("cast_v2")
+    && Array.isArray(movie?.cast)
+    && movie.cast.length
+  ) ? movie.cast : null;
+  let source = canonical;
+  if (!source) {
+    try { source = movie?.actors_photos ? JSON.parse(movie.actors_photos) : null; }
+    catch (_) { source = null; }
+  }
+  if (!Array.isArray(source) || !source.length) {
+    source = String(movie?.actors || "")
+      .split(",").map(name => name.trim()).filter(Boolean)
+      .map((name, index) => ({
+        name, billing_order: index, photo_url: null, fallback_photo_urls: [],
+      }));
+  }
+  const seen = new Set();
+  return source.map((entry, fallbackOrder) => {
+    const name = String(entry?.name || "").trim();
+    if (!name) return null;
+    const personId = String(entry?.person_id || "").trim();
+    const nameKey = name.toLocaleLowerCase().replace(/\s+/g, " ");
+    const identity = personId ? `kp:${personId}` : `name:${nameKey}`;
+    if (seen.has(identity)) return null;
+    seen.add(identity);
+    const order = Number(entry?.billing_order);
+    const photoUrl = String(entry?.photo_url || "").trim();
+    const fallbackPhotoUrls = Array.isArray(entry?.fallback_photo_urls)
+      ? entry.fallback_photo_urls
+        .map(value => String(value || "").trim()).filter(Boolean)
+      : [];
+    return {
+      personId: personId || null,
+      name,
+      originalName: String(entry?.original_name || "").trim() || null,
+      character: String(entry?.character || "").trim() || null,
+      billingOrder: Number.isFinite(order) ? order : fallbackOrder,
+      photoUrl: photoUrl || null,
+      fallbackPhotoUrls: [
+        ...new Set(fallbackPhotoUrls.filter(url => url !== photoUrl)),
+      ],
+    };
+  }).filter(Boolean)
+    .sort((left, right) => left.billingOrder - right.billingOrder)
+    .slice(0, 10);
+}
+
+function actorCardHTML(actor) {
+  const candidates = [actor.photoUrl, ...actor.fallbackPhotoUrls].filter(Boolean);
+  const primary = candidates[0] || "";
+  const fallbacks = candidates.slice(1);
+  return `
+    <div class="d-cast-item" data-person-id="${esc(actor.personId || "")}">
+      <div class="d-avatar">
+        <span class="fb">${esc(initials(actor.name))}</span>
+        ${primary ? `<img loading="lazy" decoding="async" alt="${esc(actor.name)}"
+          data-person-photo data-person-photo-src="${esc(primary)}"
+          data-person-photo-fallbacks="${attrEsc(JSON.stringify(fallbacks))}">` : ""}
+      </div>
+      <div class="n">${esc(actor.name)}</div>
+      ${actor.character ? `<div class="role">${esc(actor.character)}</div>` : ""}
+    </div>`;
+}
+
 function renderDetail(id, m) {
   // Запоминаем фильм и его исходное состояние — при возврате точечно обновим карточку,
   // если оценка/статус изменились.
@@ -3331,14 +3402,7 @@ function renderDetail(id, m) {
   const genres = (m.genres || "").split(",").map(g => g.trim()).filter(Boolean).join(" · ");
   const metaParts = [m.year, m.age_rating, m.runtime].filter(Boolean);
   const bdUrl = m.backdrop_url || m.poster_url;
-  // actors_photos — те же имена, что в actors, но с фото (только с kinopoisk-пути,
-  // см. search.py). Нет фото у конкретного источника/актёра — падаем на инициалы.
-  let cast;
-  try { cast = m.actors_photos ? JSON.parse(m.actors_photos) : null; } catch (e) { cast = null; }
-  if (!cast || !cast.length) {
-    cast = (m.actors || "").split(",").map(a => a.trim()).filter(Boolean).map(name => ({ name, photo_url: null }));
-  }
-  cast = cast.slice(0, 10);
+  const cast = normalizeDetailCast(m);
 
   screen.innerHTML = `
     <div class="detail-v2">
@@ -3383,7 +3447,7 @@ function renderDetail(id, m) {
           <div id="d-comment-zone"></div>
         </section>
         ${cast.length ? `<div class="d-cast"><div class="d-cast-h"><h2>${esc(t("cast_title"))}</h2></div>
-          <div class="d-cast-rail">${cast.map(a => `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(a.name))}</span>${a.photo_url ? `<img loading="lazy" decoding="async" src="${posterSrc(a.photo_url)}" alt="" data-img-retry data-person-photo>` : ""}</div><div class="n">${esc(a.name)}</div></div>`).join("")}</div></div>` : ""}
+          <div class="d-cast-rail">${cast.map(actorCardHTML).join("")}</div></div>` : ""}
         <section class="d-public-reviews" id="d-public-reviews" data-film-id="${id}">
           <div class="d-public-reviews-head"><h2>${esc(t("reviews_title"))}</h2></div>
           <div id="d-reviews-list" class="d-reviews-list"><div class="d-reviews-state">${esc(t("reviews_loading"))}</div></div>
@@ -4332,7 +4396,7 @@ function genreStatsCard(items, expanded) {
 function personStatCard(item, index, type) {
   const [name, count, photoUrl, ...photoFallbacks] = item;
   const favorite = index === 0;
-  const photo = photoUrl ? `<img loading="lazy" decoding="async" alt="${esc(name)}" data-person-photo data-person-photo-src="${esc(photoUrl)}" data-person-photo-fallbacks="${esc(JSON.stringify(photoFallbacks.filter(Boolean)))}">` : "";
+  const photo = photoUrl ? `<img loading="lazy" decoding="async" alt="${esc(name)}" data-person-photo data-person-photo-src="${esc(photoUrl)}" data-person-photo-fallbacks="${attrEsc(JSON.stringify(photoFallbacks.filter(Boolean)))}">` : "";
   const favoriteLabel = type === "actors" ? t("stats_favorite_actor") : t("stats_favorite_director");
   return `<button class="person-stat-card${favorite ? " is-favorite" : ""}" type="button" data-stats-person-name="${esc(name)}" data-stats-person-role="${type === "actors" ? "actor" : "director"}" aria-label="${esc(t("stats_person_open", name))}">
     <span class="person-stat-rank" aria-label="${index + 1}">${index + 1}</span>
