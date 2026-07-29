@@ -815,10 +815,26 @@ test("returning from a film keeps list scroll and loaded cards intact", async ({
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(savedY);
 });
 
-test("public comments keep drafts, own-menu deletion, pagination and reporting safe", async ({ page }) => {
+test("movie detail rating, list actions and public comments stay focused and safe", async ({ page }) => {
   const requests = [];
+  const actionRequests = [];
   let publishedText = null;
   let failNextPut = false;
+  const movieDetail = {
+    id: 1,
+    title: "The Last of Us",
+    title_original: "The Last of Us",
+    year: "2023",
+    poster_url: null,
+    genres: "Drama",
+    actors: "Pedro Pascal, Bella Ramsey",
+    status: "watched",
+    my_rating: 8,
+    my_comment: null,
+    my_comment_status: null,
+    partner: { id: 2, name: "Kristina", rating: 9 },
+    community: { avg: 8.7, count: 38 },
+  };
   const item = (id, name, rating, text, extra = {}) => ({
     id,
     user: { id: id + 10, name, photo_url: null },
@@ -829,22 +845,21 @@ test("public comments keep drafts, own-menu deletion, pagination and reporting s
     is_partner: false,
     ...extra,
   });
+  page.on("request", request => {
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/movie/1/rate" || path === "/api/movie/1/status") {
+      actionRequests.push({ method: request.method(), path });
+      if (path === "/api/movie/1/rate") {
+        movieDetail.my_rating = request.method() === "DELETE"
+          ? null
+          : JSON.parse(request.postData() || "{}").rating;
+      } else {
+        movieDetail.status = JSON.parse(request.postData() || "{}").status;
+      }
+    }
+  });
   await openStats(page, true, {
-    movieDetail: {
-      id: 1,
-      title: "The Last of Us",
-      title_original: "The Last of Us",
-      year: "2023",
-      poster_url: null,
-      genres: "Drama",
-      actors: "Pedro Pascal, Bella Ramsey",
-      status: "watched",
-      my_rating: 8,
-      my_comment: null,
-      my_comment_status: null,
-      partner: { id: 2, name: "Kristina", rating: 9 },
-      community: { avg: 8.7, count: 38 },
-    },
+    movieDetail,
     reviewApi: ({ method, path, searchParams, body }) => {
       requests.push({
         method,
@@ -859,10 +874,15 @@ test("public comments keep drafts, own-menu deletion, pagination and reporting s
           return { status: 500, body: { detail: "save failed" } };
         }
         publishedText = body.text;
+        movieDetail.my_rating = body.rating;
+        movieDetail.my_comment = body.text;
+        movieDetail.my_comment_status = "published";
         return { id: 101, rating: body.rating, text: body.text };
       }
       if (method === "DELETE") {
         publishedText = null;
+        movieDetail.my_comment = null;
+        movieDetail.my_comment_status = "deleted";
         return { ok: true };
       }
       if (method === "POST") return { ok: true };
@@ -905,6 +925,56 @@ test("public comments keep drafts, own-menu deletion, pagination and reporting s
   await expect(page.locator("#d-public-reviews").getByText(/отзыв/i)).toHaveCount(0);
   await expect(page.locator("#d-review").getByRole("button", { name: /Удалить/i })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Опубликовать" })).toBeDisabled();
+  await expect(page.locator(".d-rating-option")).toHaveCount(10);
+
+  for (const viewport of [
+    { width: 320, height: 568 },
+    { width: 390, height: 844 },
+    { width: 430, height: 932 },
+  ]) {
+    await page.setViewportSize(viewport);
+    const ratingLayout = await page.locator(".d-rating-option").evaluateAll(buttons => ({
+      rows: new Set(buttons.map(button => Math.round(button.getBoundingClientRect().top))).size,
+      heights: buttons.map(button => button.getBoundingClientRect().height),
+      radii: buttons.map(button => Number.parseFloat(getComputedStyle(button).borderRadius)),
+    }));
+    expect(ratingLayout.rows).toBe(1);
+    expect(Math.min(...ratingLayout.heights)).toBeGreaterThanOrEqual(44);
+    expect(Math.max(...ratingLayout.radii)).toBeLessThanOrEqual(11);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+
+    const actionsLayout = await page.locator(".d-list-action").evaluateAll(buttons => buttons.map(button => {
+      const box = button.getBoundingClientRect();
+      return { width: box.width, top: box.top };
+    }));
+    expect(actionsLayout).toHaveLength(2);
+    expect(Math.abs(actionsLayout[0].width - actionsLayout[1].width)).toBeLessThan(1);
+    expect(actionsLayout[0].top).toBe(actionsLayout[1].top);
+    expect(actionsLayout[0].top).toBeLessThan(await page.locator("#d-review").evaluate(node => node.getBoundingClientRect().top));
+  }
+
+  const textareaSizing = await page.locator("#d-comment-input").evaluate(textarea => ({
+    maxHeight: Number.parseFloat(getComputedStyle(textarea).maxHeight),
+    height: textarea.getBoundingClientRect().height,
+  }));
+  expect(textareaSizing.maxHeight).toBe(138);
+  expect(textareaSizing.height).toBeLessThanOrEqual(138);
+
+  await page.locator('.d-rating-option[data-n="8"]').click();
+  await expect(page.locator('.d-rating-option[data-n="8"]')).toHaveAttribute("aria-pressed", "false");
+  await page.locator('.d-rating-option[data-n="7"]').click();
+  await expect(page.locator('.d-rating-option[data-n="7"]')).toHaveAttribute("aria-pressed", "true");
+  expect(actionRequests).toEqual(expect.arrayContaining([
+    { method: "DELETE", path: "/api/movie/1/rate" },
+    { method: "POST", path: "/api/movie/1/rate" },
+  ]));
+
+  await page.locator("#d-to-want").click();
+  await expect(page.getByRole("button", { name: "Отметить как просмотрено" })).toBeVisible();
+  await page.getByRole("button", { name: "Отметить как просмотрено" }).click();
+  await expect(page.locator(".d-list-action")).toHaveCount(2);
+  expect(actionRequests.filter(request => request.path === "/api/movie/1/status")).toHaveLength(2);
+
   const sectionOrder = await page.evaluate(() => [
     document.querySelector(".d-rating-context"),
     document.querySelector(".d-review"),
@@ -934,12 +1004,13 @@ test("public comments keep drafts, own-menu deletion, pagination and reporting s
   await page.locator("#d-comment-input").blur();
   expect(requests.filter(request => request.method === "PUT")).toHaveLength(0);
 
-  // The session draft survives leaving and reopening this movie detail.
+  // Unsaved text is intentionally scoped to the current editor session.
   await page.locator("#d-back-top").click();
   await expect(page.locator('.pair-favorite-card[data-film-id="1"]')).toBeVisible();
   await page.locator('.pair-favorite-card[data-film-id="1"]').click();
-  await expect(page.locator("#d-comment-input")).toHaveValue("abc");
+  await expect(page.locator("#d-comment-input")).toHaveValue("");
 
+  await page.locator("#d-comment-input").fill("abc");
   failNextPut = true;
   await page.getByRole("button", { name: "Опубликовать" }).click();
   await expect(page.locator("#d-comment-input")).toHaveValue("abc");
@@ -950,7 +1021,11 @@ test("public comments keep drafts, own-menu deletion, pagination and reporting s
   await expect.poll(() => publishedText).toBe("Мой публичный комментарий");
   await expect(page.getByRole("button", { name: "Сохранить" })).toBeDisabled();
   await expect(page.locator("#d-reviews-list").getByText("Мой публичный комментарий", { exact: true })).toBeVisible();
-  expect(await page.evaluate(() => sessionStorage.getItem("addict-film:comment-draft:1:1"))).toBeNull();
+
+  await page.locator("#d-back-top").click();
+  await expect(page.locator('.pair-favorite-card[data-film-id="1"]')).toBeVisible();
+  await page.locator('.pair-favorite-card[data-film-id="1"]').click();
+  await expect(page.locator("#d-comment-input")).toHaveValue("Мой публичный комментарий");
 
   const ownCard = page.locator('.d-review-card[data-comment-card-id="101"]');
   const menuTrigger = ownCard.getByRole("button", { name: "Действия с комментарием" });
@@ -981,24 +1056,15 @@ test("public comments keep drafts, own-menu deletion, pagination and reporting s
   await expect(ownCard).toHaveCount(0);
   await expect(page.locator("#d-comment-input")).toHaveValue("");
   await expect(page.getByRole("button", { name: "Опубликовать" })).toBeDisabled();
-  await expect(page.locator('.d-stars button[data-n="8"]')).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('.d-rating-option[data-n="7"]')).toHaveAttribute("aria-pressed", "true");
   expect(await page.evaluate(() => window.__confirmMessages.at(-1))).toBe("Удалить комментарий? Это действие нельзя отменить.");
 
   await page.getByRole("button", { name: "Пожаловаться" }).first().click();
   await expect(page.getByText("Жалоба отправлена", { exact: true })).toBeVisible();
   expect(requests.some(request => request.path.endsWith("/report"))).toBeTruthy();
 
-  for (const viewport of [
-    { width: 430, height: 932 },
-    { width: 390, height: 844 },
-    { width: 320, height: 568 },
-  ]) {
-    await page.setViewportSize(viewport);
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
-  }
-  const starRows = await page.locator(".d-stars button").evaluateAll(buttons =>
-    new Set(buttons.map(button => Math.round(button.getBoundingClientRect().top))).size);
-  expect(starRows).toBe(2);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 });
 
 // ── Крупные (featured) подборки ─────────────────────────────────────────────

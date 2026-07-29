@@ -3461,56 +3461,49 @@ function refreshRatingContext(m) {
 }
 
 function renderStars(id, m) {
-  const el = document.getElementById("d-stars");
-  if (!el) return;
-  el.innerHTML = Array.from({ length: 10 }, (_, i) => i + 1)
-    .map(n => `<button type="button" data-n="${n}" class="${n === m.my_rating ? "on" : ""}"
-      aria-label="${esc(`${n} ${lang === "ru" ? "из 10" : "out of 10"}`)}"
-      aria-pressed="${n === m.my_rating ? "true" : "false"}">${n}</button>`).join("");
-  el.querySelectorAll("button").forEach(b => b.onclick = async () => {
-    const previousRating = m.my_rating;
-    const n = +b.dataset.n;
-    tg?.HapticFeedback?.impactOccurred("light");
-    try {
-      if (n === m.my_rating) {
-        // Повторный тап по своей же звезде — снять оценку (статус «Смотрел» не трогаем).
-        await api(`/api/movie/${id}/rate`, { method: "DELETE" });
-        m.my_rating = null;
-      } else {
-        await api(`/api/movie/${id}/rate`, { method: "POST", body: JSON.stringify({ rating: n }) });
-        m.my_rating = n;
-        if (m.status !== "watched") m.status = "watched";  // сервер неявно отмечает «Смотрел» при оценке
+  const root = document.getElementById("d-stars");
+  if (!root) return;
+
+  root.innerHTML = Array.from({ length: 10 }, (_, index) => index + 1)
+    .map(number => {
+      const selected = Number(m.my_rating) === number;
+      return `<button type="button"
+          class="d-rating-option${selected ? " on" : ""}"
+          data-n="${number}"
+          aria-label="${esc(`${number} ${lang === "ru" ? "из 10" : "out of 10"}`)}"
+          aria-pressed="${selected ? "true" : "false"}">${number}</button>`;
+    }).join("");
+
+  root.querySelectorAll(".d-rating-option").forEach(button => {
+    button.addEventListener("click", async () => {
+      const previousRating = m.my_rating;
+      const number = Number(button.dataset.n);
+      tg?.HapticFeedback?.impactOccurred("light");
+      try {
+        if (number === Number(m.my_rating)) {
+          await api(`/api/movie/${id}/rate`, { method: "DELETE" });
+          m.my_rating = null;
+        } else {
+          await api(`/api/movie/${id}/rate`, {
+            method: "POST",
+            body: JSON.stringify({ rating: number }),
+          });
+          m.my_rating = number;
+          if (m.status !== "watched") m.status = "watched";
+        }
+        renderStars(id, m);
+        renderActions(id, m);
+        refreshRatingContext(m);
+        syncCommentEditorState?.();
+        if (m.my_comment_status === "published") wireMovieReviews(id);
+      } catch (error) {
+        m.my_rating = previousRating;
+        renderStars(id, m);
+        syncCommentEditorState?.();
+        tg?.showAlert?.(String(error?.message || t("load_err")));
       }
-      renderStars(id, m);
-      renderActions(id, m);
-      refreshRatingContext(m);
-      syncCommentEditorState?.();
-      if (m.my_comment_status === "published") wireMovieReviews(id);
-    } catch (error) {
-      m.my_rating = previousRating;
-      renderStars(id, m);
-      syncCommentEditorState?.();
-      tg?.showAlert?.(String(error?.message || t("load_err")));
-    }
+    });
   });
-}
-
-function commentDraftKey(filmId) {
-  const userId = Number(me?.id) || "anonymous";
-  return `addict-film:comment-draft:${userId}:${filmId}`;
-}
-
-function readCommentDraft(filmId) {
-  try { return sessionStorage.getItem(commentDraftKey(filmId)); }
-  catch (_) { return null; }
-}
-
-function writeCommentDraft(filmId, value) {
-  try {
-    const key = commentDraftKey(filmId);
-    if (value) sessionStorage.setItem(key, value);
-    else sessionStorage.removeItem(key);
-  } catch (_) { /* Storage can be unavailable in strict WebViews. */ }
 }
 
 function publicCommentIcon() {
@@ -3558,12 +3551,11 @@ function renderReviewEditor(id, m) {
   }
   const published = m.my_comment_status === "published";
   const storedText = published ? String(m.my_comment || "") : "";
-  const storedDraft = readCommentDraft(id);
-  const initialText = (storedDraft !== null ? storedDraft : storedText).slice(0, 500);
+  const initialText = storedText.slice(0, 500);
   zone.innerHTML = `<div class="d-comment-editor-body">
     <label class="d-comment-field">
       <span class="sr-only">${esc(t("comment_ph"))}</span>
-      <textarea class="d-comment-input" id="d-comment-input" rows="4" maxlength="500"
+      <textarea class="d-comment-input" id="d-comment-input" rows="3" maxlength="500"
         placeholder="${esc(t("comment_ph"))}">${esc(initialText)}</textarea>
     </label>
     <div class="d-comment-meta">
@@ -3585,7 +3577,7 @@ function renderReviewEditor(id, m) {
 
   const resize = () => {
     textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 190)}px`;
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 138)}px`;
   };
 
   syncCommentEditorState = () => {
@@ -3596,7 +3588,6 @@ function renderReviewEditor(id, m) {
     const valid = Boolean(m.my_rating) && Boolean(normalized);
     count.textContent = `${value.length}/500`;
     saveButton.disabled = saving || !dirty || !valid;
-    writeCommentDraft(id, dirty ? value : "");
     resize();
   };
 
@@ -3622,7 +3613,6 @@ function renderReviewEditor(id, m) {
       m.my_comment = text;
       m.my_comment_status = "published";
       baseline = text;
-      writeCommentDraft(id, "");
       saveButton.textContent = t("review_save");
       feedback.textContent = t("review_saved");
       wireMovieReviews(id);
@@ -3733,7 +3723,6 @@ function wireOwnCommentMenus(filmId) {
             _detailFilm.my_comment = null;
             _detailFilm.my_comment_status = "deleted";
           }
-          writeCommentDraft(filmId, "");
           if (_detailFilm) renderReviewEditor(filmId, _detailFilm);
           await loadMovieReviews(filmId);
           tg?.HapticFeedback?.notificationOccurred("success");
@@ -3823,9 +3812,10 @@ function renderActions(id, m) {
     el.innerHTML = `<div class="d-actions"><button class="d-cta primary" id="d-primary">${esc(t("act_watched"))}</button></div>
       <div class="d-status-links"><button class="danger" id="d-remove">${esc(t("act_remove"))}</button></div>`;
   } else {
-    // status === "watched": ни одной filled-кнопки — звёздный рейтинг ниже становится
-    // единственным акцентным элементом (первичное взаимодействие сместилось на оценку).
-    el.innerHTML = `<div class="d-status-links"><button id="d-to-want">${esc(t("act_to_want"))}</button><button class="danger" id="d-remove">${esc(t("act_remove"))}</button></div>`;
+    el.innerHTML = `<div class="d-list-actions">
+      <button type="button" class="d-list-action want" id="d-to-want">${esc(t("act_to_want"))}</button>
+      <button type="button" class="d-list-action remove" id="d-remove">${esc(t("act_remove"))}</button>
+    </div>`;
   }
   const setStatus = async (status) => {
     tg.HapticFeedback?.impactOccurred("light");
