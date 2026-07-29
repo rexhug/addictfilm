@@ -56,6 +56,9 @@ const _READ_CACHE_TTL = 30_000;
 let _notificationUnread = 0;
 let _notificationRefreshBound = false;
 let _notificationPollTimer = null;
+let _notificationRefreshGeneration = 0;
+let _notificationAppliedGeneration = 0;
+let _viewGeneration = 0;
 
 function cacheableRead(path, opts) {
   const method = (opts.method || "GET").toUpperCase();
@@ -759,6 +762,9 @@ const CHIP_ICONS = { pop: appIcon("flame"), top: appIcon("trophy"), gen: appIcon
 const PICK_ICONS = { shuffle: appIcon("shuffle"), sliders: appIcon("sliders"),
   heart: appIcon("heart"), check: appIcon("checkCircle") };
 async function showHome() {
+  // Invalidate slower async screens (notably Statistics) when a user quickly
+  // switches tabs before their requests have finished.
+  ++_viewGeneration;
   unwireDetailScroll();
   window.scrollTo(0, 0);
   const seeAll = (id) => `<button class="see-all" id="${id}">${esc(t("see_all"))}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>`;
@@ -819,8 +825,17 @@ async function showHome() {
 }
 
 async function refreshNotificationBadge() {
+  // Home navigation, Telegram activation and the visibility listener may refresh
+  // at the same time. Order the responses so a slower stale response cannot
+  // remove a dot that a newer completed response just added.
+  const generation = ++_notificationRefreshGeneration;
   try {
     const { unread_count } = await api("/api/notifications?limit=1");
+    // Do not let a late stale response overwrite a response that was already
+    // applied, but also do not block a valid response merely because a newer
+    // request is still in flight (or has failed).
+    if (generation < _notificationAppliedGeneration) return;
+    _notificationAppliedGeneration = generation;
     _notificationUnread = Number(unread_count) || 0;
     const bell = document.getElementById("bell-btn");
     if (bell) {
@@ -839,7 +854,9 @@ function bindNotificationRefresh() {
     if (document.visibilityState === "visible") refreshNotificationBadge();
   };
   document.addEventListener("visibilitychange", refreshWhenVisible);
-  try { tg?.onEvent?.("activated", refreshWhenVisible); } catch (_) {}
+  // Telegram's `activated` event can arrive before WebKit updates
+  // document.visibilityState, so it must not be gated by the browser state.
+  try { tg?.onEvent?.("activated", refreshNotificationBadge); } catch (_) {}
   if (_notificationPollTimer === null) {
     _notificationPollTimer = window.setInterval(refreshWhenVisible, 30_000);
   }
@@ -3415,6 +3432,7 @@ function showSearch(mode = null) {
 
 // ── Статистика: личный вкус и совместная история — отдельные режимы ───────────
 async function showStats(initialMode = "me") {
+  const viewGeneration = ++_viewGeneration;
   unwireDetailScroll();
   window.scrollTo(0, 0);
   screen.innerHTML = `<div class="page-head"><h1>${esc(t("stats_title"))}</h1><button class="page-head-action" data-stats-settings type="button" aria-label="${esc(t("settings_title"))}">${settingsSvg()}</button></div><div id="stats"><div class="empty"><div class="empty-sub">${esc(t("calc"))}</div></div></div>`;
@@ -3423,14 +3441,17 @@ async function showStats(initialMode = "me") {
   // 1. Пара — приоритетно, первым блоком.
   let partner = { status: "none" }, pstats = null;
   try { partner = await api("/api/partner"); } catch (e) {}
+  if (viewGeneration !== _viewGeneration) return;
   let pairStatsFailed = false;
   if (partner.status === "paired") {
     try { pstats = await api("/api/partner/stats"); }
     catch (e) { pairStatsFailed = true; }
+    if (viewGeneration !== _viewGeneration) return;
   }
 
   // 2. Личная статистика за всё время.
   const s = await api("/api/stats");
+  if (viewGeneration !== _viewGeneration) return;
   // Only genres use a compact/expanded state. People cards always stay in one
   // horizontal rail, so the whole list is reachable with a normal swipe.
   const expanded = { genres: false };
@@ -3964,12 +3985,20 @@ function backBtn() { return `<button class="back" aria-label="${esc(t("back"))}"
 function wireBack(fn) { const b = screen.querySelector(".back"); if (b) b.onclick = fn; }
 function setActiveTab(tab) {
   document.querySelectorAll("#tabbar .tab").forEach(b => {
-    const active = b.dataset.tab === t;
+    const active = b.dataset.tab === tab;
     b.classList.toggle("active", active);
     b.setAttribute("aria-current", active ? "page" : "false");
   });
 }
-function route(tab) { resetNavStack(); if (tab === "home") showHome(); else if (tab === "stats") showStats(); else if (tab === "pick") showPicker(); else showList(tab); }
+function route(tab) {
+  // Every tab switch invalidates unfinished async work from the previous tab.
+  ++_viewGeneration;
+  resetNavStack();
+  if (tab === "home") showHome();
+  else if (tab === "stats") showStats();
+  else if (tab === "pick") showPicker();
+  else showList(tab);
+}
 function wireTabbarAutoHide() {
   if (_tabbarScrollHandler) window.removeEventListener("scroll", _tabbarScrollHandler);
   let lastY = window.scrollY;
@@ -4002,9 +4031,6 @@ if (!tg) {
   screen.innerHTML = emptyState("💬", "Откройте в Telegram", "Это мини-приложение работает внутри Telegram");
 } else {
   const activateTab = btn => {
-    if (btn.dataset.navBusy === "1") return;
-    btn.dataset.navBusy = "1";  // pointerup + click are both delivered on iOS
-    window.setTimeout(() => { delete btn.dataset.navBusy; }, 250);
     const tab = btn.dataset.tab;
     if (!tab) return;
     tg.HapticFeedback?.impactOccurred("light");
@@ -4015,10 +4041,20 @@ if (!tg) {
     btn.addEventListener("pointerup", event => {
       if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
       event.preventDefault();
+      // iOS dispatches a synthetic click after pointerup. Suppress exactly that
+      // click, rather than blocking this tab for 250 ms: a user may legitimately
+      // switch away and immediately return.
+      btn.dataset.suppressNextClick = "1";
       activateTab(btn);
     });
     // Keyboard, desktop and WebViews without Pointer Events still work through click.
-    btn.addEventListener("click", () => activateTab(btn));
+    btn.addEventListener("click", () => {
+      if (btn.dataset.suppressNextClick === "1") {
+        delete btn.dataset.suppressNextClick;
+        return;
+      }
+      activateTab(btn);
+    });
   });
   wireTabbarAutoHide();
   applyTabLabels();
