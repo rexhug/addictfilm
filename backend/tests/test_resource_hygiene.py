@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -171,7 +172,7 @@ class ContentSecurityPolicyTests(unittest.TestCase):
         self.assertIn("img-src 'self' data:", main._HTML_CSP)
         self.assertNotIn("img-src 'self' https:", main._HTML_CSP)
 
-    def test_the_frontend_really_needs_no_external_image_host(self):
+    def test_no_literal_external_image_url_is_rendered(self):
         root = Path(__file__).resolve().parents[2] / "frontend"
         sources = "\n".join((root / name).read_text()
                             for name in ("app.js", "style.css", "index.html"))
@@ -181,6 +182,25 @@ class ContentSecurityPolicyTests(unittest.TestCase):
             self.assertNotRegex(
                 line, r'(src|background-image)\s*[=:]\s*["\']?https://',
                 "картинка грузится мимо /img — CSP её заблокирует")
+
+    def test_every_dynamic_image_source_goes_through_the_proxy(self):
+        """Первая версия этой проверки смотрела только на литеральные ссылки и
+        пропустила `src="${esc(user.photo_url)}"` — аватар Telegram, который
+        новый CSP молча заблокировал бы во всей ленте отзывов. Подставляемое
+        выражение и есть самый частый способ протащить внешний хост.
+        """
+        app = (Path(__file__).resolve().parents[2] / "frontend" / "app.js").read_text()
+        # Выражения, которые уже проксированы или заведомо локальны: `src` —
+        # локальная переменная singlePickMediaHTML, полученная из singlePickSrc.
+        proxied = ("posterSrc(", "singlePickSrc(", "_heroSource.src")
+        local = {"src"}
+        offenders = []
+        for match in re.finditer(r'<img[^>]*?\ssrc="\$\{([^}]*)\}"', app):
+            expression = match.group(1).strip()
+            if expression in local or any(token in expression for token in proxied):
+                continue
+            offenders.append(expression)
+        self.assertEqual(offenders, [], "источник картинки не проходит через /img")
 
 
 if __name__ == "__main__":

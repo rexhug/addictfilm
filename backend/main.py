@@ -2080,6 +2080,10 @@ _ALLOWED_IMG_HOSTS = {
     "commons.wikimedia.org", "upload.wikimedia.org",
     # Единственный CDN Fanart.tv: горизонтальные кадры для экрана подбора.
     fanart.IMAGE_HOST,
+    # Аватары Telegram в публичных отзывах и профиле. Через прокси, а не прямой
+    # ссылкой: иначе CSP пришлось бы открывать весь https, а IP каждого читателя
+    # уходил бы в Telegram на каждый показ ленты отзывов.
+    "t.me",
 }
 _ALLOWED_IMG_TYPES = {"image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"}
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
