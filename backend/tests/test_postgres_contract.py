@@ -105,6 +105,27 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["attempts"], 1)
         self.assertIsNotNone(row["sent_at"])
 
+    async def test_pair_rating_notification_contract_matches_sqlite(self):
+        import pair_activity_notifications as activity
+
+        await self._add_users(1, 2)
+        film_id = await db.get_or_create_film("tt9900002", "Postgres pair movie")
+        token = await db.create_invite(1)
+        self.assertTrue((await db.accept_invite(token, 2))["ok"])
+        result = await db.set_rating(1, film_id, 9)
+
+        created = await activity.notify_partner_film_rated(
+            actor_id=1,
+            film_id=film_id,
+            rating=9,
+            first_rating=result.first_rating,
+        )
+
+        self.assertTrue(created)
+        inbox = await db.list_notifications(2)
+        self.assertEqual(inbox["items"][0]["event_type"], activity.PAIR_FILM_RATED)
+        self.assertEqual(inbox["items"][0]["deep_link"], f"movie:{film_id}")
+
 
     async def test_two_workers_never_claim_the_same_enrichment_job(self):
         """SKIP LOCKED — единственное, что мешает двум воркерам взять одно задание.

@@ -7,6 +7,7 @@ community-рейтинг = средняя оценка всех пользова
 Запуск:  uvicorn main:app --port 8077   (из папки backend/)
 """
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -17,7 +18,7 @@ import re
 import secrets
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 from urllib.parse import urljoin, urlparse
 
@@ -28,6 +29,7 @@ import fanart
 import hero_media
 import kinopoisk
 import omdb
+import pair_activity_notifications
 import pair_notifications
 import posters
 import ratelimit
@@ -49,7 +51,7 @@ from config import (
     SENTRY_TRACES_SAMPLE_RATE,
 )
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from observability import RequestMetrics, observe_request
 from pydantic import BaseModel, Field
@@ -456,9 +458,25 @@ class RateBody(BaseModel):
 async def rate(film_id: int, body: RateBody, user: dict = Depends(current_user)):
     if not await db.get_film(film_id):
         raise HTTPException(status_code=404, detail="Фильм не найден")
-    await db.set_rating(user["id"], film_id, body.rating)  # урок: тап по оценке = «просмотрено»
+    result = await db.set_rating(
+        user["id"], film_id, body.rating,
+    )  # урок: тап по оценке = «просмотрено»
     await db.sync_film_to_partner(user["id"], film_id)  # пара: партнёру фильм в «Хочу»
     await _invalidate_stats_for(user["id"])
+    try:
+        await pair_activity_notifications.notify_partner_film_rated(
+            actor_id=user["id"],
+            film_id=film_id,
+            rating=body.rating,
+            first_rating=result.first_rating,
+        )
+    except Exception:
+        # The rating is the primary product action. Inbox materialization uses
+        # only local database work and must never turn a saved score into 5xx.
+        logger.warning(
+            "Partner rating notification failed: actor=%s film=%s",
+            user["id"], film_id, exc_info=True,
+        )
     logger.info("Rating saved: film=%s user=%s rating=%s", film_id, user["id"], body.rating)
     return {"ok": True}
 
@@ -727,8 +745,116 @@ async def wishlist_random(user: dict = Depends(current_user)):
     # Режим изображения выбирает СЕРВЕР. Фронтенд не должен гадать по
     # backdrop_url, годится тот кадр или нет: ровно эта догадка и давала
     # растянутый вертикальный постер на всю ширину экрана.
-    return {"item": hero_media.public_media_row(item),
-            "cycle": await db.wishlist_roulette_state(user["id"])}
+    prepared = await db.prepare_random_wishlist_film(user["id"])
+    return {
+        "item": hero_media.public_media_row(item),
+        "cycle": await db.wishlist_roulette_state(user["id"]),
+        "next": _wishlist_prepared_envelope(user["id"], prepared),
+    }
+
+
+_WISHLIST_PREPARE_TOKEN_VERSION = 1
+_WISHLIST_PREPARE_TOKEN_TTL = timedelta(minutes=5)
+
+
+class WishlistPreparedConsumeBody(BaseModel):
+    token: str = Field(min_length=32, max_length=1024)
+
+
+def _urlsafe_b64encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _urlsafe_b64decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _wishlist_prepare_signing_key() -> bytes:
+    # BOT_TOKEN is already required to authenticate every public API request
+    # and is stable across deploys.  Domain separation prevents these tokens
+    # from being usable as any other HMAC in the application.
+    secret = BOT_TOKEN or ADMIN_TOKEN
+    if not secret:
+        raise HTTPException(status_code=503, detail="Підготовка фільму тимчасово недоступна")
+    return hashlib.sha256(f"wishlist-prepare-v1:{secret}".encode()).digest()
+
+
+def _sign_wishlist_prepared(user_id: int, film_id: int, cycle_number: int) -> str:
+    payload = {
+        "v": _WISHLIST_PREPARE_TOKEN_VERSION,
+        "u": int(user_id),
+        "f": int(film_id),
+        "c": int(cycle_number),
+        "e": int((datetime.now(UTC) + _WISHLIST_PREPARE_TOKEN_TTL).timestamp()),
+    }
+    encoded = _urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
+    signature = hmac.new(
+        _wishlist_prepare_signing_key(), encoded.encode("ascii"), hashlib.sha256).digest()
+    return f"{encoded}.{_urlsafe_b64encode(signature)}"
+
+
+def _verify_wishlist_prepared(token: str, user_id: int) -> dict:
+    try:
+        encoded, encoded_signature = token.split(".", 1)
+        expected = hmac.new(
+            _wishlist_prepare_signing_key(), encoded.encode("ascii"), hashlib.sha256).digest()
+        supplied = _urlsafe_b64decode(encoded_signature)
+        if not hmac.compare_digest(expected, supplied):
+            raise ValueError("signature")
+        payload = json.loads(_urlsafe_b64decode(encoded))
+        values = {key: int(payload[key]) for key in ("v", "u", "f", "c", "e")}
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="Недійсний токен підготовленого фільму") from None
+    if values["v"] != _WISHLIST_PREPARE_TOKEN_VERSION:
+        raise HTTPException(status_code=400, detail="Непідтримувана версія токена")
+    if values["u"] != int(user_id):
+        raise HTTPException(status_code=403, detail="Цей токен належить іншому користувачу")
+    if values["e"] < int(datetime.now(UTC).timestamp()):
+        raise HTTPException(status_code=410, detail="Підготовлений фільм застарів")
+    if values["f"] <= 0 or values["c"] <= 0:
+        raise HTTPException(status_code=400, detail="Недійсний токен підготовленого фільму")
+    return values
+
+
+def _wishlist_prepared_envelope(user_id: int, prepared: dict | None) -> dict | None:
+    if not prepared:
+        return None
+    item, cycle_number = prepared["item"], int(prepared["cycle_number"])
+    return {
+        "item": hero_media.public_media_row(item),
+        "token": _sign_wishlist_prepared(user_id, item["id"], cycle_number),
+        "expires_in": int(_WISHLIST_PREPARE_TOKEN_TTL.total_seconds()),
+    }
+
+
+@app.post("/api/wishlist/random/prepare")
+async def wishlist_random_prepare(user: dict = Depends(current_user)):
+    """Read-only prefetch: select a card without recording a show."""
+    prepared = await db.prepare_random_wishlist_film(user["id"])
+    if prepared is None:
+        raise HTTPException(status_code=404, detail="Список «Хочу посмотреть» пуст")
+    return _wishlist_prepared_envelope(user["id"], prepared)
+
+
+@app.post("/api/wishlist/random/consume")
+async def wishlist_random_consume(
+        body: WishlistPreparedConsumeBody, user: dict = Depends(current_user)):
+    """Validate a prepared card and atomically record the real show."""
+    payload = _verify_wishlist_prepared(body.token, user["id"])
+    item = await db.consume_prepared_wishlist_film(
+        user["id"], payload["f"], payload["c"])
+    if item is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "WISHLIST_PICK_STALE",
+                    "message": "Список або цикл змінився; підготуйте інший фільм"})
+    prepared = await db.prepare_random_wishlist_film(user["id"])
+    return {
+        "item": hero_media.public_media_row(item),
+        "cycle": await db.wishlist_roulette_state(user["id"]),
+        "next": _wishlist_prepared_envelope(user["id"], prepared),
+    }
 
 
 @app.get("/api/random")
@@ -2063,6 +2189,136 @@ async def _read_image_limited(content: aiohttp.StreamReader) -> bytes:
     return b"".join(chunks)
 
 
+async def _open_remote_image_stream(url: str) -> tuple[aiohttp.ClientResponse, bytes, str]:
+    """Open and validate a remote image before response headers are sent.
+
+    Redirect targets are allowlisted one by one.  Only the small magic-byte
+    prefix is read here; the rest stays in aiohttp's bounded stream buffer.
+    """
+    for attempt in (1, 2):
+        response: aiohttp.ClientResponse | None = None
+        try:
+            current_url = url
+            for _ in range(_MAX_IMAGE_REDIRECTS + 1):
+                response = await (await _img_sess()).get(current_url, allow_redirects=False)
+                if response.status in (301, 302, 303, 307, 308):
+                    location = response.headers.get("Location")
+                    response.release()
+                    response = None
+                    if not location:
+                        raise HTTPException(status_code=404, detail="Изображение не найдено")
+                    current_url = urljoin(current_url, location)
+                    if not _is_allowed_image_url(current_url):
+                        raise HTTPException(status_code=400, detail="Недопустимый источник")
+                    continue
+                if response.status != 200:
+                    response.release()
+                    response = None
+                    raise HTTPException(status_code=404, detail="Изображение не найдено")
+                declared_ctype = (
+                    response.headers.get("Content-Type", "")
+                    .split(";", 1)[0].strip().lower()
+                )
+                if declared_ctype not in _ALLOWED_IMG_TYPES:
+                    response.release()
+                    response = None
+                    raise HTTPException(
+                        status_code=415, detail="Неподдерживаемый формат изображения")
+                if (response.content_length is not None
+                        and response.content_length > _MAX_IMAGE_BYTES):
+                    response.release()
+                    response = None
+                    raise HTTPException(
+                        status_code=413, detail="Изображение слишком большое")
+
+                # Twelve bytes cover every supported signature (including
+                # WEBP/AVIF).  Some test/upstream streams return fewer bytes in
+                # one read, so keep filling the prefix until EOF or 12 bytes.
+                prefix = bytearray()
+                while len(prefix) < 12:
+                    chunk = await response.content.read(12 - len(prefix))
+                    if not chunk:
+                        break
+                    prefix.extend(chunk)
+                detected_ctype = _img_ctype(bytes(prefix))
+                if not detected_ctype:
+                    response.release()
+                    response = None
+                    raise HTTPException(
+                        status_code=415, detail="Неподдерживаемый формат изображения")
+                return response, bytes(prefix), detected_ctype
+            raise HTTPException(status_code=502, detail="Слишком много перенаправлений")
+        except HTTPException:
+            if response is not None:
+                response.release()
+            raise
+        except (TimeoutError, aiohttp.ClientError) as error:
+            if response is not None:
+                response.close()
+            if attempt == 2:
+                raise HTTPException(
+                    status_code=502, detail="Не удалось загрузить изображение") from error
+    raise HTTPException(status_code=502, detail="Не удалось загрузить изображение")
+
+
+async def _stream_image_body(content: aiohttp.StreamReader, prefix: bytes,
+                             cache_path: str | None):
+    """Yield a cold image while atomically filling its disk cache.
+
+    If an upstream with no Content-Length crosses the hard limit, stop the
+    stream and discard the partial cache file.  At that point HTTP headers are
+    already sent, so a deliberately truncated (undecodable) body is safer than
+    buffering an unbounded response or publishing a corrupt cache entry.
+    """
+    tmp_path: str | None = None
+    cache_handle = None
+    complete = False
+    total = 0
+    if cache_path:
+        try:
+            await asyncio.to_thread(os.makedirs, os.path.dirname(cache_path), exist_ok=True)
+            tmp_path = (
+                f"{cache_path}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
+            )
+            cache_handle = await asyncio.to_thread(open, tmp_path, "wb")
+        except OSError:
+            tmp_path = None
+            cache_handle = None
+    try:
+        for chunk in (prefix,):
+            total += len(chunk)
+            yield chunk
+            if cache_handle is not None:
+                await asyncio.to_thread(cache_handle.write, chunk)
+        async for chunk in content.iter_chunked(64 * 1024):
+            total += len(chunk)
+            if total > _MAX_IMAGE_BYTES:
+                logger.warning("Cold image stream exceeded %s bytes; response truncated",
+                               _MAX_IMAGE_BYTES)
+                return
+            yield chunk
+            if cache_handle is not None:
+                await asyncio.to_thread(cache_handle.write, chunk)
+        complete = True
+    except (TimeoutError, aiohttp.ClientError) as error:
+        # Headers have already been sent.  End with an invalid/truncated image;
+        # the browser's existing fallback can retry, while the cache remains
+        # clean and the worker never accumulates the whole body in RAM.
+        logger.warning("Cold image stream interrupted: %s", error)
+    finally:
+        if cache_handle is not None:
+            await asyncio.to_thread(cache_handle.close)
+        if tmp_path:
+            try:
+                if complete:
+                    await asyncio.to_thread(os.replace, tmp_path, cache_path)
+                    _schedule_image_cache_trim()
+                else:
+                    await asyncio.to_thread(os.remove, tmp_path)
+            except OSError:
+                pass
+
+
 @app.get("/img")
 async def img_proxy(request: Request, u: str):
     if len(u) > 4096:
@@ -2089,58 +2345,30 @@ async def img_proxy(request: Request, u: str):
         raise HTTPException(status_code=503,
                             detail="Черга завантаження зображень переповнена") from error
 
-    # Две попытки к CDN. Редиректы проходим вручную: каждая цель повторно
-    # проверяется по allowlist, чтобы не превратить прокси в SSRF-канал.
-    data = None
-    ctype = None
     try:
-        for attempt in (1, 2):
-            try:
-                current_url = u
-                for _ in range(_MAX_IMAGE_REDIRECTS + 1):
-                    async with (await _img_sess()).get(current_url, allow_redirects=False) as resp:
-                        if resp.status in (301, 302, 303, 307, 308):
-                            location = resp.headers.get("Location")
-                            if not location:
-                                raise HTTPException(status_code=404, detail="Изображение не найдено")
-                            current_url = urljoin(current_url, location)
-                            if not _is_allowed_image_url(current_url):
-                                raise HTTPException(status_code=400, detail="Недопустимый источник")
-                            continue
-                        if resp.status != 200:
-                            raise HTTPException(status_code=404, detail="Изображение не найдено")
-                        ctype = resp.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-                        if ctype not in _ALLOWED_IMG_TYPES:
-                            raise HTTPException(status_code=415, detail="Неподдерживаемый формат изображения")
-                        if resp.content_length is not None and resp.content_length > _MAX_IMAGE_BYTES:
-                            raise HTTPException(status_code=413, detail="Изображение слишком большое")
-                        data = await _read_image_limited(resp.content)
-                        detected_ctype = _img_ctype(data)
-                        if not detected_ctype:
-                            raise HTTPException(status_code=415, detail="Неподдерживаемый формат изображения")
-                        ctype = detected_ctype
-                        break
-                if data is not None:
-                    break
-                raise HTTPException(status_code=502, detail="Слишком много перенаправлений")
-            except HTTPException:
-                raise
-            except Exception as error:
-                if attempt == 2:
-                    raise HTTPException(status_code=502,
-                                        detail="Не удалось загрузить изображение") from error
-    finally:
+        response, prefix, ctype = await _open_remote_image_stream(u)
+    except Exception:
         _img_fetch_gate.release()
+        raise
 
-    if cache_path and data:
-        try:  # атомарная запись: tmp + rename (второй инстанс может писать параллельно)
-            await asyncio.to_thread(_write_cached_image_sync, cache_path, data)
-            _schedule_image_cache_trim()
-        except OSError:
-            pass  # кэш — оптимизация, не роняем отдачу из-за диска
+    async def body():
+        try:
+            async for chunk in _stream_image_body(response.content, prefix, cache_path):
+                yield chunk
+        finally:
+            response.close()
+            _img_fetch_gate.release()
 
-    return Response(content=data, media_type=ctype or _img_ctype(data),
-                    headers={"Cache-Control": "public, max-age=31536000, immutable"})
+    return StreamingResponse(
+        body(),
+        media_type=ctype,
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            # Images are already compressed.  Explicit identity also prevents
+            # GZipMiddleware from buffering the streaming response.
+            "Content-Encoding": "identity",
+        },
+    )
 
 
 # ── Фронтенд ─────────────────────────────────────────────────────────────────

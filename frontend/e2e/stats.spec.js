@@ -68,6 +68,7 @@ async function openStats(page, paired = false, options = {}) {
   await page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
   await page.addInitScript(({ notification, startParam }) => {
     window.__verticalSwipeDisableCalls = 0;
+    window.__tgEventHandlers = {};
     if (notification) {
       let permission = notification.permission;
       window.__notificationRequests = 0;
@@ -80,6 +81,13 @@ async function openStats(page, paired = false, options = {}) {
       initData: "test-init-data",
       initDataUnsafe: { user: { id: 1, first_name: "Denys", username: "denys" }, ...(startParam ? { start_param: startParam } : {}) },
       ready() {}, expand() {}, setHeaderColor() {}, setBackgroundColor() {},
+      onEvent(name, callback) {
+        (window.__tgEventHandlers[name] ||= []).push(callback);
+      },
+      offEvent(name, callback) {
+        window.__tgEventHandlers[name] = (window.__tgEventHandlers[name] || [])
+          .filter(handler => handler !== callback);
+      },
       disableVerticalSwipes() { window.__verticalSwipeDisableCalls += 1; },
       HapticFeedback: { impactOccurred() {}, notificationOccurred() {} },
       showConfirm(_text, callback) { callback(true); }, showAlert() {}, openTelegramLink() {},
@@ -147,7 +155,9 @@ async function openStats(page, paired = false, options = {}) {
           return settingsState;
         })()
       : path === "/api/notifications"
-        ? (options.notifications || { items: [], unread_count: 0, next_before_id: null })
+        ? (typeof options.notifications === "function"
+          ? options.notifications()
+          : (options.notifications || { items: [], unread_count: 0, next_before_id: null }))
       : path.startsWith("/api/notifications/")
         ? { ok: true }
       : path === "/api/movie/1"
@@ -428,6 +438,93 @@ test("notification inbox shows unread pair events and follows their deep link", 
   await expect(page.getByText("Приглашение в пару")).toBeVisible();
   await page.getByRole("button", { name: "Открыть", exact: true }).click();
   await expect(page.getByRole("heading", { name: /Вас зовёт/ })).toBeVisible();
+});
+
+test("rating notification uses a star and opens the exact film from row or action", async ({ page }) => {
+  const notification = {
+    id: 77,
+    event_type: "pair.film.rated",
+    read: false,
+    deep_link: "movie:1",
+    created_at: new Date().toISOString(),
+    actor: { name: "Kristina", username: "kristina", photo_url: null },
+    payload: {
+      title: "Партнёр оценил фильм",
+      body: "У Kristina появилась оценка фильма «The Last of Us». Оцени тоже — потом сравните.",
+      action_label: "Оценить",
+    },
+  };
+  await openStats(page, false, {
+    notifications: { unread_count: 1, next_before_id: null, items: [notification] },
+  });
+  await page.getByRole("button", { name: "Главная" }).click();
+  await page.getByRole("button", { name: "Уведомления" }).click();
+  const row = page.locator('[data-notification-id="77"]');
+  await expect(row).toHaveClass(/unread/);
+  await expect(row.locator(".notification-event-icon path")).toHaveAttribute(
+    "d",
+    "m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2 7.5 14 3 9.6l6.2-.9L12 3Z",
+  );
+  await row.click();
+  await expect(page.getByRole("heading", { name: "The Last of Us" })).toBeVisible();
+  await page.locator("#d-back-top").click();
+  await expect(page.getByRole("heading", { name: "Уведомления" })).toBeVisible();
+  await expect(page.locator('[data-notification-id="77"]')).not.toHaveClass(/unread/);
+
+  // The action button follows the same strict movie deep link.
+  await page.getByRole("button", { name: "Оценить", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "The Last of Us" })).toBeVisible();
+});
+
+test("malformed movie notification links fall back to Home", async ({ page }) => {
+  await openStats(page, false, { notifications: {
+    unread_count: 1,
+    next_before_id: null,
+    items: [{
+      id: 78,
+      event_type: "pair.film.rated",
+      read: false,
+      deep_link: "movie:javascript:alert(1)",
+      created_at: new Date().toISOString(),
+      actor: { name: "Kristina", username: "kristina", photo_url: null },
+      payload: { title: "Партнёр оценил фильм", body: "Оцени тоже.", action_label: "Оценить" },
+    }],
+  } });
+  await page.getByRole("button", { name: "Главная" }).click();
+  await page.getByRole("button", { name: "Уведомления" }).click();
+  await page.locator('[data-notification-id="78"]').click();
+  await expect(page.getByRole("heading", { name: "Привет, Denys" })).toBeVisible();
+});
+
+test("notification refresh binds once and activated visibility updates the bell", async ({ page }) => {
+  let notificationReads = 0;
+  let unread = 0;
+  await openStats(page, false, {
+    notifications: () => {
+      notificationReads += 1;
+      return { items: [], unread_count: unread, next_before_id: null };
+    },
+  });
+  await page.getByRole("button", { name: "Главная" }).click();
+  await expect.poll(() => notificationReads).toBeGreaterThan(0);
+  expect(await page.evaluate(() => (window.__tgEventHandlers.activated || []).length)).toBe(1);
+
+  // Rerendering Home must not install a second Telegram listener or timer.
+  await page.getByRole("button", { name: "Статистика" }).click();
+  await page.getByRole("button", { name: "Главная" }).click();
+  expect(await page.evaluate(() => (window.__tgEventHandlers.activated || []).length)).toBe(1);
+
+  unread = 1;
+  const readsBeforeActivation = notificationReads;
+  await page.evaluate(() => {
+    for (const handler of window.__tgEventHandlers.activated || []) handler();
+  });
+  await expect.poll(() => notificationReads).toBeGreaterThan(readsBeforeActivation);
+  await expect(page.locator("#bell-btn .dot")).toBeVisible();
+
+  const readsBeforeVisibility = notificationReads;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect.poll(() => notificationReads).toBeGreaterThan(readsBeforeVisibility);
 });
 
 test("settings persists the single Telegram notification preference and language", async ({ page }) => {

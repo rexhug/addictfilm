@@ -129,7 +129,11 @@ class SmartRandomAtomicityTests(unittest.IsolatedAsyncioTestCase):
     async def test_empty_catalog_records_nothing(self):
         async def _empty(*_args, **_kwargs):
             return []
-        with patch("recommendations.ranked_candidates", new=_empty):
+        # Smart Random fetches one hard-eligible pool and applies availability
+        # tiers in memory.  Keep this regression test at that public boundary
+        # instead of patching the old per-tier ranking helper.
+        with patch.object(db, "get_recommendation_candidates", new=_empty), \
+             patch("recommendations._warm_catalog_if_sparse", new=_keep_local_catalog):
             self.assertIsNone(await rec.pick_and_record_smart_random(1, "ru"))
 
 

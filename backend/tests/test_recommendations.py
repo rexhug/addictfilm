@@ -150,6 +150,32 @@ class RecommendationTests(unittest.IsolatedAsyncioTestCase):
             item = await recommendations.random_recommendation(1, "ru", partner_id=2)
         self.assertEqual(item["id"], alternative)
 
+    async def test_random_availability_tiers_reuse_one_fetched_pool(self):
+        """Relaxing display history must not repeat catalog/profile DB work."""
+        for suffix in range(401, 414):
+            await self._film(suffix, f"Candidate {suffix}", rating="7.5")
+
+        with patch.object(
+            db, "get_recommendation_candidates",
+            wraps=db.get_recommendation_candidates,
+        ) as candidate_query, patch.object(
+            db, "get_recommendation_preferences",
+            wraps=db.get_recommendation_preferences,
+        ) as preference_query, patch.object(
+            db, "get_recent_recommendation_shows",
+            wraps=db.get_recent_recommendation_shows,
+        ) as history_query, patch.object(
+            recommendations, "_attach_profiles",
+            wraps=recommendations._attach_profiles,
+        ) as profile_query:
+            item = await recommendations.random_recommendation(1, "ru")
+
+        self.assertIsNotNone(item)
+        self.assertEqual(candidate_query.await_count, 1)
+        self.assertEqual(preference_query.await_count, 1)
+        self.assertEqual(history_query.await_count, 1)
+        self.assertEqual(profile_query.await_count, 1)
+
     async def test_quiz_does_not_relax_an_explicit_runtime_limit(self):
         await self._film(41, "Too long", rating="9.0", runtime="180 min")
         answers = {

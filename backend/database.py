@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import aiosqlite
@@ -2108,10 +2109,38 @@ async def get_user_film(user_id: int, film_id: int) -> dict | None:
         return dict(row) if row else None
 
 
-async def set_rating(user_id: int, film_id: int, rating: int) -> None:
+@dataclass(frozen=True)
+class RatingWriteResult:
+    """Normalized outcome of one public rating write."""
+
+    previous_rating: int | None
+    rating: int
+
+    @property
+    def first_rating(self) -> bool:
+        return self.previous_rating is None
+
+
+async def set_rating(user_id: int, film_id: int, rating: int) -> RatingWriteResult:
     """Тап по оценке = «просмотрено» (урок). Оценка автоматически добавляет фильм
-    в список пользователя, если его там ещё не было."""
+    в список пользователя, если его там ещё не было.
+
+    The previous value is read through the same connection as the write. Two
+    concurrent first writes may both observe ``NULL``; notification
+    idempotency is therefore enforced independently by the inbox insert.
+    """
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        previous = await (await db.execute(
+            "SELECT rating FROM user_films WHERE user_id = ? AND film_id = ?",
+            (user_id, film_id),
+        )).fetchone()
+        previous_rating = (
+            int(previous["rating"])
+            if previous and previous["rating"] is not None
+            else None
+        )
+        now = _now()
         await db.execute(
             """
             INSERT INTO user_films (user_id, film_id, status, rating, added_at, watched_at, rated_at)
@@ -2122,9 +2151,10 @@ async def set_rating(user_id: int, film_id: int, rating: int) -> None:
                 status     = 'watched',
                 watched_at = COALESCE(user_films.watched_at, excluded.watched_at)
             """,
-            (user_id, film_id, rating, _now(), _now(), _now()),
+            (user_id, film_id, rating, now, now, now),
         )
         await db.commit()
+    return RatingWriteResult(previous_rating=previous_rating, rating=int(rating))
 
 
 async def clear_rating(user_id: int, film_id: int) -> None:
@@ -2372,6 +2402,131 @@ async def pick_random_wishlist_film(user_id: int) -> dict | None:
             "UPDATE wishlist_random_state SET updated_at=? WHERE user_id=?", (now, user_id))
         await db.commit()
         return chosen
+
+
+async def prepare_random_wishlist_film(user_id: int) -> dict | None:
+    """Choose the next wishlist card without recording a show.
+
+    This is the read-only half of the browser prefetch protocol.  The returned
+    cycle is a claim, not a reservation: ``consume_prepared_wishlist_film``
+    rechecks the list and cycle under the per-user state lock before it records
+    anything.  That keeps abandoned tabs and failed image downloads out of the
+    durable roulette history.
+    """
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        state = await (await db.execute(
+            "SELECT cycle_number FROM wishlist_random_state WHERE user_id=?",
+            (user_id,))).fetchone()
+        cycle = int(state["cycle_number"]) if state else 1
+
+        async def _pool(current_cycle: int) -> list[dict]:
+            cur = await db.execute(
+                """
+                SELECT f.*, uf.rating AS my_rating FROM user_films uf
+                JOIN films f ON f.id = uf.film_id
+                WHERE uf.user_id = ? AND uf.status = 'want_to_watch'
+                  AND NOT EXISTS (SELECT 1 FROM wishlist_random_picks p
+                                  WHERE p.user_id = uf.user_id AND p.film_id = uf.film_id
+                                    AND p.cycle_number = ?)
+                ORDER BY f.id
+                """, (user_id, current_cycle))
+            return [dict(row) for row in await cur.fetchall()]
+
+        pool = await _pool(cycle)
+        if not pool:
+            total = await (await db.execute(
+                "SELECT COUNT(*) FROM user_films "
+                "WHERE user_id=? AND status='want_to_watch'", (user_id,))).fetchone()
+            if not int(total[0] or 0):
+                return None
+            # Do not advance durable state during prepare.  The signed token
+            # carries this proposed next cycle and consume performs the change.
+            cycle += 1
+            pool = await _pool(cycle)
+            if not pool:
+                return None
+
+        return {
+            "item": pool[secrets.randbelow(len(pool))],
+            "cycle_number": cycle,
+        }
+
+
+async def consume_prepared_wishlist_film(
+        user_id: int, film_id: int, cycle_number: int) -> dict | None:
+    """Atomically validate and record a previously prepared wishlist card.
+
+    A prepared card may become stale when another device consumes it, when the
+    user changes the wishlist, or when another request advances the cycle.
+    Returning ``None`` asks the API/client to prepare again; no partial state is
+    committed in any of those cases.
+    """
+    user_id, film_id, requested_cycle = int(user_id), int(film_id), int(cycle_number)
+    if user_id <= 0 or film_id <= 0 or requested_cycle <= 0:
+        return None
+
+    now = _now()
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute(
+            "INSERT INTO wishlist_random_state (user_id, cycle_number, updated_at) "
+            "VALUES (?,1,?) ON CONFLICT DO NOTHING", (user_id, now))
+        if _PG:
+            state = await (await db.execute(
+                "SELECT cycle_number FROM wishlist_random_state "
+                "WHERE user_id=? FOR UPDATE", (user_id,))).fetchone()
+        else:
+            state = await (await db.execute(
+                "SELECT cycle_number FROM wishlist_random_state WHERE user_id=?",
+                (user_id,))).fetchone()
+        current_cycle = int(state["cycle_number"]) if state else 1
+
+        if requested_cycle != current_cycle:
+            if requested_cycle != current_cycle + 1:
+                return None
+            # A token for the next cycle is valid only while the current cycle
+            # is still exhausted.  A film added after prepare belongs to the
+            # current cycle, so the old token must not skip it.
+            unseen = await (await db.execute(
+                """
+                SELECT 1 FROM user_films uf
+                WHERE uf.user_id=? AND uf.status='want_to_watch'
+                  AND NOT EXISTS (SELECT 1 FROM wishlist_random_picks p
+                                  WHERE p.user_id=uf.user_id AND p.film_id=uf.film_id
+                                    AND p.cycle_number=?)
+                LIMIT 1
+                """, (user_id, current_cycle))).fetchone()
+            if unseen:
+                return None
+            await db.execute(
+                "UPDATE wishlist_random_state SET cycle_number=?, updated_at=? "
+                "WHERE user_id=?", (requested_cycle, now, user_id))
+
+        item = await (await db.execute(
+            """
+            SELECT f.*, uf.rating AS my_rating FROM user_films uf
+            JOIN films f ON f.id=uf.film_id
+            WHERE uf.user_id=? AND uf.film_id=? AND uf.status='want_to_watch'
+              AND NOT EXISTS (SELECT 1 FROM wishlist_random_picks p
+                              WHERE p.user_id=uf.user_id AND p.film_id=uf.film_id
+                                AND p.cycle_number=?)
+            """, (user_id, film_id, requested_cycle))).fetchone()
+        if not item:
+            return None
+
+        inserted = await (await db.execute(
+            "INSERT INTO wishlist_random_picks "
+            "(user_id, film_id, cycle_number, shown_at) VALUES (?,?,?,?) "
+            "ON CONFLICT DO NOTHING RETURNING film_id",
+            (user_id, film_id, requested_cycle, now))).fetchone()
+        if not inserted:
+            return None
+        await db.execute(
+            "UPDATE wishlist_random_state SET updated_at=? WHERE user_id=?",
+            (now, user_id))
+        await db.commit()
+        return dict(item)
 
 
 async def get_random_want(user_id: int) -> dict | None:
@@ -3119,6 +3274,102 @@ async def create_notification(*, event_type: str, recipient_id: int, actor_id: i
             "SELECT id FROM notifications WHERE idempotency_key = ?", (idempotency_key,))).fetchone()
         await db.commit()
         return int(row[0]), False
+
+
+async def get_partner_rating_notification_context(actor_id: int, film_id: int) -> dict | None:
+    """Read all immutable copy inputs for a rating notification in one query.
+
+    Only the symmetric current relationship is considered. Historic
+    ``pair_sessions`` intentionally do not participate in activity delivery.
+    """
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        row = await (await db.execute(
+            """
+            SELECT
+                p.user_id AS actor_id,
+                p.partner_id,
+                p.since AS pair_since,
+                actor.first_name AS actor_first_name,
+                actor.username AS actor_username,
+                f.id AS film_id,
+                f.title AS film_title,
+                recipient_film.rating AS recipient_rating,
+                COALESCE(settings.language, 'ru') AS recipient_language
+            FROM partners p
+            JOIN partners reciprocal
+              ON reciprocal.user_id = p.partner_id
+             AND reciprocal.partner_id = p.user_id
+             AND reciprocal.since = p.since
+            JOIN users actor ON actor.id = p.user_id
+            JOIN films f ON f.id = ?
+            LEFT JOIN user_films recipient_film
+              ON recipient_film.user_id = p.partner_id
+             AND recipient_film.film_id = f.id
+            LEFT JOIN user_notification_settings settings
+              ON settings.user_id = p.partner_id
+            WHERE p.user_id = ?
+              AND p.partner_id <> p.user_id
+            LIMIT 1
+            """,
+            (film_id, actor_id),
+        )).fetchone()
+        return dict(row) if row else None
+
+
+async def create_notification_for_current_partner(
+    *,
+    actor_id: int,
+    recipient_id: int,
+    pair_since: str,
+    event_type: str,
+    entity_id: str,
+    payload: dict,
+    deep_link: str,
+    idempotency_key: str,
+) -> tuple[int | None, bool]:
+    """Insert an inbox row only while the exact pair session is still active."""
+    encoded_payload = json.dumps(payload, ensure_ascii=False)
+    now = _now()
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO notifications (
+                event_id, event_type, recipient_id, actor_id, entity_id,
+                payload, deep_link, created_at, idempotency_key
+            )
+            SELECT NULL, ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE EXISTS (
+                SELECT 1 FROM partners
+                WHERE user_id = ? AND partner_id = ? AND since = ?
+            )
+            AND EXISTS (
+                SELECT 1 FROM partners
+                WHERE user_id = ? AND partner_id = ? AND since = ?
+            )
+            ON CONFLICT(idempotency_key) DO NOTHING
+            RETURNING id
+            """,
+            (
+                event_type, recipient_id, actor_id, entity_id, encoded_payload,
+                deep_link, now, idempotency_key,
+                actor_id, recipient_id, pair_since,
+                recipient_id, actor_id, pair_since,
+            ),
+        )
+        row = await cur.fetchone()
+        if row:
+            await db.commit()
+            return int(row[0]), True
+
+        # A duplicate submission returns the canonical existing row. If the
+        # relationship disappeared, no row exists and ``None`` is returned.
+        existing = await (await db.execute(
+            "SELECT id FROM notifications WHERE idempotency_key = ?",
+            (idempotency_key,),
+        )).fetchone()
+        await db.commit()
+        return (int(existing[0]), False) if existing else (None, False)
 
 
 async def create_notification_delivery(notification_id: int, *, channel: str,

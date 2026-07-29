@@ -7,7 +7,12 @@ from pathlib import Path
 import main
 import ratelimit
 from fastapi import HTTPException
-from main import _MAX_IMAGE_BYTES, _is_allowed_image_url, _read_image_limited
+from main import (
+    _MAX_IMAGE_BYTES,
+    _is_allowed_image_url,
+    _read_image_limited,
+    _stream_image_body,
+)
 
 
 class FakeImageStream:
@@ -41,6 +46,37 @@ class ImageProxyTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as caught:
             await _read_image_limited(stream)
         self.assertEqual(caught.exception.status_code, 413)
+
+    async def test_cold_stream_yields_immediately_and_commits_complete_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = str(Path(tmp) / "ab" / "image")
+            prefix = b"\xff\xd8\xff" + b"x" * 9
+            stream = FakeImageStream([b"-middle", b"-end"])
+            chunks = [
+                chunk async for chunk in _stream_image_body(stream, prefix, cache_path)
+            ]
+
+            self.assertEqual(chunks, [prefix, b"-middle", b"-end"])
+            self.assertEqual(Path(cache_path).read_bytes(), b"".join(chunks))
+            self.assertFalse(list(Path(tmp).rglob("*.tmp")))
+
+    async def test_oversized_unknown_length_stream_never_publishes_partial_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = str(Path(tmp) / "ab" / "image")
+            old_limit = main._MAX_IMAGE_BYTES
+            main._MAX_IMAGE_BYTES = 16
+            try:
+                prefix = b"\xff\xd8\xff" + b"x" * 9
+                chunks = [
+                    chunk async for chunk in _stream_image_body(
+                        FakeImageStream([b"12345"]), prefix, cache_path)
+                ]
+            finally:
+                main._MAX_IMAGE_BYTES = old_limit
+
+            self.assertEqual(chunks, [prefix])
+            self.assertFalse(Path(cache_path).exists())
+            self.assertFalse(list(Path(tmp).rglob("*.tmp")))
 
     def test_rate_limit_rejects_only_after_configured_budget(self):
         for _ in range(ratelimit.IMAGE_PROXY_MAX):

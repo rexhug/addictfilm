@@ -54,6 +54,8 @@ let _detailBaseline = null;
 const _readCache = new Map();
 const _READ_CACHE_TTL = 30_000;
 let _notificationUnread = 0;
+let _notificationRefreshBound = false;
+let _notificationPollTimer = null;
 
 function cacheableRead(path, opts) {
   const method = (opts.method || "GET").toUpperCase();
@@ -829,6 +831,20 @@ async function refreshNotificationBadge() {
   } catch (_) { /* The home screen remains usable if the inbox is offline. */ }
 }
 
+function bindNotificationRefresh() {
+  if (_notificationRefreshBound) return;
+  _notificationRefreshBound = true;
+
+  const refreshWhenVisible = () => {
+    if (document.visibilityState === "visible") refreshNotificationBadge();
+  };
+  document.addEventListener("visibilitychange", refreshWhenVisible);
+  try { tg?.onEvent?.("activated", refreshWhenVisible); } catch (_) {}
+  if (_notificationPollTimer === null) {
+    _notificationPollTimer = window.setInterval(refreshWhenVisible, 30_000);
+  }
+}
+
 function recoCardHTML() {
   return `<div class="reco rise d5">
     <div class="reco-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 3 2.6 5.6 6.1.7-4.5 4.1 1.2 6-5.4-3-5.4 3 1.2-6L3 9.3l6.1-.7Z"/></svg></div>
@@ -890,6 +906,7 @@ async function showPicker() {
   // Уходя из опроса совсем, забываем версию: иначе значок предпросмотра мог бы
   // остаться на следующем, уже обычном проходе.
   _quizEngineMeta = null;
+  resetWishlistPrefetch();
   unwireDetailScroll();
   singlePickMode(false);
   pickerMode(false);
@@ -979,7 +996,12 @@ function wireRecommendationMovie(container, item, { mode, sessionId = null, role
     showPicker();
   };
   const another = container.querySelector("[data-pick-another]");
-  if (another) another.onclick = async () => { await feedback("another"); onAnother?.(); };
+  if (another) another.onclick = () => {
+    // Pure analytics must not sit in the critical path before the next card.
+    // The current show has already been committed by the picker endpoint.
+    feedback("another");
+    onAnother?.();
+  };
 }
 
 // ── Один фильм во весь экран ────────────────────────────────────────────────
@@ -993,6 +1015,87 @@ function wireRecommendationMovie(container, item, { mode, sessionId = null, role
 
 // Текущая карточка — для замены слоя изображения, когда файл не загрузился.
 let _singlePickItem = null;
+let _preparedWishlistPick = null;
+let _wishlistPreparePromise = null;
+let _wishlistPrefetchGeneration = 0;
+
+function resetWishlistPrefetch() {
+  _wishlistPrefetchGeneration += 1;
+  _preparedWishlistPick = null;
+  _wishlistPreparePromise = null;
+}
+
+function preloadSinglePickMedia(item) {
+  const hero = singlePickHero(item);
+  if (!hero.url) return Promise.resolve(false);
+  const image = new Image();
+  image.decoding = "async";
+  image.src = singlePickSrc(hero.url, hero.type);
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = ready => {
+      if (settled) return;
+      settled = true;
+      image.onload = null;
+      image.onerror = null;
+      resolve(Boolean(ready));
+    };
+    image.onload = () => finish(true);
+    image.onerror = () => finish(false);
+    if (image.complete) finish(image.naturalWidth > 0);
+    else if (typeof image.decode === "function") image.decode().then(
+      () => finish(true), () => { /* onload/onerror is authoritative */ });
+  });
+}
+
+function installPreparedWishlistPick(prepared, generation = _wishlistPrefetchGeneration) {
+  if (!prepared?.item || !prepared?.token || generation !== _wishlistPrefetchGeneration) {
+    return Promise.resolve(null);
+  }
+  const state = { ...prepared, imageReady: false, imageSettled: false };
+  _preparedWishlistPick = state;
+  const promise = preloadSinglePickMedia(state.item).then(ready => {
+    state.imageReady = ready;
+    state.imageSettled = true;
+    return generation === _wishlistPrefetchGeneration ? state : null;
+  });
+  const tracked = promise.finally(() => {
+    if (_wishlistPreparePromise === tracked) _wishlistPreparePromise = null;
+  });
+  _wishlistPreparePromise = tracked;
+  return tracked;
+}
+
+function prepareNextWishlistPick() {
+  if (_preparedWishlistPick) return _wishlistPreparePromise || Promise.resolve(_preparedWishlistPick);
+  if (_wishlistPreparePromise) return _wishlistPreparePromise;
+  const generation = _wishlistPrefetchGeneration;
+  const request = api("/api/wishlist/random/prepare", { method: "POST", body: "{}" })
+    .then(prepared => {
+      if (generation !== _wishlistPrefetchGeneration) return null;
+      _wishlistPreparePromise = null;
+      return installPreparedWishlistPick(prepared, generation);
+    })
+    .catch(error => {
+      if (generation === _wishlistPrefetchGeneration) _preparedWishlistPick = null;
+      if (error?.status !== 404) console.warn("Wishlist prefetch failed", error);
+      return null;
+    });
+  _wishlistPreparePromise = request;
+  return request;
+}
+
+function setSinglePickRefreshState(active) {
+  const currentCard = screen.querySelector(".single-pick-card")
+    || screen.querySelector(".picker-result .recommendation-film");
+  currentCard?.classList.toggle("is-refreshing", Boolean(active));
+  screen.querySelectorAll("[data-pick-another],[data-pick-reject]").forEach(button => {
+    button.disabled = Boolean(active);
+    if (active) button.setAttribute("aria-busy", "true");
+    else button.removeAttribute("aria-busy");
+  });
+  return currentCard;
+}
 
 function singlePickMode(active) {
   const enabled = Boolean(active);
@@ -1343,9 +1446,62 @@ function renderLegacyPick(label, item, onAnother, mode) {
   wireRecommendationMovie(box, item, { mode, onAnother, returnTo: showPicker });
 }
 
+function renderWishlistPick(item, fullscreen) {
+  if (fullscreen) {
+    wireSinglePickScreen(item, {
+      label: t("pick_wishlist_title"), mode: "wishlist",
+      onAnother: showNextWishlistRandom,
+    });
+    return;
+  }
+  renderLegacyPick(t("pick_wishlist_title"), item, showNextWishlistRandom, "wishlist");
+}
+
+async function consumePreparedWishlistPick(prepared, { retryStale = true } = {}) {
+  try {
+    return await api("/api/wishlist/random/consume", {
+      method: "POST", body: JSON.stringify({ token: prepared.token }),
+    });
+  } catch (error) {
+    if (retryStale && (error?.status === 409 || error?.status === 410)) {
+      _preparedWishlistPick = null;
+      _wishlistPreparePromise = null;
+      const fresh = await prepareNextWishlistPick();
+      if (fresh) return consumePreparedWishlistPick(fresh, { retryStale: false });
+    }
+    throw error;
+  }
+}
+
+async function showNextWishlistRandom() {
+  const fullscreen = featureEnabled("fullscreen_single_pick");
+  const currentCard = setSinglePickRefreshState(true);
+  try {
+    const prepared = _preparedWishlistPick || await prepareNextWishlistPick();
+    if (!prepared) throw Object.assign(new Error(t("pick_wishlist_empty")), { status: 404 });
+    // Detach before consume so no second tap can reuse the same signed claim.
+    _preparedWishlistPick = null;
+    _wishlistPreparePromise = null;
+    const result = await consumePreparedWishlistPick(prepared);
+    renderWishlistPick(result.item, fullscreen);
+    installPreparedWishlistPick(result.next);
+  } catch (error) {
+    const message = error?.status === 404 ? t("pick_wishlist_empty") : (error?.message || t("load_err"));
+    if (currentCard?.isConnected) {
+      setSinglePickRefreshState(false);
+      tg?.showAlert?.(String(message));
+      return;
+    }
+    screen.innerHTML = singlePickStateHTML(message, { error: true, recover: true });
+    wireSinglePickRecovery(showWishlistRandom);
+  }
+}
+
 // Рулетка по СВОЕМУ списку «Хочу»: никакого рейтинга и настроения — человек уже
-// выбрал эти фильмы сам. Отдельный экран, чтобы её не путали с умным подбором.
+// выбрал эти фильмы сам. Первый показ коммитится обычным атомарным запросом;
+// следующие карточки сервер выбирает и браузер прогревает заранее.
 async function showWishlistRandom() {
+  resetWishlistPrefetch();
   pickerMode(false);
   _singlePickItem = null;
   const fullscreen = featureEnabled("fullscreen_single_pick");
@@ -1355,14 +1511,11 @@ async function showWishlistRandom() {
     : `${pickerHeader()}<main class="picker-result"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
   wireBack(showPicker);
   try {
-    const { item } = await api("/api/wishlist/random", { method: "POST", body: "{}" });
+    const { item, next } = await api("/api/wishlist/random", { method: "POST", body: "{}" });
     // Свой режим: сервер подтверждает показ по учёту рулетки, а не по
     // истории рекомендаций каталога.
-    if (fullscreen) {
-      wireSinglePickScreen(item, { label: t("pick_wishlist_title"), mode: "wishlist", onAnother: showWishlistRandom });
-      return;
-    }
-    renderLegacyPick(t("pick_wishlist_title"), item, showWishlistRandom, "wishlist");
+    renderWishlistPick(item, fullscreen);
+    installPreparedWishlistPick(next);
   } catch (error) {
     const message = error.status === 404 ? t("pick_wishlist_empty") : error.message;
     if (fullscreen) {
@@ -1775,7 +1928,9 @@ async function showAllGenres() {
 }
 
 function notificationGlyph(eventType) {
-  const paths = eventType === "pair.ended"
+  const paths = eventType === "pair.film.rated"
+    ? '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2 7.5 14 3 9.6l6.2-.9L12 3Z"/>'
+    : eventType === "pair.ended"
     ? '<path d="m7 7 10 10M17 7 7 17"/><path d="M5 5h14v14H5z"/>'
     : eventType.includes("invite")
       ? '<path d="M12 20s-7-4.35-7-10a4 4 0 0 1 7-2.65A4 4 0 0 1 19 10c0 5.65-7 10-7 10Z"/><path d="M12 7v6m-3-3h6"/>'
@@ -1802,7 +1957,18 @@ function notificationRow(item) {
 async function openNotification(item, page) {
   try { await api(`/api/notifications/${item.id}/read`, { method: "POST" }); } catch (_) {}
   _notificationUnread = Math.max(0, _notificationUnread - (item.read ? 0 : 1));
-  const link = item.deep_link || "";
+  item.read = true;
+  page?.querySelector(`[data-notification-id="${Number(item.id)}"]`)?.classList.remove("unread");
+  const link = String(item.deep_link || "");
+  const movieMatch = /^movie:(\d+)$/.exec(link);
+  if (movieMatch) {
+    const filmId = Number(movieMatch[1]);
+    if (Number.isSafeInteger(filmId) && filmId > 0) {
+      setActiveTab("home");
+      openDetail(filmId, showNotifications);
+      return;
+    }
+  }
   if (link.startsWith("inv_")) { showAcceptInvite(link); return; }
   if (link === "stats") { setActiveTab("stats"); showStats("pair"); return; }
   setActiveTab("home"); showHome();
@@ -3859,6 +4025,7 @@ if (!tg) {
   (async () => {
     try {
       me = await api("/api/me");
+      bindNotificationRefresh();
       // Возможности спрашиваем у сервера отдельно и не блокируем ими старт:
       // обычный пользователь получит пустой набор и ничего админского не увидит.
       AdminMode.refresh().catch(() => {});

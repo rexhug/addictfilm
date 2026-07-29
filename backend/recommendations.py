@@ -380,7 +380,12 @@ def _discovery_query(weights: dict[str, float]) -> str:
 
 async def _warm_catalog_if_sparse(user_id: int, partner_id: int | None, weights: dict[str, float],
                                   candidates: list[dict], minimum: int) -> list[dict]:
-    """Use the existing quota-protected discovery pipeline only when needed."""
+    """Use the existing quota-protected discovery pipeline only when needed.
+
+    The caller performs the one authoritative re-read with its exact filters
+    after warming.  Reading here as well used to duplicate the heaviest
+    candidate query without changing the result.
+    """
     if len(candidates) >= minimum:
         return candidates
     try:
@@ -391,7 +396,7 @@ async def _warm_catalog_if_sparse(user_id: int, partner_id: int | None, weights:
         # Search itself logs provider detail.  A recommendation should never
         # fail solely because the optional catalog warmer could not run.
         pass
-    return await db.get_recommendation_candidates(user_id, partner_id)
+    return candidates
 
 
 # Профиль обогащения подключается консервативно: он УТОЧНЯЕТ признаки там, где
@@ -467,6 +472,34 @@ def profile_mood_features(movie: dict):
     )
 
 
+def _score_candidate_pool(
+        pool: list[dict], *, weights: dict[str, float], context: dict,
+        preferences: dict, partner_preferences: dict | None = None) -> list[dict]:
+    """Score an already-fetched hard-eligible pool without any I/O."""
+    risk = str(context.get("risk") or "medium")
+    if partner_preferences is None:
+        ranked = [score_film(film, weights, preferences, risk=risk) for film in pool]
+    else:
+        mine = {film["id"]: score_film(film, weights, preferences, risk=risk) for film in pool}
+        theirs = {
+            film["id"]: score_film(film, weights, partner_preferences, risk=risk)
+            for film in pool
+        }
+        ranked = []
+        for film_id, scored in mine.items():
+            other = theirs[film_id]
+            fair = pair_fairness(scored["_score"], other["_score"])
+            ranked.append({
+                **scored,
+                "_score": round(fair, 3),
+                "_pair_min": round(min(scored["_score"], other["_score"]), 3),
+            })
+    return sorted(
+        ranked,
+        key=lambda movie: (-movie["_score"], str(movie.get("title") or ""), movie["id"]),
+    )
+
+
 async def ranked_candidates(user_id: int, *, partner_id: int | None, weights: dict[str, float], filters: dict,
                             context: dict, minimum: int = 18,
                             exclude_shown_since: str | None | object = db._DEFAULT_RECOMMENDATION_COOLDOWN,
@@ -507,25 +540,15 @@ async def ranked_candidates(user_id: int, *, partner_id: int | None, weights: di
     if not pool:
         return []
     preferences = await db.get_recommendation_preferences(user_id)
-    risk = str(context.get("risk") or "medium")
-    if partner_id is None:
-        ranked = [score_film(film, weights, preferences, risk=risk) for film in pool]
-    else:
-        # Для пары считаем ДВА профиля отдельно и сводим их честно: раньше веса
-        # просто складывались, и фильм, который один обожает, а второй не
-        # выносит, всё равно всплывал наверх.
-        partner_preferences = await db.get_recommendation_preferences(partner_id)
-        mine = {film["id"]: score_film(film, weights, preferences, risk=risk) for film in pool}
-        theirs = {film["id"]: score_film(film, weights, partner_preferences, risk=risk) for film in pool}
-        ranked = []
-        for film_id, scored in mine.items():
-            other = theirs[film_id]
-            fair = pair_fairness(scored["_score"], other["_score"])
-            ranked.append({**scored, "_score": round(fair, 3),
-                           "_pair_min": round(min(scored["_score"], other["_score"]), 3)})
+    partner_preferences = (
+        await db.get_recommendation_preferences(partner_id)
+        if partner_id is not None else None
+    )
     # Persist a very small derived-tag sample for auditability; no broad write
     # on a read path. Chosen result tags are enough to inspect rules later.
-    return sorted(ranked, key=lambda movie: (-movie["_score"], str(movie.get("title") or ""), movie["id"]))
+    return _score_candidate_pool(
+        pool, weights=weights, context=context, preferences=preferences,
+        partner_preferences=partner_preferences)
 
 
 # Слой настроения выключён по умолчанию. Признаки фильмов прошли ручной обзор
@@ -833,21 +856,62 @@ def _availability_tiers(now: datetime) -> tuple[AvailabilityTier, ...]:
     )
 
 
+def _history_ids_since(history: list[dict], threshold: str) -> set[int]:
+    try:
+        boundary = datetime.fromisoformat(threshold.replace("Z", "+00:00"))
+        if boundary.tzinfo is None:
+            boundary = boundary.replace(tzinfo=UTC)
+    except (TypeError, ValueError):
+        return set()
+    result = set()
+    for row in history:
+        try:
+            shown = datetime.fromisoformat(str(row.get("shown_at") or "").replace("Z", "+00:00"))
+            if shown.tzinfo is None:
+                shown = shown.replace(tzinfo=UTC)
+            if shown >= boundary:
+                result.add(int(row["film_id"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return result
+
+
 async def _available_random_pool(
-        user_id: int, partner_id: int | None, profile_confidence_value: float
+        user_id: int, partner_id: int | None, profile_confidence_value: float,
+        preferences: dict, partner_preferences: dict | None,
         ) -> tuple[list[dict], AvailabilityTier, dict | None, str | None, bool]:
-    """Relax only display history; watched/rejected/moderation stay immutable."""
+    """Fetch hard state once; relax only display history in memory."""
+    candidates = await db.get_recommendation_candidates(
+        user_id, partner_id, exclude_shown_since=None, require_art=False)
+    if len(candidates) < 12:
+        # Discovery remains quota-protected.  Its compatibility return value
+        # uses the default cooldown, so re-read our all-history pool once.
+        await _warm_catalog_if_sparse(user_id, partner_id, {}, candidates, 12)
+        candidates = await db.get_recommendation_candidates(
+            user_id, partner_id, exclude_shown_since=None, require_art=False)
+    candidates = [
+        film for film in candidates if media_type.is_movie_flow_eligible(film)
+    ]
+    candidates = await _attach_profiles(candidates)
+    ranked_all = _score_candidate_pool(
+        candidates, weights={}, context={"risk": "medium"},
+        preferences=preferences, partner_preferences=partner_preferences)
+
     history = await db.get_recent_recommendation_shows(user_id, partner_id)
     recent_ids = [int(row["film_id"]) for row in history]
     previous_id = recent_ids[0] if recent_ids else None
-    for index, tier in enumerate(_availability_tiers(datetime.now(UTC))):
-        excluded = set(recent_ids[:tier.exclude_recent_count])
-        ranked = await ranked_candidates(
-            user_id, partner_id=partner_id, weights={}, filters={},
-            context={"risk": "medium"}, minimum=12,
-            exclude_shown_since=tier.exclude_shown_since,
-            excluded_film_ids=excluded, require_art=tier.require_art,
-            warm_catalog=index == 0)
+    tiers = _availability_tiers(datetime.now(UTC))
+    for tier in tiers:
+        excluded = (
+            _history_ids_since(history, tier.exclude_shown_since)
+            if tier.exclude_shown_since is not None
+            else set(recent_ids[:tier.exclude_recent_count])
+        )
+        ranked = [
+            movie for movie in ranked_all
+            if int(movie["id"]) not in excluded
+            and (not tier.require_art or bool(str(movie.get("poster_url") or "").strip()))
+        ]
         if not ranked:
             continue
         # Even after the cycle has fully relaxed, never repeat the immediately
@@ -863,7 +927,7 @@ async def _available_random_pool(
             logger.info("smart_random availability_tier=%s candidate_count=%s",
                         tier.name, len(ranked))
             return ranked, tier, movie, strategy, fallback
-    return [], _availability_tiers(datetime.now(UTC))[-1], None, None, False
+    return [], tiers[-1], None, None, False
 
 
 async def random_recommendation(user_id: int, language: str, partner_id: int | None = None) -> dict | None:
@@ -874,9 +938,13 @@ async def random_recommendation(user_id: int, language: str, partner_id: int | N
     pick_and_record_smart_random, чтобы выбор и учёт были атомарны.
     """
     preferences = await db.get_recommendation_preferences(user_id)
+    partner_preferences = (
+        await db.get_recommendation_preferences(partner_id)
+        if partner_id is not None else None
+    )
     confidence = profile_confidence(preferences)
     ranked, tier, movie, strategy, used_fallback = await _available_random_pool(
-        user_id, partner_id, confidence)
+        user_id, partner_id, confidence, preferences, partner_preferences)
     if movie is None:
         return None
     if not SMART_RANDOM_STRATEGIES:

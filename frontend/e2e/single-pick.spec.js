@@ -30,6 +30,7 @@ async function openPicker(page, options = {}) {
     feedback: [],
     wishlistCalls: 0,
     randomCalls: 0,
+    imageRequests: [],
     adminMutations: [],
     capabilityLoaded: false,
   };
@@ -55,6 +56,7 @@ async function openPicker(page, options = {}) {
 
   await page.route("**/img?**", async route => {
     const source = new URL(route.request().url()).searchParams.get("u") || "";
+    state.imageRequests.push(source);
     if (options.brokenImages?.some(part => source.includes(part))) {
       await route.abort("failed");
       return;
@@ -107,11 +109,39 @@ async function openPicker(page, options = {}) {
       }) });
       return;
     }
+    const wishlistEnvelope = index => ({
+      item: wishlistItems[Math.min(index, wishlistItems.length - 1)],
+      token: `wishlist-token-${index}`,
+      expires_in: 300,
+    });
     if (path === "/api/wishlist/random") {
-      const item = wishlistItems[Math.min(state.wishlistCalls, wishlistItems.length - 1)];
+      const item = wishlistEnvelope(state.wishlistCalls).item;
       state.wishlistCalls += 1;
       await route.fulfill({ contentType: "application/json", body: JSON.stringify({
-        item, cycle: { cycle: 1, wishlist_size: 3, shown_in_cycle: 1, remaining_in_cycle: 2 } }) });
+        item,
+        cycle: { cycle: 1, wishlist_size: 3, shown_in_cycle: 1, remaining_in_cycle: 2 },
+        next: wishlistEnvelope(state.wishlistCalls),
+      }) });
+      return;
+    }
+    if (path === "/api/wishlist/random/prepare") {
+      await route.fulfill({ contentType: "application/json",
+        body: JSON.stringify(wishlistEnvelope(state.wishlistCalls)) });
+      return;
+    }
+    if (path === "/api/wishlist/random/consume") {
+      const consumeIndex = state.wishlistCalls;
+      if (options.wishlistConsumeGates?.[consumeIndex]) {
+        await options.wishlistConsumeGates[consumeIndex];
+      }
+      const item = wishlistEnvelope(state.wishlistCalls).item;
+      state.wishlistCalls += 1;
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+        item,
+        cycle: { cycle: 1, wishlist_size: 3,
+          shown_in_cycle: state.wishlistCalls, remaining_in_cycle: Math.max(0, 3 - state.wishlistCalls) },
+        next: wishlistEnvelope(state.wishlistCalls),
+      }) });
       return;
     }
     if (path === "/api/recommendations/random") {
@@ -163,7 +193,9 @@ async function openPicker(page, options = {}) {
       return;
     }
     if (/^\/api\/recommendations\/\d+\/feedback$/.test(path)) {
-      state.feedback.push(JSON.parse(route.request().postData() || "{}"));
+      const feedback = JSON.parse(route.request().postData() || "{}");
+      state.feedback.push(feedback);
+      if (options.feedbackGates?.[feedback.action]) await options.feedbackGates[feedback.action];
       await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
       return;
     }
@@ -515,6 +547,54 @@ test("feedback keeps the wishlist mode on the wishlist screen", async ({ page })
   // «Не предлагать» — про один фильм: остаёмся на экране подбора, а не улетаем
   // на стартовое меню.
   await expect(page.locator(".single-pick-screen")).toBeVisible();
+});
+
+test("wishlist preloads the next image and preserves the card until consume commits", async ({ page }) => {
+  let releaseConsume;
+  const consumeGate = new Promise(resolve => { releaseConsume = resolve; });
+  const firstHero = "https://assets.fanart.tv/fanart/movies/1/first-wide.jpg";
+  const secondHero = "https://assets.fanart.tv/fanart/movies/2/second-wide.jpg";
+  const state = await openPicker(page, {
+    wishlistItems: [
+      { ...baseMovie, id: 11, title: "First Wishlist", ...backdropHero, hero_url: firstHero },
+      { ...baseMovie, id: 12, title: "Second Wishlist", ...backdropHero, hero_url: secondHero },
+    ],
+    wishlistConsumeGates: { 1: consumeGate },
+  });
+  await openWishlist(page);
+  await expect(page.getByRole("heading", { name: "First Wishlist" })).toBeVisible();
+  await expect.poll(() => state.imageRequests.some(url => url.includes("second-wide"))).toBe(true);
+
+  const another = page.getByRole("button", { name: "Другой вариант" });
+  await another.click();
+  await expect.poll(() => state.feedback.some(entry => entry.action === "another")).toBe(true);
+  await expect(page.getByRole("heading", { name: "First Wishlist" })).toBeVisible();
+  await expect(another).toBeDisabled();
+  await expect(page.locator(".single-pick-card")).toHaveClass(/is-refreshing/);
+
+  releaseConsume();
+  await expect(page.getByRole("heading", { name: "Second Wishlist" })).toBeVisible();
+  expect(state.wishlistCalls).toBe(2);
+});
+
+test("slow analytics feedback never blocks the next wishlist request", async ({ page }) => {
+  let releaseFeedback;
+  const feedbackGate = new Promise(resolve => { releaseFeedback = resolve; });
+  const state = await openPicker(page, {
+    wishlistItems: [
+      { ...baseMovie, id: 11, title: "First Wishlist", ...backdropHero },
+      { ...baseMovie, id: 12, title: "Second Wishlist", ...posterHero },
+    ],
+    feedbackGates: { another: feedbackGate },
+  });
+  await openWishlist(page);
+  await page.getByRole("button", { name: "Другой вариант" }).click();
+
+  // The second committed show arrives while the independent analytics request
+  // is deliberately still pending.
+  await expect.poll(() => state.wishlistCalls).toBe(2);
+  await expect(page.getByRole("heading", { name: "Second Wishlist" })).toBeVisible();
+  releaseFeedback();
 });
 
 test("opening a film reports the right mode and leaves the picker reachable", async ({ page }) => {
