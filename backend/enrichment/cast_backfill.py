@@ -29,6 +29,7 @@ _ACCEPTED_TYPES = frozenset({
 class CastEnrichmentResult:
     film_id: int
     title: str
+    kp_id: str | None
     old_order: tuple[str, ...]
     new_order: tuple[str, ...]
     kinopoisk_cast_count: int
@@ -42,6 +43,7 @@ class CastEnrichmentResult:
         return {
             "film_id": self.film_id,
             "title": self.title,
+            "kp_id": self.kp_id,
             "old_order": list(self.old_order),
             "new_order": list(self.new_order),
             "kinopoisk_cast_count": self.kinopoisk_cast_count,
@@ -121,6 +123,7 @@ async def enrich_film_cast(
     person_detail_limit: int = 3,
     dry_run: bool = False,
     wikidata_cast: list[dict] | None = None,
+    kinopoisk_document: dict | None = None,
 ) -> CastEnrichmentResult:
     film_id = int(film["id"])
     kp_id = str(film.get("kp_id") or "").strip()
@@ -128,13 +131,25 @@ async def enrich_film_cast(
     old = cast_model.decode_cast(film.get("cast_json"))
     canonical = old
     kp_count = 0
+    # A persisted Kinopoisk identity is authoritative. A document resolved
+    # through IMDb is only a compatibility bridge for older OMDb-created rows.
+    document = None
     if kp_id:
         document = await kinopoisk.get_movie(kp_id)
-        if document:
-            extracted = kinopoisk.extract_cast(document.get("persons") or [], limit=12)
-            if extracted:
-                canonical = extracted
-                kp_count = len(extracted)
+    elif kinopoisk_document is not None:
+        document = kinopoisk_document
+    if document is None and imdb_id.startswith("tt"):
+        document = (
+            await kinopoisk.cast_documents_by_imdb([imdb_id])
+        ).get(imdb_id)
+    if document:
+        resolved_kp_id = str(document.get("id") or "").strip()
+        if resolved_kp_id:
+            kp_id = resolved_kp_id
+        extracted = kinopoisk.extract_cast(document.get("persons") or [], limit=12)
+        if extracted:
+            canonical = extracted
+            kp_count = len(extracted)
     if wikidata_cast is None:
         wikidata_cast = []
         if imdb_id.startswith("tt"):
@@ -164,10 +179,15 @@ async def enrich_film_cast(
         canonical = await validate_cast_portraits(canonical)
     wrote = False
     if not dry_run:
-        wrote = await db.update_film_cast(film_id, canonical)
+        wrote = await db.update_film_cast(
+            film_id,
+            canonical,
+            kp_id=kp_id or None,
+        )
     return CastEnrichmentResult(
         film_id=film_id,
         title=str(film.get("title") or ""),
+        kp_id=kp_id or None,
         old_order=tuple(member["name"] for member in old),
         new_order=tuple(member["name"] for member in canonical),
         kinopoisk_cast_count=kp_count,
@@ -183,9 +203,11 @@ async def _run(args: argparse.Namespace) -> int:
     imdb_ids = [
         str(film.get("imdb_id") or "")
         for film in films
+        if not film.get("kp_id")
         if str(film.get("imdb_id") or "").startswith("tt")
     ]
     wikidata_map = await wikidata.get_cast_by_imdb(imdb_ids, max_actors=12)
+    kinopoisk_map = await kinopoisk.cast_documents_by_imdb(imdb_ids)
     semaphore = asyncio.Semaphore(max(1, min(args.concurrency, 4)))
 
     async def process(film: dict) -> dict:
@@ -196,10 +218,14 @@ async def _run(args: argparse.Namespace) -> int:
                 person_detail_limit=args.person_detail_limit_per_film,
                 dry_run=args.dry_run,
                 wikidata_cast=wikidata_map.get(str(film.get("imdb_id") or ""), []),
+                kinopoisk_document=(
+                    None
+                    if film.get("kp_id")
+                    else kinopoisk_map.get(str(film.get("imdb_id") or ""))
+                ),
             )
             payload = outcome.as_dict()
             payload.update({
-                "kp_id": film.get("kp_id"),
                 "imdb_id": film.get("imdb_id"),
             })
             return payload

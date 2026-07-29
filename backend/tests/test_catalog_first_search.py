@@ -354,6 +354,7 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
         release = asyncio.Event()
         persisted = asyncio.Event()
         old_cast = main.wikidata.get_cast_by_imdb
+        old_kp_resolve = main.kinopoisk.cast_documents_by_imdb
         old_store = main.db.update_film_cast
 
         async def researched_cast(ids, max_actors=10):
@@ -368,7 +369,12 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
             persisted.set()
             return result
 
+        async def no_kinopoisk_match(ids):
+            self.assertEqual(ids, ["tt0765010"])
+            return {}
+
         main.wikidata.get_cast_by_imdb = researched_cast
+        main.kinopoisk.cast_documents_by_imdb = no_kinopoisk_match
         main.db.update_film_cast = store_cast
         try:
             response = await asyncio.wait_for(main.movie(film_id, {"id": 1}), timeout=0.1)
@@ -378,6 +384,7 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(persisted.wait(), timeout=0.5)
         finally:
             main.wikidata.get_cast_by_imdb = old_cast
+            main.kinopoisk.cast_documents_by_imdb = old_kp_resolve
             main.db.update_film_cast = old_store
 
         stored = await db.get_film(film_id)

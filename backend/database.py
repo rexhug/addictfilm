@@ -1994,6 +1994,7 @@ async def update_film_cast(
     canonical_cast: list[dict],
     *,
     checked_at: str | None = None,
+    kp_id: str | None = None,
 ) -> bool:
     """Atomically keep canonical and legacy cast representations in one order."""
     normalized = cast_model.normalize_cast(canonical_cast)
@@ -2016,10 +2017,14 @@ async def update_film_cast(
             """
             UPDATE films
             SET cast_json = ?, cast_checked_at = ?, actors = ?,
-                actors_photos = ?, actor_photos_checked_at = ?
+                actors_photos = ?, actor_photos_checked_at = ?,
+                kp_id = COALESCE(NULLIF(kp_id, ''), NULLIF(?, ''))
             WHERE id = ?
             """,
-            (cast_json, timestamp, actor_names, legacy_photos, timestamp, film_id),
+            (
+                cast_json, timestamp, actor_names, legacy_photos, timestamp,
+                str(kp_id or "").strip(), film_id,
+            ),
         )
         await db.commit()
         return cursor.rowcount > 0

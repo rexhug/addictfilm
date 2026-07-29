@@ -1,3 +1,4 @@
+import asyncio
 import json
 import tempfile
 import unittest
@@ -40,6 +41,32 @@ class CanonicalCastTests(unittest.TestCase):
             kp_person(2, "Second"),
         ])
         self.assertEqual([m["name"] for m in result], ["Lead", "Second"])
+
+    def test_cast_documents_resolve_omdb_rows_by_imdb_in_one_batch(self):
+        payload = {
+            "docs": [
+                {
+                    "id": 101,
+                    "externalId": {"imdb": "tt1172049"},
+                    "persons": [kp_person(1, "Jake Gyllenhaal")],
+                },
+                {
+                    "id": 102,
+                    "externalId": {"imdb": "tt0137523"},
+                    "persons": [kp_person(2, "Brad Pitt")],
+                },
+            ],
+        }
+        with (
+            patch.object(kinopoisk, "KINOPOISK_TOKENS", ["test"]),
+            patch("kinopoisk._request", AsyncMock(return_value=payload)) as request,
+        ):
+            result = asyncio.run(kinopoisk.cast_documents_by_imdb([
+                "tt1172049", "tt0137523", "tt1172049",
+            ]))
+        self.assertEqual(set(result), {"tt1172049", "tt0137523"})
+        self.assertEqual(result["tt1172049"]["id"], 101)
+        self.assertEqual(request.await_count, 1)
 
     def test_missing_photo_never_reorders_a_lead(self):
         result = kinopoisk.extract_cast([
@@ -164,6 +191,17 @@ class CanonicalCastDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(film["cast_checked_at"], film["actor_photos_checked_at"])
 
+    async def test_cast_update_never_replaces_an_existing_kinopoisk_identity(self):
+        film_id = await db.get_or_create_film(
+            "tt0012346", "Identity", kp_id="original-kp",
+        )
+        canonical = kinopoisk.extract_cast([kp_person(10, "Lead")])
+        self.assertTrue(
+            await db.update_film_cast(film_id, canonical, kp_id="resolved-kp")
+        )
+        film = await db.get_film(film_id)
+        self.assertEqual(film["kp_id"], "original-kp")
+
     async def test_person_detail_is_bounded_and_only_for_unresolved_leading_people(self):
         film_id = await db.get_or_create_film("tt0099999", "Demolition", kp_id="99")
         film = await db.get_film(film_id)
@@ -192,6 +230,37 @@ class CanonicalCastDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 "https://x.test/3.jpg", None,
             ],
         )
+
+    async def test_missing_kp_id_resolves_kinopoisk_cast_by_imdb(self):
+        film_id = await db.get_or_create_film("tt1172049", "Разрушение")
+        film = await db.get_film(film_id)
+        document = {
+            "id": 842493,
+            "persons": [
+                kp_person(1, "Джейк Джилленхол", photo="https://x.test/jake.jpg"),
+                kp_person(2, "Наоми Уоттс", photo="https://x.test/naomi.jpg"),
+            ],
+        }
+        with (
+            patch(
+                "enrichment.cast_backfill.kinopoisk.cast_documents_by_imdb",
+                AsyncMock(return_value={"tt1172049": document}),
+            ) as resolve,
+            patch(
+                "enrichment.cast_backfill.wikidata.get_cast_by_imdb",
+                AsyncMock(return_value={}),
+            ),
+        ):
+            outcome = await enrich_film_cast(film)
+        self.assertEqual(outcome.kp_id, "842493")
+        self.assertEqual(outcome.kinopoisk_cast_count, 2)
+        self.assertEqual(
+            [member["name"] for member in outcome.canonical],
+            ["Джейк Джилленхол", "Наоми Уоттс"],
+        )
+        stored = await db.get_film(film_id)
+        self.assertEqual(stored["kp_id"], "842493")
+        resolve.assert_awaited_once_with(["tt1172049"])
 
     async def test_dry_run_does_not_write_or_advance_timestamp(self):
         film_id = await db.get_or_create_film("tt0088888", "Dry", kp_id="88")

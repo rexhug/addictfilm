@@ -385,6 +385,41 @@ async def actor_photos_by_imdb(imdb_ids: list[str]) -> dict[str, list[dict]]:
     return out
 
 
+async def cast_documents_by_imdb(imdb_ids: list[str]) -> dict[str, dict]:
+    """Canonical cast source documents keyed by IMDb ID.
+
+    Older catalog rows created through the OMDb fallback may not have ``kp_id``.
+    Resolve those rows through their stable IMDb identity in bounded batches so
+    the canonical pipeline still uses Kinopoisk billing order instead of
+    silently falling back to Wikidata order.
+    """
+    ids = list(dict.fromkeys(
+        item for item in imdb_ids if item and item.startswith("tt")
+    ))
+    if not KINOPOISK_TOKENS or not ids:
+        return {}
+    out: dict[str, dict] = {}
+    for start in range(0, len(ids), 20):
+        chunk = ids[start:start + 20]
+        params = [("externalId.imdb", item) for item in chunk]
+        params += [
+            ("selectFields", "id"),
+            ("selectFields", "externalId"),
+            ("selectFields", "persons"),
+            ("limit", "250"),
+            ("page", "1"),
+        ]
+        data = await _request("/movie", params)
+        if not data:
+            continue
+        for movie in data.get("docs", []):
+            imdb_id = (movie.get("externalId") or {}).get("imdb")
+            if imdb_id in chunk and movie.get("id") is not None:
+                out[imdb_id] = movie
+                _cache_put(str(movie["id"]), movie)
+    return out
+
+
 async def credits_by_imdb(imdb_ids: list[str]) -> dict[str, tuple[str | None, str | None]]:
     """(режиссёры, актёры) по списку IMDb ID: {imdb_id: (directors, actors)}. Для бекфила."""
     ids = [i for i in imdb_ids if i and i.startswith("tt")]
