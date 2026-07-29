@@ -26,6 +26,7 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
                 "SELECT name FROM sqlite_master WHERE type='table'")).fetchall()
             users = await (await conn.execute("PRAGMA table_info(users)")).fetchall()
             films = await (await conn.execute("PRAGMA table_info(films)")).fetchall()
+            user_films = await (await conn.execute("PRAGMA table_info(user_films)")).fetchall()
             user_films_fks = await (await conn.execute("PRAGMA foreign_key_list(user_films)")).fetchall()
             migrations = await (await conn.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
@@ -35,7 +36,8 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue({"movie_enrichment_jobs", "movie_recommendation_profiles",
                          "movie_recommendation_profile_overrides",
                          "worker_heartbeats", "wishlist_random_state",
-                         "wishlist_random_picks"}.issubset({row[0] for row in tables}))
+                         "wishlist_random_picks", "review_identities",
+                         "review_reports"}.issubset({row[0] for row in tables}))
         self.assertTrue({"kp_id", "search_text", "poster_checked_at", "artwork_checked_at", "actor_photos_checked_at",
                          "directors_photos", "director_photos_checked_at",
                          "media_type", "media_type_source",
@@ -47,6 +49,8 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
                          "movie_flow_reason"}.issubset(
             {row[1] for row in films}))
         self.assertEqual({row[2] for row in user_films_fks}, {"users", "films"})
+        self.assertTrue({"commented_at", "comment_status"}.issubset(
+            {row[1] for row in user_films}))
         self.assertEqual([row[0] for row in migrations], [
             db._SCHEMA_MIGRATION_DIRECTOR_PHOTOS,
             db._SCHEMA_MIGRATION_LEGACY_COLUMNS,
@@ -69,6 +73,7 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
             db._SCHEMA_MIGRATION_HERO_MEDIA,
             db._SCHEMA_MIGRATION_HERO_PRESENTATION,
             db._SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION,
+            db._SCHEMA_MIGRATION_PUBLIC_REVIEWS,
         ])
 
     async def test_foreign_keys_reject_orphaned_user_film_rows(self):

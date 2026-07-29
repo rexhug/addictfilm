@@ -365,11 +365,15 @@ async def movie(film_id: int, user: dict = Depends(current_user)):
     needs_director_photos = bool(f.get("directors")) and not f.get("director_photos_checked_at")
     if (needs_actor_photos or needs_director_photos) and imdb_id and imdb_id.startswith("tt"):
         _schedule_people_enrichment(film_id, imdb_id, needs_actor_photos, needs_director_photos)
-    mine, f["community"] = await asyncio.gather(
-        db.get_user_film(user["id"], film_id), db.community_rating(film_id))
+    context, f["community"] = await asyncio.gather(
+        db.get_movie_rating_context(user["id"], film_id), db.community_rating(film_id))
+    mine = context["mine"]
     f["status"] = mine["status"] if mine else None
     f["my_rating"] = mine["rating"] if mine else None
     f["my_comment"] = mine["comment"] if mine else None
+    f["my_comment_status"] = mine["comment_status"] if mine else None
+    f["my_commented_at"] = mine["commented_at"] if mine else None
+    f["partner"] = context["partner"]
     f["share_link"] = _movie_link(film_id)
     return f
 
@@ -521,6 +525,106 @@ async def comment(film_id: int, body: CommentBody, user: dict = Depends(current_
         await db.set_comment(user["id"], film_id, text[:500])
     else:
         await db.delete_comment(user["id"], film_id)
+    return {"ok": True}
+
+
+class ReviewBody(BaseModel):
+    rating: int = Field(ge=1, le=10)
+    text: str = Field(min_length=1, max_length=500)
+
+
+class LegacyReviewBody(BaseModel):
+    action: Literal["publish", "keep_private", "delete"]
+
+
+class ReviewReportBody(BaseModel):
+    reason: str | None = Field(default=None, max_length=200)
+
+
+def _guard_review_write(user_id: int) -> None:
+    if not ratelimit.allow_review_write(user_id):
+        raise HTTPException(status_code=429, detail="Слишком много изменений. Попробуйте через минуту")
+
+
+@app.get("/api/movie/{film_id}/reviews")
+async def movie_reviews(film_id: int, limit: int = 10, before_id: int | None = None,
+                        sort: Literal["newest", "highest", "lowest"] = "newest",
+                        user: dict = Depends(current_user)):
+    if not await db.get_film(film_id):
+        raise HTTPException(status_code=404, detail="Фильм не найден")
+    try:
+        return await db.list_movie_reviews(
+            user["id"], film_id, limit=max(1, min(limit, 50)),
+            before_id=before_id, sort=sort,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+@app.put("/api/movie/{film_id}/review")
+async def publish_movie_review(film_id: int, body: ReviewBody,
+                               user: dict = Depends(current_user)):
+    _guard_review_write(user["id"])
+    if not await db.get_film(film_id):
+        raise HTTPException(status_code=404, detail="Фильм не найден")
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Напишите текст отзыва")
+    item = await db.set_public_review(user["id"], film_id, body.rating, text)
+    await _invalidate_stats_for(user["id"])
+    return {"ok": True, "item": item}
+
+
+@app.delete("/api/movie/{film_id}/review")
+async def delete_movie_review(film_id: int, user: dict = Depends(current_user)):
+    _guard_review_write(user["id"])
+    deleted = await db.delete_public_review(user["id"], film_id)
+    return {"ok": True, "deleted": deleted}
+
+
+@app.post("/api/movie/{film_id}/review/legacy")
+async def legacy_movie_review(film_id: int, body: LegacyReviewBody,
+                              user: dict = Depends(current_user)):
+    _guard_review_write(user["id"])
+    if body.action == "keep_private":
+        return {"ok": True, "status": "private_legacy"}
+    if body.action == "delete":
+        return {"ok": True, "status": "deleted",
+                "deleted": await db.delete_public_review(user["id"], film_id)}
+    item = await db.publish_legacy_review(user["id"], film_id)
+    if item is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Чтобы опубликовать старую заметку, сначала поставьте оценку",
+        )
+    return {"ok": True, "status": "published", "item": item}
+
+
+@app.post("/api/movie/{film_id}/reviews/{review_id}/report")
+async def report_movie_review(film_id: int, review_id: int, body: ReviewReportBody,
+                              user: dict = Depends(current_user)):
+    _guard_review_write(user["id"])
+    created = await db.report_review(
+        user["id"], film_id, review_id, (body.reason or "").strip() or None,
+    )
+    if not created:
+        raise HTTPException(
+            status_code=409,
+            detail="Отзыв недоступен, принадлежит вам или жалоба уже отправлена",
+        )
+    return {"ok": True}
+
+
+@app.patch("/api/admin/reviews/{review_id}/hide")
+async def admin_hide_review(review_id: int, user: dict = Depends(require_editor)):
+    hidden = await db.hide_review(review_id)
+    if not hidden:
+        raise HTTPException(status_code=404, detail="Опубликованный отзыв не найден")
+    role = await _effective_role(user["id"]) or "editor"
+    await db.write_audit(
+        user["id"], role, "review.hidden", "review", review_id,
+        {"film_id": hidden["film_id"], "author_id": hidden["user_id"]},
+    )
     return {"ok": True}
 
 

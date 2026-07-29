@@ -25,7 +25,8 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
         await db.init_db()
         async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
             await conn.execute(
-                "TRUNCATE TABLE notification_deliveries, notifications, pair_event_recipients, pair_events, "
+                "TRUNCATE TABLE review_reports, review_identities, "
+                "notification_deliveries, notifications, pair_event_recipients, pair_events, "
                 "collection_films, collections, partners, partner_invites, "
                 "movie_enrichment_jobs, movie_recommendation_profile_overrides, "
                 "wishlist_random_picks, wishlist_random_state, recommendation_history, "
@@ -131,6 +132,24 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
         films = await db.list_notifications(2, category="films")
         self.assertEqual([item["id"] for item in films["items"]], [inbox["items"][0]["id"]])
         self.assertEqual((await db.list_notifications(2, category="pair"))["items"], [])
+
+    async def test_public_review_cursor_and_partner_pin_match_sqlite(self):
+        await self._add_users(1, 2, 3)
+        film_id = await db.get_or_create_film("tt9900003", "Postgres reviews")
+        token = await db.create_invite(1)
+        self.assertTrue((await db.accept_invite(token, 2))["ok"])
+        await db.set_public_review(1, film_id, 7, "Mine")
+        partner = await db.set_public_review(2, film_id, 9, "Partner")
+        await db.set_public_review(3, film_id, 10, "Public")
+
+        first = await db.list_movie_reviews(1, film_id, limit=1, sort="highest")
+        second = await db.list_movie_reviews(
+            1, film_id, limit=1, sort="highest", before_id=first["next_before_id"])
+
+        self.assertEqual(first["partner_review"]["id"], partner["id"])
+        self.assertEqual(first["items"][0]["rating"], 10)
+        self.assertEqual(second["items"][0]["rating"], 7)
+        self.assertIsNone(second["next_before_id"])
 
 
     async def test_two_workers_never_claim_the_same_enrichment_job(self):

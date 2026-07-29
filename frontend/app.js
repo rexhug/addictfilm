@@ -174,7 +174,19 @@ const DICT = {
     my_rating: "Моя оценка", rate_hint: " · тап = «Смотрел(а)»", dir: "Режиссёр ",
     act_want: "Хочу посмотреть", act_watched: "Отметить как просмотрено", act_to_want: "В «Хочу»", act_remove: "Убрать из списка",
     already_watched_link: "Уже смотрел? Отметить",
-    my_review: "Мой отзыв", comment_ph: "Написать отзыв…",
+    my_review: "Моя оценка и отзыв", comment_ph: "Написать публичный отзыв…",
+    your_ratings: "Ваши оценки", your_rating: "Вы", partner_rating: "Партнёр",
+    review_publish: "Опубликовать", review_save: "Сохранить", review_delete: "Удалить",
+    review_saved: "Отзыв опубликован", review_required: "Поставьте оценку и напишите отзыв",
+    review_public_hint: "Отзыв увидят все пользователи · до 500 символов",
+    review_legacy_title: "Это ваша старая личная заметка",
+    review_legacy_hint: "Опубликовать её как отзыв?", review_legacy_publish: "Опубликовать",
+    review_legacy_keep: "Оставить личной", review_legacy_delete: "Удалить",
+    reviews_title: "Отзывы пользователей", reviews_partner: "Отзыв партнёра",
+    reviews_newest: "Новые", reviews_highest: "Высокие оценки", reviews_lowest: "Низкие оценки",
+    reviews_empty: "Пока нет публичных отзывов", reviews_load_more: "Показать ещё",
+    reviews_loading: "Загружаю отзывы…", reviews_error: "Не удалось загрузить отзывы",
+    review_report: "Пожаловаться", review_reported: "Жалоба отправлена",
     cast_title: "Актёры", share_text: (title) => `Смотри «${title}» в Addict Film`,
     confirm_remove: (title) => `Убрать «${title}» из своего списка?`,
     search_start_t: "Что смотрим?", search_start_s: "Введи название — минимум 2 буквы",
@@ -321,7 +333,19 @@ const DICT = {
     my_rating: "My rating", rate_hint: " · tap = Watched", dir: "Director ",
     act_want: "Want to watch", act_watched: "Mark as watched", act_to_want: "To wishlist", act_remove: "Remove from list",
     already_watched_link: "Already seen it? Mark watched",
-    my_review: "My review", comment_ph: "Write a review…",
+    my_review: "My rating and review", comment_ph: "Write a public review…",
+    your_ratings: "Your ratings", your_rating: "You", partner_rating: "Partner",
+    review_publish: "Publish", review_save: "Save", review_delete: "Delete",
+    review_saved: "Review published", review_required: "Rate the film and write a review",
+    review_public_hint: "Visible to everyone · up to 500 characters",
+    review_legacy_title: "This is your old private note",
+    review_legacy_hint: "Publish it as a review?", review_legacy_publish: "Publish",
+    review_legacy_keep: "Keep private", review_legacy_delete: "Delete",
+    reviews_title: "User reviews", reviews_partner: "Partner review",
+    reviews_newest: "Newest", reviews_highest: "High ratings", reviews_lowest: "Low ratings",
+    reviews_empty: "No public reviews yet", reviews_load_more: "Show more",
+    reviews_loading: "Loading reviews…", reviews_error: "Could not load reviews",
+    review_report: "Report", review_reported: "Report sent",
     cast_title: "Cast", share_text: (title) => `Watch "${title}" on Addict Film`,
     confirm_remove: (title) => `Remove "${title}" from your list?`,
     search_start_t: "What are we watching?", search_start_s: "Type a title — at least 2 letters",
@@ -3327,6 +3351,7 @@ function renderDetail(id, m) {
         ${genres ? `<div class="d-genres">${esc(genres)}</div>` : ""}
         ${m.directors ? `<div class="d-director">${esc(t("dir"))}<b>${esc(m.directors)}</b></div>` : ""}
         ${ratingsHTML(m)}
+        ${ratingContextHTML(m)}
         ${m.plot ? `<p class="d-overview">${esc(m.plot)}</p>` : ""}
         <div id="d-actions"></div>
         <div class="d-review" id="d-review">
@@ -3336,12 +3361,23 @@ function renderDetail(id, m) {
         </div>
         ${cast.length ? `<div class="d-cast"><div class="d-cast-h"><h2>${esc(t("cast_title"))}</h2></div>
           <div class="d-cast-rail">${cast.map(a => `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(a.name))}</span>${a.photo_url ? `<img loading="lazy" decoding="async" src="${posterSrc(a.photo_url)}" alt="" data-img-retry data-person-photo>` : ""}</div><div class="n">${esc(a.name)}</div></div>`).join("")}</div></div>` : ""}
+        <section class="d-public-reviews" id="d-public-reviews" data-film-id="${id}">
+          <div class="d-public-reviews-head"><h2>${esc(t("reviews_title"))}</h2>
+            <div class="d-review-sorts" role="group" aria-label="${esc(t("sort_title"))}">
+              <button class="on" data-review-sort="newest">${esc(t("reviews_newest"))}</button>
+              <button data-review-sort="highest">${esc(t("reviews_highest"))}</button>
+              <button data-review-sort="lowest">${esc(t("reviews_lowest"))}</button>
+            </div>
+          </div>
+          <div id="d-reviews-list" class="d-reviews-list"><div class="d-reviews-state">${esc(t("reviews_loading"))}</div></div>
+        </section>
       </div>
     </div>`;
 
   renderStars(id, m);
-  renderComment(id, m);
+  renderReviewEditor(id, m);
   renderActions(id, m);
+  wireMovieReviews(id);
   revealLoadedPersonPhotos(screen);
 
   const back = () => closeDetailThen(returnFromDetail);
@@ -3390,6 +3426,23 @@ function ratingsHTML(m) {
   return pills.length ? `<div class="d-ratings">${pills.join("")}</div>` : "";
 }
 
+function ratingContextHTML(m) {
+  const mine = m.my_rating ?? "—";
+  const partner = m.partner;
+  return `<section class="d-rating-context" id="d-rating-context">
+    <h2>${esc(t("your_ratings"))}</h2>
+    <div class="d-rating-context-grid">
+      <div><span>${esc(t("your_rating"))}</span><strong>${esc(mine)}</strong></div>
+      ${partner ? `<div><span>${esc(partner.name || t("partner_rating"))}</span><strong>${esc(partner.rating ?? "—")}</strong></div>` : ""}
+    </div>
+  </section>`;
+}
+
+function refreshRatingContext(m) {
+  const current = document.getElementById("d-rating-context");
+  if (current) current.outerHTML = ratingContextHTML(m);
+}
+
 function renderStars(id, m) {
   const el = document.getElementById("d-stars");
   if (!el) return;
@@ -3409,29 +3462,167 @@ function renderStars(id, m) {
     }
     renderStars(id, m);
     renderActions(id, m);
+    refreshRatingContext(m);
+    if (m.my_comment_status === "published") wireMovieReviews(id);
   });
 }
 
-function renderComment(id, m) {
+function renderReviewEditor(id, m) {
   const zone = document.getElementById("d-comment-zone");
   if (!zone) return;
-  const has = !!(m.my_comment && m.my_comment.trim());
-  zone.innerHTML = `<div class="d-comment${has ? "" : " ph"}" id="d-comment-view">${has ? esc(m.my_comment) : esc(t("comment_ph"))}</div>`;
-  document.getElementById("d-comment-view").onclick = () => {
-    zone.innerHTML = `<textarea class="d-comment-input" id="d-comment-input" rows="1" placeholder="${esc(t("comment_ph"))}">${esc(m.my_comment || "")}</textarea>`;
-    const ta = document.getElementById("d-comment-input");
-    const grow = () => { ta.style.height = "auto"; ta.style.height = ta.scrollHeight + "px"; };
-    ta.addEventListener("input", grow); grow(); ta.focus();
-    const place = ta.value.length; ta.setSelectionRange(place, place);
-    ta.onblur = async () => {
-      const text = ta.value.trim();
-      if (text !== (m.my_comment || "").trim()) {
-        await api(`/api/movie/${id}/comment`, { method: "POST", body: JSON.stringify({ text }) });
-        m.my_comment = text;
+  if (m.my_comment_status === "private_legacy" && m.my_comment && !m._legacyDismissed) {
+    zone.innerHTML = `<div class="d-legacy-note"><strong>${esc(t("review_legacy_title"))}</strong>
+      <p>${esc(m.my_comment)}</p><small>${esc(t("review_legacy_hint"))}</small>
+      <div class="d-review-buttons">
+        <button class="primary" data-legacy-action="publish">${esc(t("review_legacy_publish"))}</button>
+        <button data-legacy-action="keep_private">${esc(t("review_legacy_keep"))}</button>
+        <button class="danger" data-legacy-action="delete">${esc(t("review_legacy_delete"))}</button>
+      </div></div>`;
+    zone.querySelectorAll("[data-legacy-action]").forEach(button => button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const action = button.dataset.legacyAction;
+        await api(`/api/movie/${id}/review/legacy`, {
+          method: "POST", body: JSON.stringify({ action }),
+        });
+        if (action === "publish") m.my_comment_status = "published";
+        else if (action === "delete") { m.my_comment = null; m.my_comment_status = "deleted"; }
+        else m._legacyDismissed = true;
+        renderReviewEditor(id, m);
+        if (action !== "keep_private") wireMovieReviews(id);
+      } catch (error) {
+        tg?.showAlert?.(error.message);
+        button.disabled = false;
       }
-      renderComment(id, m);
-    };
+    });
+    return;
+  }
+  const published = m.my_comment_status === "published";
+  zone.innerHTML = `<div class="d-review-editor">
+    <textarea class="d-comment-input" id="d-comment-input" rows="3" maxlength="500" placeholder="${esc(t("comment_ph"))}">${esc(published ? (m.my_comment || "") : "")}</textarea>
+    <div class="d-review-meta"><small>${esc(t("review_public_hint"))}</small><span id="d-review-count">0/500</span></div>
+    <div class="d-review-buttons">
+      <button class="primary" id="d-review-save">${esc(t(published ? "review_save" : "review_publish"))}</button>
+      ${published ? `<button class="danger" id="d-review-delete">${esc(t("review_delete"))}</button>` : ""}
+    </div>
+    <div class="d-review-feedback" id="d-review-feedback" aria-live="polite"></div>
+  </div>`;
+  const ta = document.getElementById("d-comment-input");
+  const count = document.getElementById("d-review-count");
+  const feedback = document.getElementById("d-review-feedback");
+  const updateCount = () => { count.textContent = `${ta.value.length}/500`; };
+  ta.addEventListener("input", updateCount); updateCount();
+  document.getElementById("d-review-save").onclick = async event => {
+    const text = ta.value.trim();
+    if (!m.my_rating || !text) {
+      feedback.textContent = t("review_required");
+      return;
+    }
+    event.currentTarget.disabled = true;
+    feedback.textContent = "";
+    try {
+      await api(`/api/movie/${id}/review`, {
+        method: "PUT", body: JSON.stringify({ rating: m.my_rating, text }),
+      });
+      m.my_comment = text;
+      m.my_comment_status = "published";
+      feedback.textContent = t("review_saved");
+      renderReviewEditor(id, m);
+      wireMovieReviews(id);
+    } catch (error) {
+      feedback.textContent = error.message;
+      event.currentTarget.disabled = false;
+    }
   };
+  document.getElementById("d-review-delete")?.addEventListener("click", async event => {
+    event.currentTarget.disabled = true;
+    try {
+      await api(`/api/movie/${id}/review`, { method: "DELETE" });
+      m.my_comment = null;
+      m.my_comment_status = "deleted";
+      renderReviewEditor(id, m);
+      wireMovieReviews(id);
+    } catch (error) {
+      feedback.textContent = error.message;
+      event.currentTarget.disabled = false;
+    }
+  });
+}
+
+function reviewDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  try { return new Intl.DateTimeFormat(lang === "ru" ? "ru-RU" : "en-US", { dateStyle: "medium" }).format(date); }
+  catch (_) { return date.toLocaleDateString(); }
+}
+
+function reviewCardHTML(review, pinned = false) {
+  const user = review.user || {};
+  const name = user.name || (lang === "ru" ? "Пользователь" : "User");
+  const avatar = user.photo_url
+    ? `<img src="${esc(user.photo_url)}" alt="" loading="lazy" data-img-remove-on-error>`
+    : "";
+  return `<article class="d-review-card${pinned ? " pinned" : ""}">
+    ${pinned ? `<div class="d-review-pinned">${esc(t("reviews_partner"))}</div>` : ""}
+    <div class="d-review-author"><div class="d-review-avatar"><span>${esc(initials(name))}</span>${avatar}</div>
+      <div><strong>${esc(name)}</strong><small>${esc(reviewDate(review.commented_at))}</small></div>
+      <b>★ ${esc(review.rating ?? "—")}</b></div>
+    <p>${esc(review.text || "")}</p>
+    ${!review.is_me ? `<button class="d-review-report" data-review-report="${review.id}">${esc(t("review_report"))}</button>` : ""}
+  </article>`;
+}
+
+async function loadMovieReviews(id, sort = "newest", beforeId = null, append = false) {
+  const host = document.getElementById("d-public-reviews");
+  const list = document.getElementById("d-reviews-list");
+  if (!host || !list || String(host.dataset.filmId) !== String(id)) return;
+  if (!append) list.innerHTML = `<div class="d-reviews-state">${esc(t("reviews_loading"))}</div>`;
+  try {
+    const query = new URLSearchParams({ limit: "10", sort });
+    if (beforeId) query.set("before_id", String(beforeId));
+    const data = await api(`/api/movie/${id}/reviews?${query}`);
+    if (!document.getElementById("d-public-reviews") || String(host.dataset.filmId) !== String(id)) return;
+    const cards = [
+      ...(!append && data.partner_review ? [reviewCardHTML(data.partner_review, true)] : []),
+      ...(data.items || []).map(item => reviewCardHTML(item)),
+    ].join("");
+    if (append) list.querySelector(".d-reviews-more")?.remove();
+    else list.innerHTML = "";
+    if (cards) list.insertAdjacentHTML("beforeend", cards);
+    if (!list.querySelector(".d-review-card")) list.innerHTML = `<div class="d-reviews-state">${esc(t("reviews_empty"))}</div>`;
+    if (data.next_before_id) list.insertAdjacentHTML("beforeend",
+      `<button class="d-reviews-more" data-next-review="${data.next_before_id}">${esc(t("reviews_load_more"))}</button>`);
+    list.querySelector(".d-reviews-more")?.addEventListener("click", event => {
+      event.currentTarget.disabled = true;
+      loadMovieReviews(id, sort, event.currentTarget.dataset.nextReview, true);
+    });
+    list.querySelectorAll("[data-review-report]").forEach(button => button.onclick = async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/movie/${id}/reviews/${button.dataset.reviewReport}/report`, {
+          method: "POST", body: JSON.stringify({ reason: null }),
+        });
+        button.textContent = t("review_reported");
+      } catch (error) {
+        button.disabled = false;
+        tg?.showAlert?.(error.message);
+      }
+    });
+  } catch (error) {
+    if (!append) list.innerHTML = `<div class="d-reviews-state error">${esc(t("reviews_error"))}<small>${esc(error.message)}</small></div>`;
+  }
+}
+
+function wireMovieReviews(id) {
+  const host = document.getElementById("d-public-reviews");
+  if (!host) return;
+  host.querySelectorAll("[data-review-sort]").forEach(button => button.onclick = () => {
+    host.querySelectorAll("[data-review-sort]").forEach(item => item.classList.toggle("on", item === button));
+    loadMovieReviews(id, button.dataset.reviewSort);
+  });
+  const active = host.querySelector("[data-review-sort].on")?.dataset.reviewSort || "newest";
+  loadMovieReviews(id, active);
 }
 
 function renderActions(id, m) {
@@ -3461,8 +3652,8 @@ function renderActions(id, m) {
   document.getElementById("d-remove")?.addEventListener("click", () => tg.showConfirm(t("confirm_remove", m.title), async ok => {
     if (!ok) return;
     await api(`/api/movie/${id}`, { method: "DELETE" });
-    m.status = null; m.my_rating = null; m.my_comment = null;
-    renderActions(id, m); renderStars(id, m); renderComment(id, m);
+    m.status = null; m.my_rating = null; m.my_comment = null; m.my_comment_status = null;
+    renderActions(id, m); renderStars(id, m); renderReviewEditor(id, m); refreshRatingContext(m);
   }));
 }
 

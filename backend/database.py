@@ -58,6 +58,7 @@ _SCHEMA_MIGRATION_SESSION_VERSIONS = "2026-07-27-session-versions-v1"
 _SCHEMA_MIGRATION_HERO_MEDIA = "2026-07-28-hero-media-v1"
 _SCHEMA_MIGRATION_HERO_PRESENTATION = "2026-07-28-hero-presentation-v1"
 _SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION = "2026-07-28-movie-flow-moderation-v1"
+_SCHEMA_MIGRATION_PUBLIC_REVIEWS = "2026-07-29-public-reviews-v1"
 
 # Значения films.media_type. Дублируются константами, а не импортом media_type,
 # чтобы не затенять одноимённый аргумент get_or_create_film.
@@ -845,6 +846,58 @@ async def _apply_movie_flow_moderation_migration() -> None:
     await _add_column_if_missing("films", "movie_flow_reason TEXT")
 
 
+async def _apply_public_reviews_migration() -> None:
+    """Add public-review metadata without exposing historical private notes.
+
+    ``user_films`` remains the source of truth for the current rating/comment.
+    The small identity table supplies a stable numeric cursor and lets reports
+    survive edits without copying review text into a second content table.
+    """
+    await _add_column_if_missing("user_films", "commented_at TEXT")
+    await _add_column_if_missing("user_films", "comment_status TEXT")
+    review_id = "SERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    report_id = "SERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        await db.execute(f"""
+            CREATE TABLE IF NOT EXISTS review_identities (
+                id         {review_id},
+                user_id    BIGINT NOT NULL,
+                film_id    INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE (user_id, film_id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (film_id) REFERENCES films(id)
+            )
+        """)
+        await db.execute(f"""
+            CREATE TABLE IF NOT EXISTS review_reports (
+                id          {report_id},
+                review_id   INTEGER NOT NULL,
+                reporter_id BIGINT NOT NULL,
+                reason      TEXT,
+                created_at  TEXT NOT NULL,
+                UNIQUE (review_id, reporter_id),
+                FOREIGN KEY (review_id) REFERENCES review_identities(id),
+                FOREIGN KEY (reporter_id) REFERENCES users(id)
+            )
+        """)
+        # Historical comments were written when the product promised a private
+        # note. They must never become public merely because a deploy ran.
+        await db.execute(
+            "UPDATE user_films SET comment_status = 'private_legacy' "
+            "WHERE comment IS NOT NULL AND TRIM(comment) <> '' AND comment_status IS NULL"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_films_public_reviews "
+            "ON user_films(film_id, comment_status, commented_at)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_review_reports_review "
+            "ON review_reports(review_id)"
+        )
+        await db.commit()
+
+
 async def _run_schema_migrations() -> None:
     """Run ordered, idempotent schema upgrades and journal them on success."""
     migrations = (
@@ -869,6 +922,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_HERO_MEDIA, _apply_hero_media_migration),
         (_SCHEMA_MIGRATION_HERO_PRESENTATION, _apply_hero_presentation_migration),
         (_SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION, _apply_movie_flow_moderation_migration),
+        (_SCHEMA_MIGRATION_PUBLIC_REVIEWS, _apply_public_reviews_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -987,6 +1041,8 @@ async def _init_schema() -> None:
                 added_at   TEXT,
                 watched_at TEXT,
                 rated_at   TEXT,
+                commented_at TEXT,
+                comment_status TEXT,
                 PRIMARY KEY (user_id, film_id),
                 FOREIGN KEY (user_id) REFERENCES users(id),
                 FOREIGN KEY (film_id) REFERENCES films(id)
@@ -2188,14 +2244,28 @@ async def set_status(user_id: int, film_id: int, status: str) -> None:
 
 
 async def set_comment(user_id: int, film_id: int, text: str) -> None:
+    """Compatibility path for clients predating public reviews.
+
+    Old clients save on textarea blur and have no explicit publish consent.
+    Their text therefore remains ``private_legacy``. If the same user already
+    has a published review, a cached client may edit it without demoting it.
+    """
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        now = _now()
         await db.execute(
             """
-            INSERT INTO user_films (user_id, film_id, status, comment, added_at)
-            VALUES (?,?, 'want_to_watch', ?, ?)
-            ON CONFLICT(user_id, film_id) DO UPDATE SET comment = excluded.comment
+            INSERT INTO user_films
+                (user_id, film_id, status, comment, added_at, commented_at, comment_status)
+            VALUES (?,?, 'want_to_watch', ?, ?, ?, 'private_legacy')
+            ON CONFLICT(user_id, film_id) DO UPDATE SET
+                comment = excluded.comment,
+                commented_at = excluded.commented_at,
+                comment_status = CASE
+                    WHEN user_films.comment_status = 'published' THEN 'published'
+                    ELSE 'private_legacy'
+                END
             """,
-            (user_id, film_id, text, _now()),
+            (user_id, film_id, text, now, now),
         )
         await db.commit()
 
@@ -2203,9 +2273,269 @@ async def set_comment(user_id: int, film_id: int, text: str) -> None:
 async def delete_comment(user_id: int, film_id: int) -> None:
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         await db.execute(
-            "UPDATE user_films SET comment = NULL WHERE user_id = ? AND film_id = ?",
-            (user_id, film_id))
+            "UPDATE user_films SET comment = NULL, comment_status = 'deleted', commented_at = ? "
+            "WHERE user_id = ? AND film_id = ?",
+            (_now(), user_id, film_id))
         await db.commit()
+
+
+def _review_item(row, viewer_id: int, partner_id: int | None) -> dict:
+    return {
+        "id": int(row["review_id"]),
+        "user": {
+            "id": int(row["user_id"]),
+            "name": row["first_name"] or row["username"] or "Пользователь",
+            "photo_url": row["photo_url"],
+        },
+        "rating": int(row["rating"]) if row["rating"] is not None else None,
+        "text": row["comment"],
+        "commented_at": row["commented_at"],
+        "is_me": int(row["user_id"]) == int(viewer_id),
+        "is_partner": partner_id is not None and int(row["user_id"]) == int(partner_id),
+    }
+
+
+async def _ensure_review_identity(db, user_id: int, film_id: int) -> int:
+    await db.execute(
+        "INSERT INTO review_identities (user_id, film_id, created_at) VALUES (?,?,?) "
+        "ON CONFLICT(user_id, film_id) DO NOTHING",
+        (user_id, film_id, _now()),
+    )
+    row = await (await db.execute(
+        "SELECT id FROM review_identities WHERE user_id = ? AND film_id = ?",
+        (user_id, film_id),
+    )).fetchone()
+    return int(row["id"] if hasattr(row, "keys") else row[0])
+
+
+async def set_public_review(user_id: int, film_id: int, rating: int, text: str) -> dict:
+    """Publish or edit the one current review for ``(user, film)`` atomically."""
+    now = _now()
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        review_id = await _ensure_review_identity(db, user_id, film_id)
+        await db.execute(
+            """
+            INSERT INTO user_films
+                (user_id, film_id, status, rating, comment, added_at, watched_at,
+                 rated_at, commented_at, comment_status)
+            VALUES (?,?, 'watched', ?, ?, ?, ?, ?, ?, 'published')
+            ON CONFLICT(user_id, film_id) DO UPDATE SET
+                rating = excluded.rating,
+                comment = excluded.comment,
+                status = 'watched',
+                watched_at = COALESCE(user_films.watched_at, excluded.watched_at),
+                rated_at = excluded.rated_at,
+                commented_at = excluded.commented_at,
+                comment_status = 'published'
+            """,
+            (user_id, film_id, rating, text, now, now, now, now),
+        )
+        row = await (await db.execute(
+            "SELECT ri.id AS review_id, uf.user_id, uf.rating, uf.comment, uf.commented_at, "
+            "u.first_name, u.username, u.photo_url "
+            "FROM review_identities ri JOIN user_films uf "
+            "ON uf.user_id = ri.user_id AND uf.film_id = ri.film_id "
+            "JOIN users u ON u.id = uf.user_id WHERE ri.id = ?",
+            (review_id,),
+        )).fetchone()
+        await db.commit()
+    return _review_item(row, user_id, None)
+
+
+async def delete_public_review(user_id: int, film_id: int) -> bool:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE user_films SET comment = NULL, comment_status = 'deleted', commented_at = ? "
+            "WHERE user_id = ? AND film_id = ? AND comment_status IN ('published','private_legacy')",
+            (_now(), user_id, film_id),
+        )
+        await db.commit()
+        return bool(cur.rowcount)
+
+
+async def publish_legacy_review(user_id: int, film_id: int) -> dict | None:
+    """Publish an old private note only after an explicit user action."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        current = await (await db.execute(
+            "SELECT rating, comment FROM user_films WHERE user_id = ? AND film_id = ? "
+            "AND comment_status = 'private_legacy' AND comment IS NOT NULL AND TRIM(comment) <> ''",
+            (user_id, film_id),
+        )).fetchone()
+        if not current or current["rating"] is None:
+            return None
+        review_id = await _ensure_review_identity(db, user_id, film_id)
+        now = _now()
+        await db.execute(
+            "UPDATE user_films SET comment_status = 'published', commented_at = ? "
+            "WHERE user_id = ? AND film_id = ? AND comment_status = 'private_legacy'",
+            (now, user_id, film_id),
+        )
+        row = await (await db.execute(
+            "SELECT ri.id AS review_id, uf.user_id, uf.rating, uf.comment, uf.commented_at, "
+            "u.first_name, u.username, u.photo_url "
+            "FROM review_identities ri JOIN user_films uf "
+            "ON uf.user_id = ri.user_id AND uf.film_id = ri.film_id "
+            "JOIN users u ON u.id = uf.user_id WHERE ri.id = ?",
+            (review_id,),
+        )).fetchone()
+        await db.commit()
+    return _review_item(row, user_id, None)
+
+
+async def get_movie_rating_context(user_id: int, film_id: int) -> dict:
+    """Current user's review state plus the active reciprocal partner's rating."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        mine = await (await db.execute(
+            "SELECT status, rating, comment, commented_at, comment_status "
+            "FROM user_films WHERE user_id = ? AND film_id = ?",
+            (user_id, film_id),
+        )).fetchone()
+        partner = await (await db.execute(
+            "SELECT u.id, u.first_name, u.username, u.photo_url, uf.rating "
+            "FROM partners p JOIN partners reciprocal "
+            "ON reciprocal.user_id = p.partner_id AND reciprocal.partner_id = p.user_id "
+            "JOIN users u ON u.id = p.partner_id "
+            "LEFT JOIN user_films uf ON uf.user_id = p.partner_id AND uf.film_id = ? "
+            "WHERE p.user_id = ? LIMIT 1",
+            (film_id, user_id),
+        )).fetchone()
+    return {
+        "mine": dict(mine) if mine else None,
+        "partner": ({
+            "id": int(partner["id"]),
+            "name": partner["first_name"] or partner["username"] or "Партнёр",
+            "photo_url": partner["photo_url"],
+            "rating": int(partner["rating"]) if partner["rating"] is not None else None,
+        } if partner else None),
+    }
+
+
+async def list_movie_reviews(user_id: int, film_id: int, *, limit: int = 10,
+                             before_id: int | None = None,
+                             sort: str = "newest") -> dict:
+    """Keyset-paginated public reviews; active partner is pinned separately."""
+    if sort not in {"newest", "highest", "lowest"}:
+        raise ValueError("unsupported review sort")
+    limit = max(1, min(int(limit), 50))
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        partner_row = await (await db.execute(
+            "SELECT p.partner_id FROM partners p JOIN partners reciprocal "
+            "ON reciprocal.user_id = p.partner_id AND reciprocal.partner_id = p.user_id "
+            "WHERE p.user_id = ? LIMIT 1",
+            (user_id,),
+        )).fetchone()
+        partner_id = int(partner_row["partner_id"]) if partner_row else None
+
+        base = (
+            " FROM review_identities ri "
+            "JOIN user_films uf ON uf.user_id = ri.user_id AND uf.film_id = ri.film_id "
+            "JOIN users u ON u.id = uf.user_id "
+            "WHERE ri.film_id = ? AND uf.comment_status = 'published' "
+            "AND uf.comment IS NOT NULL AND TRIM(uf.comment) <> ''"
+        )
+        total_row = await (await db.execute("SELECT COUNT(*) AS n" + base, (film_id,))).fetchone()
+        select = (
+            "SELECT ri.id AS review_id, uf.user_id, uf.rating, uf.comment, uf.commented_at, "
+            "u.first_name, u.username, u.photo_url" + base
+        )
+        partner_review = None
+        if partner_id is not None:
+            row = await (await db.execute(
+                select + " AND uf.user_id = ? LIMIT 1", (film_id, partner_id)
+            )).fetchone()
+            if row:
+                partner_review = _review_item(row, user_id, partner_id)
+
+        params: list = [film_id]
+        query = select
+        if partner_id is not None:
+            query += " AND uf.user_id <> ?"
+            params.append(partner_id)
+        if before_id is not None:
+            cursor = await (await db.execute(
+                "SELECT ri.id, uf.rating, uf.commented_at FROM review_identities ri "
+                "JOIN user_films uf ON uf.user_id = ri.user_id AND uf.film_id = ri.film_id "
+                "WHERE ri.id = ? AND ri.film_id = ? AND uf.comment_status = 'published'",
+                (before_id, film_id),
+            )).fetchone()
+            if not cursor:
+                raise ValueError("invalid review cursor")
+            if sort == "newest":
+                query += (
+                    " AND (uf.commented_at < ? OR "
+                    "(uf.commented_at = ? AND ri.id < ?))"
+                )
+                params.extend([cursor["commented_at"], cursor["commented_at"], cursor["id"]])
+            else:
+                rating_op = "<" if sort == "highest" else ">"
+                query += (
+                    f" AND (uf.rating {rating_op} ? OR "
+                    "(uf.rating = ? AND uf.commented_at < ?) OR "
+                    "(uf.rating = ? AND uf.commented_at = ? AND ri.id < ?))"
+                )
+                params.extend([
+                    cursor["rating"], cursor["rating"], cursor["commented_at"],
+                    cursor["rating"], cursor["commented_at"], cursor["id"],
+                ])
+        if sort == "newest":
+            query += " ORDER BY uf.commented_at DESC, ri.id DESC"
+        elif sort == "highest":
+            query += " ORDER BY uf.rating DESC, uf.commented_at DESC, ri.id DESC"
+        else:
+            query += " ORDER BY uf.rating ASC, uf.commented_at DESC, ri.id DESC"
+        query += " LIMIT ?"
+        params.append(limit + 1)
+        rows = await (await db.execute(query, params)).fetchall()
+    has_more = len(rows) > limit
+    visible = rows[:limit]
+    items = [_review_item(row, user_id, partner_id) for row in visible]
+    return {
+        "partner_review": partner_review,
+        "items": items,
+        "total": int(total_row["n"]),
+        "next_before_id": items[-1]["id"] if has_more and items else None,
+    }
+
+
+async def report_review(reporter_id: int, film_id: int, review_id: int, reason: str | None) -> bool:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        review = await (await db.execute(
+            "SELECT ri.user_id FROM review_identities ri JOIN user_films uf "
+            "ON uf.user_id = ri.user_id AND uf.film_id = ri.film_id "
+            "WHERE ri.id = ? AND ri.film_id = ? AND uf.comment_status = 'published'",
+            (review_id, film_id),
+        )).fetchone()
+        if not review or int(review["user_id"]) == int(reporter_id):
+            return False
+        cur = await db.execute(
+            "INSERT INTO review_reports (review_id, reporter_id, reason, created_at) "
+            "VALUES (?,?,?,?) ON CONFLICT(review_id, reporter_id) DO NOTHING",
+            (review_id, reporter_id, reason, _now()),
+        )
+        await db.commit()
+        return bool(cur.rowcount)
+
+
+async def hide_review(review_id: int) -> dict | None:
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        row = await (await db.execute(
+            "SELECT user_id, film_id FROM review_identities WHERE id = ?", (review_id,)
+        )).fetchone()
+        if not row:
+            return None
+        cur = await db.execute(
+            "UPDATE user_films SET comment_status = 'hidden' "
+            "WHERE user_id = ? AND film_id = ? AND comment_status = 'published'",
+            (row["user_id"], row["film_id"]),
+        )
+        await db.commit()
+        return {"user_id": int(row["user_id"]), "film_id": int(row["film_id"])} if cur.rowcount else None
 
 
 async def remove_from_list(user_id: int, film_id: int) -> None:

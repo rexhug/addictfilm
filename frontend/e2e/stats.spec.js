@@ -107,6 +107,25 @@ async function openStats(page, paired = false, options = {}) {
   await page.route("**/api/**", async route => {
     const requestUrl = new URL(route.request().url());
     const path = requestUrl.pathname;
+    if (options.reviewApi && (
+      path === "/api/movie/1/reviews"
+      || path === "/api/movie/1/review"
+      || path === "/api/movie/1/review/legacy"
+      || /^\/api\/movie\/1\/reviews\/\d+\/report$/.test(path)
+    )) {
+      const response = await options.reviewApi({
+        method: route.request().method(),
+        path,
+        searchParams: requestUrl.searchParams,
+        body: JSON.parse(route.request().postData() || "null"),
+      });
+      await route.fulfill({
+        status: response?.status || 200,
+        contentType: "application/json",
+        body: JSON.stringify(response?.body ?? response ?? { ok: true }),
+      });
+      return;
+    }
     if (path.startsWith("/api/notifications")) {
       options.onNotificationRequest?.({
         method: route.request().method(),
@@ -171,7 +190,10 @@ async function openStats(page, paired = false, options = {}) {
       : path.startsWith("/api/notifications/")
         ? { ok: true }
       : path === "/api/movie/1"
-        ? { id: 1, title: "The Last of Us", title_original: "The Last of Us", year: "2023", poster_url: null, genres: "Drama" }
+        ? (options.movieDetail || {
+          id: 1, title: "The Last of Us", title_original: "The Last of Us",
+          year: "2023", poster_url: null, genres: "Drama",
+        })
       : path === "/api/partner"
         ? (partnerApi?.current ? partnerApi.current() : (paired ? { status: "paired", partner: { name: "Kristina", username: "kristina" } } : { status: "none" }))
         : path.startsWith("/api/partner/invite/")
@@ -782,6 +804,121 @@ test("returning from a film keeps list scroll and loaded cards intact", async ({
   await expect(page.locator("#list .poster")).toHaveCount(24);
   await expect(page.locator("#list .sk")).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(savedY);
+});
+
+test("public reviews are explicit, paginated, safe and keep the partner pinned", async ({ page }) => {
+  const requests = [];
+  let publishedText = null;
+  const item = (id, name, rating, text, extra = {}) => ({
+    id,
+    user: { id: id + 10, name, photo_url: null },
+    rating,
+    text,
+    commented_at: "2026-07-29T12:00:00Z",
+    is_me: false,
+    is_partner: false,
+    ...extra,
+  });
+  await openStats(page, true, {
+    movieDetail: {
+      id: 1,
+      title: "The Last of Us",
+      title_original: "The Last of Us",
+      year: "2023",
+      poster_url: null,
+      genres: "Drama",
+      actors: "Pedro Pascal, Bella Ramsey",
+      status: "watched",
+      my_rating: 8,
+      my_comment: null,
+      my_comment_status: null,
+      partner: { id: 2, name: "Kristina", rating: 9 },
+      community: { avg: 8.7, count: 38 },
+    },
+    reviewApi: ({ method, path, searchParams, body }) => {
+      requests.push({
+        method,
+        path,
+        sort: searchParams.get("sort"),
+        before: searchParams.get("before_id"),
+        body,
+      });
+      if (method === "PUT") {
+        publishedText = body.text;
+        return { id: 101, rating: body.rating, text: body.text };
+      }
+      if (method === "DELETE") {
+        publishedText = null;
+        return { ok: true };
+      }
+      if (method === "POST") return { ok: true };
+      if (searchParams.get("before_id")) {
+        return {
+          partner_review: null,
+          items: [item(88, "Later user", 6, "Second page")],
+          total: 3,
+          next_before_id: null,
+        };
+      }
+      return {
+        partner_review: item(99, "Kristina", 9, "Partner review", {
+          user: { id: 2, name: "Kristina", photo_url: null },
+          is_partner: true,
+        }),
+        items: [
+          ...(publishedText ? [item(101, "Denys", 8, publishedText, {
+            user: { id: 1, name: "Denys", photo_url: null },
+            is_me: true,
+          })] : []),
+          item(90, "Public user", 7, "<img src=x onerror=alert(1)>"),
+        ],
+        total: publishedText ? 4 : 3,
+        next_before_id: 90,
+      };
+    },
+  });
+  await page.getByRole("tab", { name: "Мы вместе" }).click();
+  await page.locator('.pair-favorite-card[data-film-id="1"]').click();
+
+  await expect(page.locator(".detail-v2")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Ваши оценки" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Отзывы пользователей" })).toBeVisible();
+  const sectionOrder = await page.evaluate(() => [
+    document.querySelector(".d-rating-context"),
+    document.querySelector(".d-review"),
+    document.querySelector(".d-cast"),
+    document.querySelector(".d-public-reviews"),
+  ].map(node => Math.round(node.getBoundingClientRect().top)));
+  expect(sectionOrder).toEqual([...sectionOrder].sort((a, b) => a - b));
+
+  await expect(page.locator(".d-review-card").first()).toHaveClass(/pinned/);
+  await expect(page.locator(".d-review-card").first()).toContainText("Kristina");
+  await expect(page.getByText("<img src=x onerror=alert(1)>", { exact: true })).toBeVisible();
+  await expect(page.locator('.d-review-card img[src="x"]')).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Высокие оценки" }).click();
+  await expect.poll(() => requests.some(request => request.method === "GET" && request.sort === "highest")).toBeTruthy();
+
+  await page.getByRole("button", { name: "Показать ещё" }).click();
+  await expect(page.getByText("Second page")).toBeVisible();
+  expect(requests.some(request => request.method === "GET" && request.before === "90")).toBeTruthy();
+
+  await page.locator("#d-comment-input").fill("Мой публичный отзыв");
+  await page.getByRole("button", { name: "Опубликовать" }).click();
+  await expect.poll(() => publishedText).toBe("Мой публичный отзыв");
+  await expect(page.getByRole("button", { name: "Сохранить" })).toBeVisible();
+  await expect(page.locator("#d-reviews-list").getByText("Мой публичный отзыв", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Удалить" }).click();
+  await expect.poll(() => publishedText).toBeNull();
+  await expect(page.getByRole("button", { name: "Опубликовать" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Пожаловаться" }).first().click();
+  await expect(page.getByText("Жалоба отправлена", { exact: true })).toBeVisible();
+  expect(requests.some(request => request.path.endsWith("/report"))).toBeTruthy();
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 });
 
 // ── Крупные (featured) подборки ─────────────────────────────────────────────

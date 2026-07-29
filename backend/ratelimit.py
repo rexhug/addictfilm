@@ -38,12 +38,16 @@ USER_WINDOW: int = int(os.getenv("USER_SEARCH_WINDOW", "60"))
 # in main.py. It protects the application from becoming an open bandwidth proxy.
 IMAGE_PROXY_MAX: int = int(os.getenv("IMAGE_PROXY_MAX", "120"))
 IMAGE_PROXY_WINDOW: int = int(os.getenv("IMAGE_PROXY_WINDOW", "60"))
+REVIEW_WRITE_MAX: int = int(os.getenv("REVIEW_WRITE_MAX", "12"))
+REVIEW_WRITE_WINDOW: int = int(os.getenv("REVIEW_WRITE_WINDOW", "60"))
 _MAX_TRACKED_KEYS: int = max(1_000, int(os.getenv("RATE_LIMIT_MAX_TRACKED_KEYS", "20_000")))
 
 _hits: dict[int, deque] = defaultdict(deque)
 _calls: int = 0  # счётчик обращений для периодической уборки _hits
 _image_hits: dict[str, deque] = defaultdict(deque)
 _image_calls: int = 0
+_review_hits: dict[int, deque] = defaultdict(deque)
+_review_calls: int = 0
 
 
 def _today() -> str:
@@ -109,10 +113,33 @@ def allow_image_proxy(client_key: str) -> bool:
     return True
 
 
+def allow_review_write(user_id: int) -> bool:
+    """Separate review-mutation guard; review traffic never consumes search quota."""
+    global _review_calls
+    now = time.monotonic()
+    _review_calls += 1
+    if _review_calls % 500 == 0 or len(_review_hits) >= _MAX_TRACKED_KEYS:
+        for uid in list(_review_hits):
+            dq = _review_hits[uid]
+            while dq and now - dq[0] > REVIEW_WRITE_WINDOW:
+                dq.popleft()
+            if not dq:
+                del _review_hits[uid]
+    dq = _review_hits[user_id]
+    while dq and now - dq[0] > REVIEW_WRITE_WINDOW:
+        dq.popleft()
+    if len(dq) >= REVIEW_WRITE_MAX:
+        return False
+    dq.append(now)
+    return True
+
+
 def _reset_for_tests() -> None:
     """Только для тестов: обнулить in-memory состояние (per-user throttle)."""
-    global _calls, _image_calls
+    global _calls, _image_calls, _review_calls
     _calls = 0
     _hits.clear()
     _image_calls = 0
     _image_hits.clear()
+    _review_calls = 0
+    _review_hits.clear()
