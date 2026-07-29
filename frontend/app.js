@@ -183,7 +183,6 @@ const DICT = {
     review_legacy_hint: "Опубликовать её как отзыв?", review_legacy_publish: "Опубликовать",
     review_legacy_keep: "Оставить личной", review_legacy_delete: "Удалить",
     reviews_title: "Отзывы пользователей", reviews_partner: "Отзыв партнёра",
-    reviews_newest: "Новые", reviews_highest: "Высокие оценки", reviews_lowest: "Низкие оценки",
     reviews_empty: "Пока нет публичных отзывов", reviews_load_more: "Показать ещё",
     reviews_loading: "Загружаю отзывы…", reviews_error: "Не удалось загрузить отзывы",
     review_report: "Пожаловаться", review_reported: "Жалоба отправлена",
@@ -342,7 +341,6 @@ const DICT = {
     review_legacy_hint: "Publish it as a review?", review_legacy_publish: "Publish",
     review_legacy_keep: "Keep private", review_legacy_delete: "Delete",
     reviews_title: "User reviews", reviews_partner: "Partner review",
-    reviews_newest: "Newest", reviews_highest: "High ratings", reviews_lowest: "Low ratings",
     reviews_empty: "No public reviews yet", reviews_load_more: "Show more",
     reviews_loading: "Loading reviews…", reviews_error: "Could not load reviews",
     review_report: "Report", review_reported: "Report sent",
@@ -3362,13 +3360,7 @@ function renderDetail(id, m) {
         ${cast.length ? `<div class="d-cast"><div class="d-cast-h"><h2>${esc(t("cast_title"))}</h2></div>
           <div class="d-cast-rail">${cast.map(a => `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(a.name))}</span>${a.photo_url ? `<img loading="lazy" decoding="async" src="${posterSrc(a.photo_url)}" alt="" data-img-retry data-person-photo>` : ""}</div><div class="n">${esc(a.name)}</div></div>`).join("")}</div></div>` : ""}
         <section class="d-public-reviews" id="d-public-reviews" data-film-id="${id}">
-          <div class="d-public-reviews-head"><h2>${esc(t("reviews_title"))}</h2>
-            <div class="d-review-sorts" role="group" aria-label="${esc(t("sort_title"))}">
-              <button class="on" data-review-sort="newest">${esc(t("reviews_newest"))}</button>
-              <button data-review-sort="highest">${esc(t("reviews_highest"))}</button>
-              <button data-review-sort="lowest">${esc(t("reviews_lowest"))}</button>
-            </div>
-          </div>
+          <div class="d-public-reviews-head"><h2>${esc(t("reviews_title"))}</h2></div>
           <div id="d-reviews-list" class="d-reviews-list"><div class="d-reviews-state">${esc(t("reviews_loading"))}</div></div>
         </section>
       </div>
@@ -3573,13 +3565,15 @@ function reviewCardHTML(review, pinned = false) {
   </article>`;
 }
 
-async function loadMovieReviews(id, sort = "newest", beforeId = null, append = false) {
+async function loadMovieReviews(id, beforeId = null, append = false) {
   const host = document.getElementById("d-public-reviews");
   const list = document.getElementById("d-reviews-list");
   if (!host || !list || String(host.dataset.filmId) !== String(id)) return;
   if (!append) list.innerHTML = `<div class="d-reviews-state">${esc(t("reviews_loading"))}</div>`;
   try {
-    const query = new URLSearchParams({ limit: "10", sort });
+    // The public feed has one predictable order: newest to oldest. Keeping the
+    // sort explicit also makes every pagination request use the same cursor order.
+    const query = new URLSearchParams({ limit: "10", sort: "newest" });
     if (beforeId) query.set("before_id", String(beforeId));
     const data = await api(`/api/movie/${id}/reviews?${query}`);
     if (!document.getElementById("d-public-reviews") || String(host.dataset.filmId) !== String(id)) return;
@@ -3595,7 +3589,7 @@ async function loadMovieReviews(id, sort = "newest", beforeId = null, append = f
       `<button class="d-reviews-more" data-next-review="${data.next_before_id}">${esc(t("reviews_load_more"))}</button>`);
     list.querySelector(".d-reviews-more")?.addEventListener("click", event => {
       event.currentTarget.disabled = true;
-      loadMovieReviews(id, sort, event.currentTarget.dataset.nextReview, true);
+      loadMovieReviews(id, event.currentTarget.dataset.nextReview, true);
     });
     list.querySelectorAll("[data-review-report]").forEach(button => button.onclick = async () => {
       button.disabled = true;
@@ -3617,12 +3611,7 @@ async function loadMovieReviews(id, sort = "newest", beforeId = null, append = f
 function wireMovieReviews(id) {
   const host = document.getElementById("d-public-reviews");
   if (!host) return;
-  host.querySelectorAll("[data-review-sort]").forEach(button => button.onclick = () => {
-    host.querySelectorAll("[data-review-sort]").forEach(item => item.classList.toggle("on", item === button));
-    loadMovieReviews(id, button.dataset.reviewSort);
-  });
-  const active = host.querySelector("[data-review-sort].on")?.dataset.reviewSort || "newest";
-  loadMovieReviews(id, active);
+  loadMovieReviews(id);
 }
 
 function renderActions(id, m) {

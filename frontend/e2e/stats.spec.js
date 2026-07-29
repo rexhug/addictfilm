@@ -896,12 +896,13 @@ test("public reviews are explicit, paginated, safe and keep the partner pinned",
   await expect(page.getByText("<img src=x onerror=alert(1)>", { exact: true })).toBeVisible();
   await expect(page.locator('.d-review-card img[src="x"]')).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Высокие оценки" }).click();
-  await expect.poll(() => requests.some(request => request.method === "GET" && request.sort === "highest")).toBeTruthy();
+  await expect(page.locator("[data-review-sort]")).toHaveCount(0);
+  await expect.poll(() => requests.some(request => request.method === "GET" && request.sort === "newest")).toBeTruthy();
 
   await page.getByRole("button", { name: "Показать ещё" }).click();
   await expect(page.getByText("Second page")).toBeVisible();
   expect(requests.some(request => request.method === "GET" && request.before === "90")).toBeTruthy();
+  expect(requests.filter(request => request.method === "GET").every(request => request.sort === "newest")).toBeTruthy();
 
   await page.locator("#d-comment-input").fill("Мой публичный отзыв");
   await page.getByRole("button", { name: "Опубликовать" }).click();
