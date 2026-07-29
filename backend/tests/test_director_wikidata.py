@@ -22,7 +22,7 @@ class WikidataDirectorParserTests(unittest.TestCase):
         self.assertEqual(wikidata._directors_from_bindings(rows), {
             "tt0133093": [{
                 "name": "Лана Вачовски",
-                "photo_url": "https://commons.wikimedia.org/wiki/Special:FilePath/Lana.jpg?width=360",
+                "photo_url": "https://commons.wikimedia.org/wiki/Special:FilePath/Lana.jpg?width=330",
                 "source": "wikidata",
             }],
         })

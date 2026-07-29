@@ -115,9 +115,15 @@ class HeroApiTests(unittest.IsolatedAsyncioTestCase):
     # ── флаги и секреты ──────────────────────────────────────────────────────
     async def test_the_ui_flag_is_reported_by_the_server_not_guessed_by_the_client(self):
         with mock.patch.object(main, "FULLSCREEN_SINGLE_PICK_ENABLED", True):
-            self.assertEqual(main._client_features(), {"fullscreen_single_pick": True})
+            self.assertEqual(main._client_features(), {
+                "fullscreen_single_pick": True,
+                "cast_v2": False,
+            })
         with mock.patch.object(main, "FULLSCREEN_SINGLE_PICK_ENABLED", False):
-            self.assertEqual(main._client_features(), {"fullscreen_single_pick": False})
+            self.assertEqual(main._client_features(), {
+                "fullscreen_single_pick": False,
+                "cast_v2": False,
+            })
 
     async def test_bootstrap_carries_the_feature_state(self):
         payload = await main.me(user={"id": 1, "first_name": "One", "username": "one"})

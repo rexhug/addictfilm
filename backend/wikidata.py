@@ -3,6 +3,7 @@ import re
 from urllib.parse import quote, unquote, urlparse
 
 import aiohttp
+import cast as cast_model
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ async def get_titles_by_imdb(imdb_ids: list[str], lang: str = "ru") -> dict[str,
     return out
 
 
-def commons_thumbnail_url(raw_url: str | None, width: int = 360) -> str | None:
+def commons_thumbnail_url(raw_url: str | None, width: int = 330) -> str | None:
     """Turn a Wikidata P18 value into a stable, modest-size Commons image URL.
 
     Wikidata normally returns ``Special:FilePath`` URLs. Keeping that endpoint
@@ -102,7 +103,7 @@ def _cast_ordinal(value: str | None) -> tuple[int, str]:
 
 
 def _cast_from_bindings(rows: list[dict], max_actors: int) -> dict[str, list[dict]]:
-    grouped: dict[str, list[tuple[tuple[int, str], str, dict]]] = {}
+    grouped: dict[str, list[tuple[tuple[int, str], int, dict]]] = {}
     seen: set[tuple[str, str]] = set()
     for row in rows:
         imdb_id = row.get("imdb", {}).get("value")
@@ -112,12 +113,31 @@ def _cast_from_bindings(rows: list[dict], max_actors: int) -> dict[str, list[dic
             continue
         seen.add((imdb_id, actor_id))
         photo_url = commons_thumbnail_url(row.get("image", {}).get("value"))
+        source_order = len(grouped.get(imdb_id, []))
+        ordinal = _cast_ordinal(row.get("ordinal", {}).get("value"))
+        billing_order = ordinal[0] if ordinal[0] < 10_000 else source_order
         grouped.setdefault(imdb_id, []).append((
-            _cast_ordinal(row.get("ordinal", {}).get("value")), actor_id,
-            {"name": name, "photo_url": photo_url, "source": "wikidata"},
+            ordinal, source_order, {
+                "person_id": None,
+                "wikidata_id": actor_id.rsplit("/", 1)[-1],
+                "name": name,
+                "original_name": None,
+                "character": None,
+                "billing_order": billing_order,
+                "source": "wikidata",
+                "photo_url": photo_url,
+                "fallback_photo_urls": [],
+                "photo_state": (
+                    cast_model.PHOTO_UNVERIFIED if photo_url
+                    else cast_model.PHOTO_MISSING
+                ),
+            },
         ))
     return {
-        imdb_id: [entry for _, _, entry in sorted(cast, key=lambda item: (item[0], item[1]))[:max_actors]]
+        imdb_id: cast_model.normalize_cast(
+            [entry for _, _, entry in sorted(cast, key=lambda item: (item[0], item[1]))],
+            limit=max_actors,
+        )
         for imdb_id, cast in grouped.items()
     }
 

@@ -354,10 +354,11 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
         release = asyncio.Event()
         persisted = asyncio.Event()
         old_cast = main.wikidata.get_cast_by_imdb
-        old_store = main.db.set_film_cast_from_wikidata
+        old_store = main.db.update_film_cast
 
-        async def researched_cast(ids):
+        async def researched_cast(ids, max_actors=10):
             self.assertEqual(ids, ["tt0765010"])
+            self.assertEqual(max_actors, 12)
             started.set()
             await release.wait()
             return {"tt0765010": [{"name": "Тоби Магуайр", "photo_url": "https://commons.wikimedia.org/wiki/Special:FilePath/Tobey.jpg"}]}
@@ -368,7 +369,7 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
             return result
 
         main.wikidata.get_cast_by_imdb = researched_cast
-        main.db.set_film_cast_from_wikidata = store_cast
+        main.db.update_film_cast = store_cast
         try:
             response = await asyncio.wait_for(main.movie(film_id, {"id": 1}), timeout=0.1)
             self.assertEqual(response["actors"], "Случайный актёр")
@@ -377,8 +378,9 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(persisted.wait(), timeout=0.5)
         finally:
             main.wikidata.get_cast_by_imdb = old_cast
-            main.db.set_film_cast_from_wikidata = old_store
+            main.db.update_film_cast = old_store
 
         stored = await db.get_film(film_id)
         self.assertEqual(stored["actors"], "Тоби Магуайр")
+        self.assertEqual(db.decode_film_cast(stored["cast_json"])[0]["name"], "Тоби Магуайр")
         self.assertIsNotNone(stored["actor_photos_checked_at"])

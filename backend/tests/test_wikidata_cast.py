@@ -10,7 +10,7 @@ class WikidataCastTests(unittest.TestCase):
         )
         self.assertEqual(
             url,
-            "https://commons.wikimedia.org/wiki/Special:FilePath/Tobey%20Maguire%202012.jpg?width=360",
+            "https://commons.wikimedia.org/wiki/Special:FilePath/Tobey%20Maguire%202012.jpg?width=330",
         )
         self.assertIsNone(wikidata.commons_thumbnail_url("https://example.test/actor.jpg"))
 

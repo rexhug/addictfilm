@@ -23,6 +23,7 @@ from typing import Literal
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
+import cast as cast_model
 import database as db
 import db_runtime
 import fanart
@@ -43,6 +44,7 @@ from config import (
     ADMIN_TOKEN,
     ADMIN_USER_IDS,
     BOT_TOKEN,
+    CAST_V2_ENABLED,
     DATABASE_URL,
     FANART_HERO_ENABLED,
     FULLSCREEN_SINGLE_PICK_ENABLED,
@@ -51,6 +53,7 @@ from config import (
     SENTRY_TRACES_SAMPLE_RATE,
     WISHLIST_PREPARE_SECRET,
 )
+from enrichment.cast_backfill import enrich_film_cast
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -304,7 +307,10 @@ async def me_capabilities(user: dict = Depends(current_user)):
 def _client_features() -> dict:
     """Только про представление. Версии движка подбора сюда не попадают: они
     приходят из СЕССИИ и только администратору (см. _admin_quiz_engine_meta)."""
-    return {"fullscreen_single_pick": FULLSCREEN_SINGLE_PICK_ENABLED}
+    return {
+        "fullscreen_single_pick": FULLSCREEN_SINGLE_PICK_ENABLED,
+        "cast_v2": CAST_V2_ENABLED,
+    }
 
 
 # ── API: список пользователя ──────────────────────────────────────────────────
@@ -387,10 +393,14 @@ async def movie(film_id: int, user: dict = Depends(current_user)):
     needs_backdrop = not f.get("backdrop_url") and not f.get("artwork_checked_at")
     if (needs_poster or needs_backdrop) and imdb_id and imdb_id.startswith("tt"):
         _schedule_visual_enrichment(film_id, imdb_id)
-    needs_actor_photos = bool(f.get("actors")) and not f.get("actor_photos_checked_at")
+    needs_actor_photos = cast_model.cast_refresh_due(f)
     needs_director_photos = bool(f.get("directors")) and not f.get("director_photos_checked_at")
-    if (needs_actor_photos or needs_director_photos) and imdb_id and imdb_id.startswith("tt"):
-        _schedule_people_enrichment(film_id, imdb_id, needs_actor_photos, needs_director_photos)
+    if (needs_actor_photos or needs_director_photos) and (
+        f.get("kp_id") or (imdb_id and imdb_id.startswith("tt"))
+    ):
+        _schedule_people_enrichment(
+            film_id, imdb_id or "", needs_actor_photos, needs_director_photos,
+        )
     context, f["community"] = await asyncio.gather(
         db.get_movie_rating_context(user["id"], film_id), db.community_rating(film_id))
     mine = context["mine"]
@@ -399,6 +409,7 @@ async def movie(film_id: int, user: dict = Depends(current_user)):
     f["my_comment"] = mine["comment"] if mine else None
     f["my_comment_status"] = mine["comment_status"] if mine else None
     f["my_commented_at"] = mine["commented_at"] if mine else None
+    f["cast"] = db.decode_film_cast(f.get("cast_json"))
     f["partner"] = context["partner"]
     f["share_link"] = _movie_link(film_id)
     return f
@@ -432,23 +443,21 @@ def _schedule_visual_enrichment(film_id: int, imdb_id: str) -> None:
 
 async def _enrich_film_people(film_id: int, imdb_id: str, enrich_actors: bool = True,
                               enrich_directors: bool = True) -> bool:
-    """Research cast/director portraits without spending Kinopoisk quota."""
+    """Research cast/director portraits outside the user-facing request."""
     try:
-        cast_map, director_map = await asyncio.gather(
-            wikidata.get_cast_by_imdb([imdb_id]) if enrich_actors else _empty_people_map(),
-            wikidata.get_directors_by_imdb([imdb_id]) if enrich_directors else _empty_people_map(),
+        film = await db.get_film(film_id)
+        if not film:
+            return False
+        director_map = (
+            await wikidata.get_directors_by_imdb([imdb_id])
+            if enrich_directors and imdb_id.startswith("tt") else {}
         )
         enriched = False
         if enrich_actors:
-            cast = cast_map.get(imdb_id, [])
-            if cast:
-                actors = ", ".join(person["name"] for person in cast)
-                await db.set_film_cast_from_wikidata(
-                    film_id, actors, json.dumps(cast, ensure_ascii=False),
-                )
-                enriched = True
-            else:
-                await db.mark_film_actor_photos_checked(film_id)
+            outcome = await enrich_film_cast(
+                film, validate_portraits=True, person_detail_limit=3,
+            )
+            enriched = outcome.wrote or enriched
         if enrich_directors:
             directors = director_map.get(imdb_id, [])
             if directors:
