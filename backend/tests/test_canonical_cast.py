@@ -7,8 +7,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import cast
+import cast as cast_model
 import database as db
 import kinopoisk
+from enrichment import cast_backfill
 from enrichment.cast_backfill import _run, enrich_film_cast
 
 
@@ -300,3 +302,121 @@ class CanonicalCastDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 await _run(args)
         kinopoisk_close.assert_awaited_once_with()
         wikidata_close.assert_awaited_once_with()
+
+class WikidataPrefetchScopeTests(unittest.IsolatedAsyncioTestCase):
+    """Кому именно уходят пакетные запросы.
+
+    Документ Kinopoisk нужен только строкам без kp_id. Wikidata — каждому фильму
+    с валидным IMDb-идентификатором: наличие kp_id ничего не говорит о том, есть
+    ли у актёра свободная фотография на Commons. Раньше оба запроса шли по одному
+    списку, и фильмы с kp_id оставались вообще без запасных портретов.
+    """
+
+    def _args(self, **overrides):
+        base = dict(film_id=None, limit=20, batch_size=5, concurrency=2,
+                    validate_portraits=False, person_detail_limit_per_film=3,
+                    dry_run=True)
+        base.update(overrides)
+        return SimpleNamespace(**base)
+
+    async def _run_with(self, films, wikidata_cast, *, document=None):
+        # Записываем ВСЕ вызовы: у cast_documents_by_imdb есть ещё и подушный
+        # запасной путь внутри enrich_film_cast, и смешивать его с пакетным
+        # префетчем нельзя — проверяем именно первый, пакетный.
+        seen = {"wikidata": [], "legacy": [], "passed": []}
+
+        async def _wikidata(imdb_ids, max_actors=10):
+            seen["wikidata"].append(list(imdb_ids))
+            return {imdb_id: list(wikidata_cast) for imdb_id in imdb_ids}
+
+        async def _documents(imdb_ids):
+            seen["legacy"].append(list(imdb_ids))
+            return {}
+
+        real_enrich = cast_backfill.enrich_film_cast
+
+        async def _spy(film, **kwargs):
+            seen["passed"].append((film["id"], list(kwargs.get("wikidata_cast") or [])))
+            return await real_enrich(film, **kwargs)
+
+        with (
+            patch("enrichment.cast_backfill.db.films_for_cast_backfill",
+                  AsyncMock(return_value=films)),
+            patch("enrichment.cast_backfill.wikidata.get_cast_by_imdb", _wikidata),
+            patch("enrichment.cast_backfill.kinopoisk.cast_documents_by_imdb", _documents),
+            patch("enrichment.cast_backfill.kinopoisk.get_movie",
+                  AsyncMock(return_value=document)),
+            patch("enrichment.cast_backfill.enrich_film_cast", _spy),
+            patch("enrichment.cast_backfill.kinopoisk.aclose", AsyncMock()),
+            patch("enrichment.cast_backfill.wikidata.aclose", AsyncMock()),
+        ):
+            await _run(self._args())
+        return seen
+
+    async def test_a_film_with_a_kp_id_still_gets_wikidata_portraits(self):
+        film = {"id": 26, "imdb_id": "tt1172049", "kp_id": "842493",
+                "title": "Разрушение",
+                "cast_json": json.dumps([
+                    {"person_id": "22692", "name": "Джейк Джилленхол",
+                     "billing_order": 0, "source": "kinopoisk",
+                     "photo_url": "https://st.kp.yandex.net/22692.jpg"},
+                    {"person_id": "27221", "name": "Наоми Уоттс",
+                     "billing_order": 1, "source": "kinopoisk",
+                     "photo_url": "https://st.kp.yandex.net/27221.jpg"},
+                ], ensure_ascii=False)}
+        researched = [
+            # Wikidata отдаёт СВОЙ порядок — здесь Уоттс первая.
+            {"name": "Наоми Уоттс", "photo_url": "https://commons.wikimedia.org/w/naomi.jpg"},
+            {"name": "Джейк Джилленхол", "photo_url": "https://commons.wikimedia.org/w/jake.jpg"},
+        ]
+        # Фильм с kp_id разрешается через kp_id, а не через IMDb-мост.
+        seen = await self._run_with([film], researched,
+                                    document={"id": "842493", "persons": []})
+
+        self.assertEqual(seen["wikidata"][0], ["tt1172049"], "Wikidata должна получить этот фильм")
+        self.assertEqual(seen["legacy"], [], "у фильма есть kp_id — legacy-запрос не нужен")
+        self.assertEqual(len(seen["passed"][0][1]), 2, "в обогащение ушёл пустой состав")
+
+    async def test_a_mixed_batch_splits_the_two_lookups(self):
+        films = [
+            {"id": 26, "imdb_id": "tt1172049", "kp_id": "842493", "title": "С kp_id",
+             "cast_json": None},
+            {"id": 23, "imdb_id": "tt0116996", "kp_id": None, "title": "Без kp_id",
+             "cast_json": None},
+        ]
+        seen = await self._run_with(films, [], document={"id": "842493", "persons": []})
+        self.assertEqual(sorted(seen["wikidata"][0]), ["tt0116996", "tt1172049"])
+        self.assertEqual(seen["legacy"][0], ["tt0116996"],
+                         "пакетный legacy-запрос обязан получить только фильм без kp_id")
+
+    async def test_an_empty_wikidata_answer_stays_harmless(self):
+        film = {"id": 26, "imdb_id": "tt1172049", "kp_id": "842493", "title": "Кино",
+                "cast_json": json.dumps([
+                    {"person_id": "1", "name": "Главный", "billing_order": 0,
+                     "source": "kinopoisk", "photo_url": None}], ensure_ascii=False)}
+        seen = await self._run_with([film], [])
+        self.assertEqual(seen["passed"][0][1], [])
+
+
+class WikidataFallbackMergeTests(unittest.TestCase):
+    """Портрет Commons становится кандидатом, а порядок остаётся кинопоисковым."""
+
+    def test_a_commons_portrait_joins_without_touching_the_order(self):
+        canonical = cast_model.normalize_cast([
+            {"person_id": "22692", "name": "Джейк Джилленхол", "billing_order": 0,
+             "source": "kinopoisk", "photo_url": "https://st.kp.yandex.net/22692.jpg"},
+            {"person_id": "27221", "name": "Наоми Уоттс", "billing_order": 1,
+             "source": "kinopoisk", "photo_url": "https://st.kp.yandex.net/27221.jpg"},
+        ])
+        researched = [
+            {"name": "Наоми Уоттс", "photo_url": "https://commons.wikimedia.org/w/naomi.jpg"},
+            {"name": "Джейк Джилленхол", "photo_url": "https://commons.wikimedia.org/w/jake.jpg"},
+        ]
+        merged = cast_model.merge_portrait_fallbacks(canonical, researched)
+
+        self.assertEqual([person["name"] for person in merged],
+                         ["Джейк Джилленхол", "Наоми Уоттс"])
+        self.assertEqual([person["billing_order"] for person in merged], [0, 1])
+        candidates = [person["photo_url"], *person["fallback_photo_urls"]] \
+            if (person := merged[0]) else []
+        self.assertIn("https://commons.wikimedia.org/w/jake.jpg", candidates)
