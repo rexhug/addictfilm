@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import aiohttp
 import cast as cast_model
@@ -18,10 +20,45 @@ from enrichment.hero import _sniff_dimensions
 logger = logging.getLogger(__name__)
 
 _PROBE_TIMEOUT = aiohttp.ClientTimeout(total=12, connect=5)
-_PROBE_MAX_BYTES = 2 * 1024 * 1024
-_PROBE_MIN_BYTES = 8 * 1024
+# Должно совпадать с проксей /img: проверять по одним правилам, а показывать по
+# другим — значит отвергать картинки, которые прод отдаёт, и наоборот.
+_PROBE_MAX_BYTES = 8 * 1024 * 1024
+_PROBE_MAX_REDIRECTS = 3
+# Файл меньше 2 КиБ портретом не бывает. Известная заглушка кинопоиска крупнее и
+# ловится отдельно — по отпечатку и плотности, а не по размеру.
+_PROBE_MIN_BYTES = 2 * 1024
 _ACCEPTED_TYPES = frozenset({
     "image/avif", "image/gif", "image/jpeg", "image/png", "image/webp",
+})
+
+# Карточка актёра в интерфейсе — 84×128 CSS-пикселя (`.d-avatar`: width 84px,
+# aspect-ratio 360/549). Портрет 120×190 БОЛЬШЕ этой карточки, то есть годен:
+# на Retina он мягче, но это несравнимо лучше инициалов вместо лица. Прежний
+# порог 160×160 был квадратным и выбрасывал нормальные вертикальные портреты.
+_PORTRAIT_MIN_SHORT_EDGE = 80
+_PORTRAIT_MIN_LONG_EDGE = 120
+
+_PORTRAIT_MIN_ASPECT = 0.45
+_PORTRAIT_MAX_ASPECT = 1.45
+
+_KINOPOISK_PORTRAIT_HOSTS = frozenset({
+    "st.kp.yandex.net",
+    "avatars.mds.yandex.net",
+})
+
+# Геометрией заглушку не поймать: серая «К» кинопоиска — 208×304, она КРУПНЕЕ
+# настоящих портретов 120×190. Отличает её информационная плотность.
+# Замер по каталогу (21 фильм): заглушка — 2401 байта, 0.0380 байта на пиксель,
+# один и тот же файл; живые портреты — 0.1940…0.3665. Порог 0.06 лежит между
+# распределениями с запасом в обе стороны и не задевает ни одного из них.
+_KINOPOISK_PLACEHOLDER_MAX_BYTES = 4 * 1024
+_KINOPOISK_PLACEHOLDER_MAX_BYTES_PER_PIXEL = 0.06
+
+# Точные отпечатки заглушек. Хеш — доказательство, эвристика плотности — лишь
+# страховка на случай нового варианта той же картинки.
+_KNOWN_KINOPOISK_PLACEHOLDER_SHA256 = frozenset({
+    # 208×304, 2401 байт, image/gif — серая «К» вместо фотографии.
+    "fbf36d5f304807e57113972f88ab9170f428fc57d27607bf1bd889b974513fde",
 })
 # Заголовок принадлежит всей сессии, а не отдельному запросу: портрет с Commons
 # отвечает редиректом на upload.wikimedia.org, и представиться нужно на каждом
@@ -68,39 +105,122 @@ class CastEnrichmentResult:
         }
 
 
+def _bytes_per_pixel(byte_count: int, width: int, height: int) -> float:
+    pixels = width * height
+    if pixels <= 0:
+        return 0.0
+    return byte_count / pixels
+
+
+def _is_kinopoisk_portrait_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in _KINOPOISK_PORTRAIT_HOSTS
+
+
+def classify_portrait_payload(
+    *,
+    url: str,
+    content_type: str,
+    byte_count: int,
+    dimensions: tuple[int, int] | None,
+    sha256: str,
+) -> cast_model.PortraitProbe:
+    """Разделить четыре разных вопроса, которые раньше решал один порог.
+
+    «Файл доехал», «его можно показать», «это заглушка провайдера» и «проверить
+    не удалось» — независимые вещи. Один порог 160×160 отвечал на все четыре
+    сразу и ошибался: выбрасывал живые вертикальные портреты и пропускал
+    заглушку, которая крупнее их.
+
+    Удалять кандидата разрешено только при доказательстве. Всё остальное —
+    «unknown»: ссылка остаётся, приоритет источников не меняется.
+    """
+    if content_type not in _ACCEPTED_TYPES:
+        return cast_model.PortraitProbe(
+            "rejected", byte_count=byte_count, reason="unsupported_content_type")
+    if byte_count < _PROBE_MIN_BYTES:
+        return cast_model.PortraitProbe(
+            "rejected", byte_count=byte_count, reason="file_too_small")
+    if dimensions is None:
+        # AVIF/WebP и прочие форматы намеренно крошечный сниффер может не
+        # понимать. Неспособность посмотреть — не доказательство брака.
+        return cast_model.PortraitProbe(
+            "unknown", byte_count=byte_count, reason="dimensions_unavailable")
+    width, height = dimensions
+    if width <= 0 or height <= 0:
+        return cast_model.PortraitProbe(
+            "rejected", width, height, byte_count, reason="invalid_dimensions")
+
+    density = _bytes_per_pixel(byte_count, width, height)
+    if sha256 in _KNOWN_KINOPOISK_PLACEHOLDER_SHA256:
+        return cast_model.PortraitProbe(
+            "rejected", width, height, byte_count,
+            reason="known_kinopoisk_placeholder", bytes_per_pixel=density)
+    is_low_information_kinopoisk = (
+        _is_kinopoisk_portrait_url(url)
+        and byte_count <= _KINOPOISK_PLACEHOLDER_MAX_BYTES
+        and density <= _KINOPOISK_PLACEHOLDER_MAX_BYTES_PER_PIXEL
+    )
+    if is_low_information_kinopoisk:
+        return cast_model.PortraitProbe(
+            "rejected", width, height, byte_count,
+            reason="low_information_kinopoisk_placeholder", bytes_per_pixel=density)
+
+    aspect = width / height
+    short_edge = min(width, height)
+    long_edge = max(width, height)
+    # Настоящая, но слишком мелкая картинка не должна исчезать навсегда: пусть
+    # остаётся видимой и пригодной для повторной проверки, пока не найдётся
+    # кандидат получше.
+    if short_edge < _PORTRAIT_MIN_SHORT_EDGE or long_edge < _PORTRAIT_MIN_LONG_EDGE:
+        return cast_model.PortraitProbe(
+            "unknown", width, height, byte_count,
+            reason="below_display_floor", bytes_per_pixel=density)
+    # У карточки object-fit: contain, необычная пропорция её не ломает. Удалять
+    # живое лицо только за геометрию — хуже, чем показать его с полями.
+    if not (_PORTRAIT_MIN_ASPECT <= aspect <= _PORTRAIT_MAX_ASPECT):
+        return cast_model.PortraitProbe(
+            "unknown", width, height, byte_count,
+            reason="unusual_aspect_ratio", bytes_per_pixel=density)
+    return cast_model.PortraitProbe(
+        "ok", width, height, byte_count,
+        reason="usable_portrait", bytes_per_pixel=density)
+
+
 async def probe_portrait(
     url: str, *, session: aiohttp.ClientSession,
 ) -> cast_model.PortraitProbe:
     """Validate a portrait without decoding or altering the source image."""
     try:
-        async with session.get(url, allow_redirects=True) as response:
+        async with session.get(
+            url, allow_redirects=True, max_redirects=_PROBE_MAX_REDIRECTS,
+        ) as response:
             verdict = cast_model.portrait_http_verdict(response.status)
             if verdict != "inspect":
-                return cast_model.PortraitProbe(verdict)
+                return cast_model.PortraitProbe(
+                    verdict, reason=f"http_{response.status}")
             content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
-            if content_type not in _ACCEPTED_TYPES:
-                return cast_model.PortraitProbe("rejected")
             body = bytearray()
             async for chunk in response.content.iter_chunked(32 * 1024):
                 body.extend(chunk)
                 if len(body) > _PROBE_MAX_BYTES:
-                    return cast_model.PortraitProbe("rejected", byte_count=len(body))
-            byte_count = len(body)
-            dimensions = _sniff_dimensions(bytes(body[:64 * 1024]))
-            if byte_count < _PROBE_MIN_BYTES:
-                return cast_model.PortraitProbe("rejected", byte_count=byte_count)
-            # AVIF/WebP may not be understood by the intentionally tiny header
-            # sniffer. That is inability to verify, not proof of a bad portrait.
-            if dimensions is None:
-                return cast_model.PortraitProbe("unknown", byte_count=byte_count)
-            width, height = dimensions
-            aspect = width / height if height else 0
-            accepted = width >= 160 and height >= 160 and 0.45 <= aspect <= 1.45
-            return cast_model.PortraitProbe(
-                "ok" if accepted else "rejected", width, height, byte_count,
+                    return cast_model.PortraitProbe(
+                        "rejected", byte_count=len(body), reason="exceeds_proxy_limit")
+            payload = bytes(body)
+            return classify_portrait_payload(
+                url=url,
+                content_type=content_type,
+                byte_count=len(payload),
+                dimensions=_sniff_dimensions(payload[:64 * 1024]),
+                sha256=hashlib.sha256(payload).hexdigest(),
             )
+    except aiohttp.TooManyRedirects:
+        return cast_model.PortraitProbe("unknown", reason="too_many_redirects")
     except (TimeoutError, aiohttp.ClientError):
-        return cast_model.PortraitProbe("unknown")
+        return cast_model.PortraitProbe("unknown", reason="network_error")
 
 
 async def validate_cast_portraits(canonical: list[dict]) -> list[dict]:
@@ -122,6 +242,19 @@ async def validate_cast_portraits(canonical: list[dict]) -> list[dict]:
             probe_portrait(url, session=session) for url in urls
         ))
     probes = dict(zip(urls, results, strict=True))
+    # Разбирать «почему у актёра пропало фото» по логам, а не скачивая файлы
+    # руками. Полный URL и query не пишем: в них попадают имена файлов.
+    for url, probe in probes.items():
+        if probe.verdict == "ok":
+            continue
+        logger.info(
+            "Portrait probe verdict=%s reason=%s host=%s width=%s height=%s "
+            "bytes=%s bpp=%s",
+            probe.verdict, probe.reason, urlparse(url).hostname,
+            probe.width, probe.height, probe.byte_count,
+            round(probe.bytes_per_pixel, 4)
+            if probe.bytes_per_pixel is not None else None,
+        )
     return [cast_model.apply_portrait_probes(member, probes) for member in canonical]
 
 
