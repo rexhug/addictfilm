@@ -403,3 +403,21 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored["actors"], "Тоби Магуайр")
         self.assertEqual(db.decode_film_cast(stored["cast_json"])[0]["name"], "Тоби Магуайр")
         self.assertIsNotNone(stored["actor_photos_checked_at"])
+
+
+class PortraitProbeMatchesImageProxyTests(unittest.TestCase):
+    """Проверять и показывать нужно по одним и тем же правилам.
+
+    Разъехавшиеся лимиты означают одно из двух: либо проверка отвергает файлы,
+    которые прод отдаёт клиенту, либо пропускает те, которые прокси покажет не
+    сможет. Обе стороны ошибки видны пользователю как «фото пропало».
+    """
+
+    def test_the_probe_and_the_proxy_agree_on_limits_and_types(self):
+        self.assertEqual(cast_backfill._PROBE_MAX_BYTES, main._MAX_IMAGE_BYTES)
+        self.assertEqual(cast_backfill._ACCEPTED_TYPES, main._ALLOWED_IMG_TYPES)
+        self.assertEqual(cast_backfill._PROBE_MAX_REDIRECTS, main._MAX_IMAGE_REDIRECTS)
+
+    def test_the_portrait_hosts_the_probe_knows_are_servable_by_the_proxy(self):
+        self.assertTrue(
+            cast_backfill._KINOPOISK_PORTRAIT_HOSTS <= main._ALLOWED_IMG_HOSTS)

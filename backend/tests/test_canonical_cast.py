@@ -537,3 +537,100 @@ class PortraitProbeSessionIdentityTests(unittest.IsolatedAsyncioTestCase):
                          wikidata.WIKIMEDIA_USER_AGENT)
         # Контакт обязателен: без ссылки на проект Wikimedia отвечает 403.
         self.assertIn("https://", wikidata.WIKIMEDIA_USER_AGENT)
+
+
+class PortraitPayloadClassifierTests(unittest.TestCase):
+    """Разрешение — не то же самое, что пригодность.
+
+    Карточка актёра в интерфейсе — примерно 84×128 CSS-пикселя. Портрет
+    120×190 её перекрывает и годится к показу; заглушка кинопоиска при этом
+    крупнее — 208×304. Значит, различать их обязан не размер, а содержимое.
+    """
+
+    def _classify(self, **kwargs):
+        base = dict(
+            url="https://st.kp.yandex.net/photo.jpg",
+            content_type="image/jpeg",
+            byte_count=12_000,
+            dimensions=(330, 440),
+            sha256="unique-real-photo",
+        )
+        return cast_backfill.classify_portrait_payload(**{**base, **kwargs})
+
+    def test_real_120x190_portrait_is_usable(self):
+        result = self._classify(
+            url="https://st.kp.yandex.net/real.jpg",
+            byte_count=12_000, dimensions=(120, 190), sha256="real-photo")
+        self.assertEqual(result.verdict, "ok")
+        self.assertEqual(result.reason, "usable_portrait")
+
+    def test_real_150x210_portrait_is_usable(self):
+        result = self._classify(
+            byte_count=14_000, dimensions=(150, 210), sha256="real-photo-2")
+        self.assertEqual(result.verdict, "ok")
+
+    def test_low_information_kinopoisk_card_is_rejected(self):
+        """Реальные размеры и вес серой «К» из каталога."""
+        result = self._classify(
+            url="https://st.kp.yandex.net/placeholder.jpg", content_type="image/gif",
+            byte_count=2401, dimensions=(208, 304), sha256="not-in-known-set")
+        self.assertEqual(result.verdict, "rejected")
+        self.assertEqual(result.reason, "low_information_kinopoisk_placeholder")
+
+    def test_the_audited_placeholder_hash_is_rejected_even_when_metadata_looks_fine(self):
+        known = next(iter(cast_backfill._KNOWN_KINOPOISK_PLACEHOLDER_SHA256))
+        result = self._classify(byte_count=48_000, dimensions=(360, 549), sha256=known)
+        self.assertEqual(result.verdict, "rejected")
+        self.assertEqual(result.reason, "known_kinopoisk_placeholder")
+
+    def test_real_photo_with_placeholder_dimensions_is_not_rejected(self):
+        result = self._classify(
+            url="https://st.kp.yandex.net/real-208x304.jpg",
+            byte_count=24_000, dimensions=(208, 304), sha256="real-photo-3")
+        self.assertEqual(result.verdict, "ok")
+
+    def test_below_display_floor_is_unknown_not_rejected(self):
+        result = self._classify(
+            url="https://st.kp.yandex.net/tiny-real.jpg",
+            byte_count=8_000, dimensions=(70, 105), sha256="tiny-real")
+        self.assertEqual(result.verdict, "unknown")
+        self.assertEqual(result.reason, "below_display_floor")
+
+    def test_unusual_aspect_ratio_is_unknown_not_rejected(self):
+        result = self._classify(byte_count=30_000, dimensions=(900, 300))
+        self.assertEqual(result.verdict, "unknown")
+        self.assertEqual(result.reason, "unusual_aspect_ratio")
+
+    def test_a_thin_density_rule_never_touches_another_provider(self):
+        """Порог плотности — про конкретную заглушку кинопоиска, а не про всех."""
+        result = self._classify(
+            url="https://commons.wikimedia.org/w/portrait.jpg",
+            byte_count=2401, dimensions=(208, 304), sha256="commons-thin")
+        self.assertEqual(result.verdict, "ok")
+
+    def test_unreadable_header_and_wrong_type_stay_apart(self):
+        unreadable = self._classify(dimensions=None)
+        self.assertEqual(unreadable.verdict, "unknown")
+        self.assertEqual(unreadable.reason, "dimensions_unavailable")
+        wrong_type = self._classify(content_type="text/html")
+        self.assertEqual(wrong_type.verdict, "rejected")
+        self.assertEqual(wrong_type.reason, "unsupported_content_type")
+        tiny = self._classify(byte_count=900)
+        self.assertEqual(tiny.verdict, "rejected")
+        self.assertEqual(tiny.reason, "file_too_small")
+
+    def test_density_is_reported_for_diagnostics(self):
+        result = self._classify(byte_count=12_000, dimensions=(120, 190))
+        self.assertAlmostEqual(result.bytes_per_pixel, 12_000 / (120 * 190), places=6)
+
+    def test_the_audited_distributions_do_not_overlap(self):
+        """Замер каталога: заглушка 0.0380, живые портреты 0.1940…0.3665."""
+        threshold = cast_backfill._KINOPOISK_PLACEHOLDER_MAX_BYTES_PER_PIXEL
+        self.assertLess(0.0380, threshold)
+        self.assertLess(threshold, 0.1940)
+
+    def test_a_positional_probe_call_still_works(self):
+        probe = cast_model.PortraitProbe("ok", 330, 440, 20_000)
+        self.assertEqual((probe.width, probe.height, probe.byte_count), (330, 440, 20_000))
+        self.assertIsNone(probe.reason)
+        self.assertIsNone(probe.bytes_per_pixel)

@@ -84,6 +84,11 @@ class PortraitProbe:
     width: int | None = None
     height: int | None = None
     byte_count: int | None = None
+    # Почему вынесен именно такой вердикт. Без этого разбор «почему у актёра
+    # пропало фото» превращается в ручное скачивание файлов: по одному слову
+    # «rejected» нельзя отличить заглушку провайдера от запрета доступа.
+    reason: str | None = None
+    bytes_per_pixel: float | None = None
 
 
 def normalize_cast_member(raw: object, *, fallback_order: int) -> dict | None:
