@@ -201,14 +201,37 @@ async def enrich_film_cast(
 async def _run(args: argparse.Namespace) -> int:
     try:
         films = await db.films_for_cast_backfill(film_id=args.film_id, limit=args.limit)
-        imdb_ids = [
+        # Два РАЗНЫХ списка, потому что условия у них разные.
+        #
+        # Документ Kinopoisk нужен только строкам без kp_id: сохранённая
+        # идентичность авторитетна, а разрешение через IMDb — лишь мост для
+        # старых записей. Wikidata же приносит портреты и нужна КАЖДОМУ фильму
+        # с валидным IMDb-идентификатором: наличие kp_id ничего не говорит о
+        # том, есть ли у актёра свободная фотография на Commons.
+        #
+        # Раньше оба запроса шли по одному отфильтрованному списку, поэтому
+        # фильмы с kp_id (215 из 295 в каталоге) получали wikidata_cast=[] и
+        # оставались вообще без запасных портретов — механизм fallback во
+        # фронтенде был подключён, но подавать в него было нечего.
+        legacy_imdb_ids = [
             str(film.get("imdb_id") or "")
             for film in films
             if not film.get("kp_id")
             if str(film.get("imdb_id") or "").startswith("tt")
         ]
-        wikidata_map = await wikidata.get_cast_by_imdb(imdb_ids, max_actors=12)
-        kinopoisk_map = await kinopoisk.cast_documents_by_imdb(imdb_ids)
+        wikidata_imdb_ids = [
+            str(film.get("imdb_id") or "")
+            for film in films
+            if str(film.get("imdb_id") or "").startswith("tt")
+        ]
+        wikidata_map = (
+            await wikidata.get_cast_by_imdb(wikidata_imdb_ids, max_actors=12)
+            if wikidata_imdb_ids else {}
+        )
+        kinopoisk_map = (
+            await kinopoisk.cast_documents_by_imdb(legacy_imdb_ids)
+            if legacy_imdb_ids else {}
+        )
         semaphore = asyncio.Semaphore(max(1, min(args.concurrency, 4)))
 
         async def process(film: dict) -> dict:
