@@ -12,8 +12,18 @@ WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
 FILM_TYPES = {"Q11424", "Q24862", "Q506240", "Q1366112", "Q2431196"}
 TIMEOUT = aiohttp.ClientTimeout(total=6)
 # Wikimedia требует User-Agent с контактом (URL/email), иначе отдаёт 403.
+#
+# Константа публичная, потому что за портретами с Commons ходит не только этот
+# модуль: probe в enrichment.cast_backfill обязан представляться той же самой
+# личностью. Разъехавшиеся User-Agent — это ровно тот случай, когда один канал
+# работает, второй молча получает 403, и данные портятся тихо.
+WIKIMEDIA_USER_AGENT = (
+    "AddictFilm/1.0 "
+    "(https://github.com/rexhug/addictfilm; contact via GitHub)"
+)
+
 _HEADERS = {
-    "User-Agent": "MovieBot/1.0 (https://github.com/rexhug/movie_bot; personal Telegram bot) python-aiohttp"
+    "User-Agent": WIKIMEDIA_USER_AGENT,
 }
 _session: aiohttp.ClientSession | None = None
 

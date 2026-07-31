@@ -10,6 +10,7 @@ import cast
 import cast as cast_model
 import database as db
 import kinopoisk
+import wikidata
 from enrichment import cast_backfill
 from enrichment.cast_backfill import _run, enrich_film_cast
 
@@ -420,3 +421,119 @@ class WikidataFallbackMergeTests(unittest.TestCase):
         candidates = [person["photo_url"], *person["fallback_photo_urls"]] \
             if (person := merged[0]) else []
         self.assertIn("https://commons.wikimedia.org/w/jake.jpg", candidates)
+
+
+class PortraitProbeSafetyTests(unittest.TestCase):
+    """Проверка портрета не имеет права УДАЛЯТЬ данные без доказательства.
+
+    Единственное доказательство того, что картинки нет, — ответ сервера 404 или
+    410. Всё остальное (запрет доступа, throttling, отказ сервера, сеть) — это
+    неспособность проверить. Разница практическая: Wikimedia отвечает 403 на
+    запрос без контактного User-Agent, и трактовка «403 = битый файл» стирала
+    живые портреты у актёров.
+    """
+
+    KP = "https://st.kp.yandex.net/primary.jpg"
+    COMMONS = "https://commons.wikimedia.org/wiki/Special:FilePath/portrait.jpg"
+
+    def _probes(self, **verdicts) -> dict:
+        return {
+            url: (
+                cast.PortraitProbe("ok", 330, 440, 20_000)
+                if verdict == "ok" else cast.PortraitProbe(verdict)
+            )
+            for url, verdict in verdicts.items()
+        }
+
+    def test_access_failures_do_not_destroy_portrait_candidates(self):
+        self.assertEqual(cast.portrait_http_verdict(401), "unknown")
+        self.assertEqual(cast.portrait_http_verdict(403), "unknown")
+        self.assertEqual(cast.portrait_http_verdict(404), "rejected")
+        self.assertEqual(cast.portrait_http_verdict(410), "rejected")
+
+    def test_forbidden_probe_keeps_commons_candidate_retryable(self):
+        updated = cast.apply_portrait_probes(
+            {"name": "Lead", "photo_url": self.COMMONS, "fallback_photo_urls": []},
+            {self.COMMONS: cast.PortraitProbe(cast.portrait_http_verdict(403))},
+        )
+        self.assertEqual(updated["photo_url"], self.COMMONS)
+        self.assertEqual(updated["photo_state"], cast.PHOTO_UNKNOWN)
+
+    def test_unknown_primary_is_not_replaced_by_verified_fallback(self):
+        """Временная ошибка — не повод менять решение о приоритете источников."""
+        updated = cast.apply_portrait_probes(
+            {"name": "Lead", "photo_url": self.KP,
+             "fallback_photo_urls": [self.COMMONS]},
+            self._probes(**{self.KP: "unknown", self.COMMONS: "ok"}),
+        )
+        self.assertEqual(updated["photo_url"], self.KP)
+        self.assertEqual(updated["fallback_photo_urls"], [self.COMMONS])
+        self.assertEqual(updated["photo_state"], cast.PHOTO_UNKNOWN)
+
+    def test_rejected_primary_promotes_verified_fallback(self):
+        updated = cast.apply_portrait_probes(
+            {"name": "Lead", "photo_url": self.KP,
+             "fallback_photo_urls": [self.COMMONS]},
+            self._probes(**{self.KP: "rejected", self.COMMONS: "ok"}),
+        )
+        self.assertEqual(updated["photo_url"], self.COMMONS)
+        self.assertEqual(updated["fallback_photo_urls"], [])
+        self.assertEqual(updated["photo_state"], cast.PHOTO_VERIFIED)
+
+    def test_a_forbidden_commons_fallback_survives_next_to_a_working_primary(self):
+        """Ровно тот случай, что портил каталог: основной портрет живой, запасной
+        отвечает 403 — и запасной молча исчезал из строки."""
+        updated = cast.apply_portrait_probes(
+            {"name": "Lead", "photo_url": self.KP,
+             "fallback_photo_urls": [self.COMMONS]},
+            self._probes(**{
+                self.KP: "ok",
+                self.COMMONS: cast.portrait_http_verdict(403),
+            }),
+        )
+        self.assertEqual(updated["photo_url"], self.KP)
+        self.assertEqual(updated["fallback_photo_urls"], [self.COMMONS])
+        self.assertEqual(updated["photo_state"], cast.PHOTO_VERIFIED)
+
+    def test_only_a_proven_missing_file_clears_the_portrait(self):
+        updated = cast.apply_portrait_probes(
+            {"name": "Lead", "photo_url": self.KP,
+             "fallback_photo_urls": [self.COMMONS]},
+            self._probes(**{
+                self.KP: cast.portrait_http_verdict(404),
+                self.COMMONS: cast.portrait_http_verdict(410),
+            }),
+        )
+        self.assertIsNone(updated["photo_url"])
+        self.assertEqual(updated["fallback_photo_urls"], [])
+        self.assertEqual(updated["photo_state"], cast.PHOTO_REJECTED)
+
+
+class PortraitProbeSessionIdentityTests(unittest.IsolatedAsyncioTestCase):
+    """Сессия проверки портретов обязана представляться так же, как wikidata."""
+
+    async def test_portrait_validator_uses_wikimedia_contact_user_agent(self):
+        member = {
+            "name": "Lead",
+            "photo_url": "https://commons.wikimedia.org/test.jpg",
+            "fallback_photo_urls": [],
+        }
+        session = AsyncMock()
+        session.__aenter__.return_value = session
+        session.__aexit__.return_value = False
+
+        with (
+            patch.object(cast_backfill, "probe_portrait", AsyncMock(
+                return_value=cast.PortraitProbe("ok", 330, 440, 20_000))),
+            patch.object(cast_backfill.aiohttp, "TCPConnector"),
+            patch.object(cast_backfill.aiohttp, "ClientSession",
+                         return_value=session) as session_cls,
+        ):
+            result = await cast_backfill.validate_cast_portraits([member])
+
+        self.assertEqual(result[0]["photo_url"], member["photo_url"])
+        kwargs = session_cls.call_args.kwargs
+        self.assertEqual(kwargs["headers"]["User-Agent"],
+                         wikidata.WIKIMEDIA_USER_AGENT)
+        # Контакт обязателен: без ссылки на проект Wikimedia отвечает 403.
+        self.assertIn("https://", wikidata.WIKIMEDIA_USER_AGENT)
