@@ -23,6 +23,13 @@ _PROBE_MIN_BYTES = 8 * 1024
 _ACCEPTED_TYPES = frozenset({
     "image/avif", "image/gif", "image/jpeg", "image/png", "image/webp",
 })
+# Заголовок принадлежит всей сессии, а не отдельному запросу: портрет с Commons
+# отвечает редиректом на upload.wikimedia.org, и представиться нужно на каждом
+# шаге цепочки. Анонимная сессия получала 403 и записывала «битый файл» там,
+# где файл цел.
+_PROBE_HEADERS = {
+    "User-Agent": wikidata.WIKIMEDIA_USER_AGENT,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +115,9 @@ async def validate_cast_portraits(canonical: list[dict]) -> list[dict]:
     if not urls:
         return canonical
     connector = aiohttp.TCPConnector(limit=4)
-    async with aiohttp.ClientSession(timeout=_PROBE_TIMEOUT, connector=connector) as session:
+    async with aiohttp.ClientSession(
+        timeout=_PROBE_TIMEOUT, connector=connector, headers=_PROBE_HEADERS,
+    ) as session:
         results = await asyncio.gather(*(
             probe_portrait(url, session=session) for url in urls
         ))

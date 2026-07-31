@@ -3,11 +3,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import cast as cast_model
 import database as db
 import db_runtime
 import kinopoisk
 import main
 import search
+from enrichment import cast_backfill
 from fastapi import HTTPException
 
 
@@ -356,6 +358,14 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
         old_cast = main.wikidata.get_cast_by_imdb
         old_kp_resolve = main.kinopoisk.cast_documents_by_imdb
         old_store = main.db.update_film_cast
+        # Фоновое обогащение проверяет портреты по сети. Здесь измеряется не
+        # доступность Commons, а то, что запрос не ждёт обогащения, поэтому
+        # проверка портрета подменяется: иначе тест зависит от чужого сервиса и
+        # от его скорости ответа.
+        old_probe = cast_backfill.probe_portrait
+
+        async def offline_probe(url, *, session):
+            return cast_model.PortraitProbe("unknown")
 
         async def researched_cast(ids, max_actors=10):
             self.assertEqual(ids, ["tt0765010"])
@@ -376,6 +386,7 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
         main.wikidata.get_cast_by_imdb = researched_cast
         main.kinopoisk.cast_documents_by_imdb = no_kinopoisk_match
         main.db.update_film_cast = store_cast
+        cast_backfill.probe_portrait = offline_probe
         try:
             response = await asyncio.wait_for(main.movie(film_id, {"id": 1}), timeout=0.1)
             self.assertEqual(response["actors"], "Случайный актёр")
@@ -386,6 +397,7 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
             main.wikidata.get_cast_by_imdb = old_cast
             main.kinopoisk.cast_documents_by_imdb = old_kp_resolve
             main.db.update_film_cast = old_store
+            cast_backfill.probe_portrait = old_probe
 
         stored = await db.get_film(film_id)
         self.assertEqual(stored["actors"], "Тоби Магуайр")

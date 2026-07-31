@@ -239,9 +239,14 @@ def merge_portrait_fallbacks(
 def portrait_http_verdict(status: int) -> str:
     if status == 200:
         return "inspect"
+    # Только эти статусы доказывают, что картинки больше нет.
     if status in {404, 410}:
         return "rejected"
-    if status in {408, 425, 429} or 500 <= status <= 599:
+    # Аутентификация, анти-бот политика, throttling и отказ сервера НЕ
+    # доказывают, что сохранённая ссылка испорчена. Такой кандидат остаётся
+    # пригодным для повторной проверки: Wikimedia отвечает 403 на запрос без
+    # контактного User-Agent, и раньше это стирало живые портреты.
+    if status in {401, 403, 408, 425, 429} or 500 <= status <= 599:
         return "unknown"
     return "rejected"
 
@@ -249,34 +254,37 @@ def portrait_http_verdict(status: int) -> str:
 def apply_portrait_probes(
     member: dict, probes: dict[str, PortraitProbe],
 ) -> dict:
+    """Отсеять доказанно битые ссылки, СОХРАНИВ порядок остальных.
+
+    Порядок кандидатов — это решение о приоритете источников, принятое раньше
+    (каталожное фото ведёт, свободное с Commons идёт запасным). Временная
+    ошибка не повод его пересматривать: повышать запасной портрет можно только
+    тогда, когда основной действительно отвергнут.
+    """
     updated = dict(member)
     candidates = unique_urls([
         member.get("photo_url"),
         *(member.get("fallback_photo_urls") or []),
     ])
-    verified: list[str] = []
-    unknown: list[str] = []
+    survivors: list[tuple[str, str]] = []
     for url in candidates:
         probe = probes.get(url)
-        if not probe:
-            unknown.append(url)
-        elif probe.verdict == "ok":
-            verified.append(url)
-        elif probe.verdict == "unknown":
-            unknown.append(url)
-    if verified:
-        ordered = [*verified, *[url for url in unknown if url not in verified]]
-        updated["photo_url"] = ordered[0]
-        updated["fallback_photo_urls"] = ordered[1:]
-        updated["photo_state"] = PHOTO_VERIFIED
-    elif unknown:
-        updated["photo_url"] = unknown[0]
-        updated["fallback_photo_urls"] = unknown[1:]
-        updated["photo_state"] = PHOTO_UNKNOWN
-    else:
+        # Непроверенный кандидат — это «неизвестно», а не «плохо».
+        verdict = probe.verdict if probe is not None else "unknown"
+        if verdict == "rejected":
+            continue
+        survivors.append((url, verdict))
+    if not survivors:
         updated["photo_url"] = None
         updated["fallback_photo_urls"] = []
         updated["photo_state"] = PHOTO_REJECTED
+        return updated
+    primary_url, primary_verdict = survivors[0]
+    updated["photo_url"] = primary_url
+    updated["fallback_photo_urls"] = [url for url, _ in survivors[1:]]
+    updated["photo_state"] = (
+        PHOTO_VERIFIED if primary_verdict == "ok" else PHOTO_UNKNOWN
+    )
     return updated
 
 
