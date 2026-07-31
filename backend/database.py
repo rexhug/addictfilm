@@ -60,6 +60,7 @@ _SCHEMA_MIGRATION_HERO_MEDIA = "2026-07-28-hero-media-v1"
 _SCHEMA_MIGRATION_HERO_PRESENTATION = "2026-07-28-hero-presentation-v1"
 _SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION = "2026-07-28-movie-flow-moderation-v1"
 _SCHEMA_MIGRATION_PUBLIC_REVIEWS = "2026-07-29-public-reviews-v1"
+_SCHEMA_MIGRATION_CAST_V2 = "2026-07-29-canonical-cast-v1"
 _SCHEMA_MIGRATION_FILM_IDENTITY = "2026-07-29-film-identity-v1"
 
 # Значения films.media_type. Дублируются константами, а не импортом media_type,
@@ -848,6 +849,18 @@ async def _apply_movie_flow_moderation_migration() -> None:
     await _add_column_if_missing("films", "movie_flow_reason TEXT")
 
 
+async def _apply_canonical_cast_migration() -> None:
+    """Канонический состав фильма отдельной колонкой.
+
+    Строка `actors` и портреты `actors_photos` остаются: их читают статистика,
+    поиск и старые клиенты. Но в них нет ни личности актёра, ни его роли, ни
+    позиции в титрах — а именно позиция и есть то, что отличает главного героя
+    от эпизода. Колонки NULL-совместимы: каталог до бекфила работает как раньше.
+    """
+    for col_def in ("cast_json TEXT", "cast_checked_at TEXT"):
+        await _add_column_if_missing("films", col_def)
+
+
 async def _apply_public_reviews_migration() -> None:
     """Add public-review metadata without exposing historical private notes.
 
@@ -1243,6 +1256,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_HERO_PRESENTATION, _apply_hero_presentation_migration),
         (_SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION, _apply_movie_flow_moderation_migration),
         (_SCHEMA_MIGRATION_PUBLIC_REVIEWS, _apply_public_reviews_migration),
+        (_SCHEMA_MIGRATION_CAST_V2, _apply_canonical_cast_migration),
         (_SCHEMA_MIGRATION_FILM_IDENTITY, _apply_film_identity_migration),
     )
     for version, migration in migrations:
@@ -1823,7 +1837,7 @@ async def get_or_create_film(
     kp_rating: str | None = None, directors: str | None = None, actors: str | None = None,
     backdrop_url: str | None = None, age_rating: str | None = None, actors_photos: str | None = None,
     directors_photos: str | None = None, kp_id: str | None = None,
-    media_type: str | None = None,
+    media_type: str | None = None, cast_json: str | None = None,
 ) -> int:
     """Возвращает id фильма в общем каталоге, создавая запись при первом появлении
     (dedup по imdb_id/kp_id). Идемпотентно — один фильм на всех пользователей."""
@@ -1902,6 +1916,7 @@ async def get_or_create_film(
                 "backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
                 "age_rating = COALESCE(age_rating, ?), "
                 "actors_photos = COALESCE(NULLIF(actors_photos, ''), ?), "
+                "cast_json = COALESCE(NULLIF(cast_json, ''), ?), "
                 "directors_photos = COALESCE(NULLIF(directors_photos, ''), ?), "
                 "media_type = COALESCE(NULLIF(media_type, ''), ?), "
                 "media_type_source = CASE WHEN COALESCE(NULLIF(media_type, ''), ?) IS NULL "
@@ -1910,7 +1925,7 @@ async def get_or_create_film(
                 (merged_imdb_id, merged_title, merged_original, merged_year, merged_genres, merged_directors, merged_actors,
                  merged_runtime, merged_imdb_rating, merged_kp_rating, merged_imdb_votes, merged_plot,
                  merged_kp_id, merged_search_text, poster_url, backdrop_url, age_rating, actors_photos,
-                 directors_photos, media_type, media_type, row["id"]))
+                 cast_json, directors_photos, media_type, media_type, row["id"]))
             if merged_genres != row["genres"]:
                 await _set_film_genres(db, row["id"], merged_genres)
             # Задание на пересчёт признаков ставится в ТОЙ ЖЕ транзакции: иначе
@@ -1926,14 +1941,15 @@ async def get_or_create_film(
             INSERT INTO films
                 (imdb_id, kp_id, title, title_original, year, genres, directors, actors, runtime,
                  imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
-                 actors_photos, directors_photos, search_text, media_type, media_type_source, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 actors_photos, cast_json, directors_photos, search_text, media_type,
+                 media_type_source, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT DO NOTHING
             RETURNING id
             """,
             (imdb_id, kp_id, title, title_original, year, genres, directors, actors, runtime,
              imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
-             actors_photos, directors_photos, search_text, media_type,
+             actors_photos, cast_json, directors_photos, search_text, media_type,
              "provider" if media_type else None, _now()),
         )
         inserted = await cur.fetchone()
@@ -2430,14 +2446,20 @@ def _merge_people_portraits(existing_people: str | None, existing_payload: str |
     existing_by_key = {_person_key(item.get("name")): item for item in existing_entries if _person_key(item.get("name"))}
     incoming_by_key = {_person_key(item.get("name")): item for item in incoming_entries if _person_key(item.get("name"))}
 
+    # Порядок задаёт СУЩЕСТВУЮЩИЙ состав, а не входящий. Kinopoisk отдаёт
+    # порядок титров именно этого фильма; Wikidata — свой собственный, и раньше
+    # он вставал первым, то есть чужой источник молча переставлял актёров.
+    # Wikidata здесь только доносит портреты.
     names: list[str] = []
     ordered_keys: list[str] = []
-    for name in [*_split_people(incoming_people), *_split_people(existing_people)]:
+    base_people = _split_people(existing_people) or _split_people(incoming_people)
+    for name in [*base_people, *_split_people(incoming_people)]:
         key = _person_key(name)
-        # Old, unmatched names without a usable portrait usually come from a
-        # weaker provider and only create duplicate rows in statistics.
-        if key in ordered_keys or (key not in incoming_by_key and not _portrait_urls(existing_by_key.get(key))):
+        if key in ordered_keys:
             continue
+        # Актёра без портрета больше НЕ выбрасываем: пропуск главного героя ради
+        # того, что у второстепенного есть фото, — это неверный состав, а не
+        # аккуратная выдача. Заглушку с инициалами фронтенд рисует сам.
         ordered_keys.append(key)
         names.append(name)
 
@@ -2450,11 +2472,18 @@ def _merge_people_portraits(existing_people: str | None, existing_payload: str |
             for url in _portrait_urls(entry):
                 if url not in urls:
                     urls.append(url)
+        # Имя, роль и источник берём из СТАРОЙ (каноничной) записи: входящий
+        # источник имеет право дополнить портрет, но не переименовать человека
+        # и не переписать его роль в этом фильме.
         entry: dict[str, object] = {
-            "name": str(fresh.get("name") or old.get("name") or name).strip(),
+            "name": str(old.get("name") or fresh.get("name") or name).strip(),
             "photo_url": urls[0] if urls else None,
-            "source": str(fresh.get("source") or old.get("source") or "catalog"),
+            "source": str(old.get("source") or fresh.get("source") or "catalog"),
         }
+        for field in ("person_id", "wikidata_id", "original_name", "character", "billing_order"):
+            value = old.get(field, fresh.get(field))
+            if value is not None:
+                entry[field] = value
         if len(urls) > 1:
             entry["fallback_photo_urls"] = urls[1:]
         merged.append(entry)
@@ -2483,6 +2512,42 @@ async def _set_film_people_from_wikidata(film_id: int, people_column: str, photo
             f"UPDATE films SET {people_column} = ?, {photo_column} = ?, {checked_column} = ? WHERE id = ?",
             (merged_people, merged_photos, _now(), film_id),
         )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def set_film_cast(film_id: int, cast: list[dict]) -> bool:
+    """Записать канонический состав и синхронизировать legacy-колонки.
+
+    `actors` и `actors_photos` остаются источником правды для статистики, поиска
+    и старых клиентов, поэтому они обязаны совпадать с cast_json — иначе один и
+    тот же фильм показывал бы разный состав на разных экранах.
+    """
+    if not cast:
+        return False
+    names = ", ".join(str(person.get("name") or "").strip()
+                      for person in cast if str(person.get("name") or "").strip())
+    photos = [{"name": person.get("name"), "photo_url": person.get("photo_url"),
+               "source": person.get("source") or "kinopoisk",
+               **({"fallback_photo_urls": person["fallback_photo_urls"]}
+                  if person.get("fallback_photo_urls") else {})}
+              for person in cast]
+    now = _now()
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE films SET cast_json = ?, cast_checked_at = ?, actors = ?, actors_photos = ? "
+            "WHERE id = ?",
+            (json.dumps(cast, ensure_ascii=False), now, names or None,
+             json.dumps(photos, ensure_ascii=False), film_id))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def mark_film_cast_checked(film_id: int) -> bool:
+    """Помнить и пустой результат: иначе фильм перечитывается бесконечно."""
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        cur = await db.execute(
+            "UPDATE films SET cast_checked_at = ? WHERE id = ?", (_now(), film_id))
         await db.commit()
         return cur.rowcount > 0
 

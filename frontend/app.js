@@ -3334,7 +3334,12 @@ function renderDetail(id, m) {
   // actors_photos — те же имена, что в actors, но с фото (только с kinopoisk-пути,
   // см. search.py). Нет фото у конкретного источника/актёра — падаем на инициалы.
   let cast;
-  try { cast = m.actors_photos ? JSON.parse(m.actors_photos) : null; } catch (e) { cast = null; }
+  // cast_json — канонический состав: порядок титров, роли и устойчивые
+  // личности. actors_photos остаётся запасным путём для строк до бекфила.
+  try { cast = m.cast_json ? JSON.parse(m.cast_json) : null; } catch (e) { cast = null; }
+  if (!cast || !cast.length) {
+    try { cast = m.actors_photos ? JSON.parse(m.actors_photos) : null; } catch (e) { cast = null; }
+  }
   if (!cast || !cast.length) {
     cast = (m.actors || "").split(",").map(a => a.trim()).filter(Boolean).map(name => ({ name, photo_url: null }));
   }
@@ -3383,7 +3388,7 @@ function renderDetail(id, m) {
           <div id="d-comment-zone"></div>
         </section>
         ${cast.length ? `<div class="d-cast"><div class="d-cast-h"><h2>${esc(t("cast_title"))}</h2></div>
-          <div class="d-cast-rail">${cast.map(a => `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(a.name))}</span>${a.photo_url ? `<img loading="lazy" decoding="async" src="${posterSrc(a.photo_url)}" alt="" data-img-retry data-person-photo>` : ""}</div><div class="n">${esc(a.name)}</div></div>`).join("")}</div></div>` : ""}
+          <div class="d-cast-rail">${cast.map(castMemberHTML).join("")}</div></div>` : ""}
         <section class="d-public-reviews" id="d-public-reviews" data-film-id="${id}">
           <div class="d-public-reviews-head"><h2>${esc(t("reviews_title"))}</h2></div>
           <div id="d-reviews-list" class="d-reviews-list"><div class="d-reviews-state">${esc(t("reviews_loading"))}</div></div>
@@ -3667,6 +3672,24 @@ function reviewCardHTML(review, { pinned = false, filmId } = {}) {
     <p>${esc(review.text || "")}</p>
     ${!review.is_me ? `<button type="button" class="d-review-report" data-review-report="${esc(String(review.id))}">${esc(t("review_report"))}</button>` : ""}
   </article>`;
+}
+
+// Портрет актёра идёт через тот же механизм запасных ссылок, что и остальные
+// люди в продукте: у одного человека бывает несколько кандидатов (Wikidata,
+// Kinopoisk), и первый из них вполне может не открыться. Поэтому НЕ ставим src
+// сразу и не используем общий data-img-retry: ретрай той же битой ссылки не
+// поможет, а перебор кандидатов — поможет. Когда не открылся ни один, тег
+// убирается и остаётся аккуратная заглушка с инициалами.
+function castMemberHTML(person) {
+  const candidates = [person.photo_url, ...(person.fallback_photo_urls || [])]
+    .filter(url => typeof url === "string" && url);
+  const subtitle = person.character ? `<div class="r">${esc(person.character)}</div>` : "";
+  const portrait = candidates.length
+    ? `<img loading="lazy" decoding="async" alt="${esc(person.name || "")}" data-person-photo
+        data-person-photo-src="${esc(candidates[0])}"
+        data-person-photo-fallbacks='${esc(JSON.stringify(candidates.slice(1)))}'>`
+    : "";
+  return `<div class="d-cast-item"><div class="d-avatar"><span class="fb">${esc(initials(person.name))}</span>${portrait}</div><div class="n">${esc(person.name)}</div>${subtitle}</div>`;
 }
 
 function closeOwnCommentMenus(except = null) {

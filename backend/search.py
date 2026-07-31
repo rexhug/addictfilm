@@ -81,6 +81,7 @@ def _kp_details(doc: dict) -> dict:
     length = doc.get("movieLength") or doc.get("seriesLength")
     directors, actors = kinopoisk.extract_credits(doc.get("persons") or [])
     photos = kinopoisk.extract_actor_photos(doc.get("persons") or [])
+    cast = kinopoisk.extract_cast(doc.get("persons") or [])
     director_photos = kinopoisk.extract_director_photos(doc.get("persons") or [])
     return {
         "imdb_id": kinopoisk.imdb_id_of(doc),
@@ -100,6 +101,9 @@ def _kp_details(doc: dict) -> dict:
         "backdrop_url": (doc.get("backdrop") or {}).get("url"),
         "age_rating": kinopoisk.age_rating_of(doc),
         "actors_photos": json.dumps(photos, ensure_ascii=False) if photos else None,
+        # Порядок титров, роли и устойчивые личности. Строка actors и
+        # actors_photos остаются рядом ради статистики и старых клиентов.
+        "cast_json": json.dumps(cast, ensure_ascii=False) if cast else None,
         "directors_photos": json.dumps(director_photos, ensure_ascii=False) if director_photos else None,
         # Тип записи сохраняем сразу: без него сериал неотличим от фильма и
         # попадает в подбор ФИЛЬМОВ (см. media_type.py).

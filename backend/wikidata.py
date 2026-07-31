@@ -75,7 +75,7 @@ async def get_titles_by_imdb(imdb_ids: list[str], lang: str = "ru") -> dict[str,
     return out
 
 
-def commons_thumbnail_url(raw_url: str | None, width: int = 360) -> str | None:
+def commons_thumbnail_url(raw_url: str | None, width: int = 330) -> str | None:
     """Turn a Wikidata P18 value into a stable, modest-size Commons image URL.
 
     Wikidata normally returns ``Special:FilePath`` URLs. Keeping that endpoint
@@ -114,12 +114,72 @@ def _cast_from_bindings(rows: list[dict], max_actors: int) -> dict[str, list[dic
         photo_url = commons_thumbnail_url(row.get("image", {}).get("value"))
         grouped.setdefault(imdb_id, []).append((
             _cast_ordinal(row.get("ordinal", {}).get("value")), actor_id,
-            {"name": name, "photo_url": photo_url, "source": "wikidata"},
+            # wikidata_id — устойчивая личность. Сопоставление по имени ловит
+            # тёзок, а их в кино много; идентификатор не ловит никогда.
+            {"name": name, "photo_url": photo_url, "source": "wikidata",
+             "wikidata_id": actor_id.rsplit("/", 1)[-1] if actor_id else None},
         ))
     return {
         imdb_id: [entry for _, _, entry in sorted(cast, key=lambda item: (item[0], item[1]))[:max_actors]]
         for imdb_id, cast in grouped.items()
     }
+
+
+def portrait_candidates_for_cast(cast: list[dict], researched: list[dict]) -> list[dict]:
+    """Обогатить ПОРТРЕТЫ канонического состава, не трогая всё остальное.
+
+    Wikidata здесь не имеет права ни переставить актёров, ни переименовать их,
+    ни изменить роль, ни добавить человека в состав: она знает свой порядок
+    съёмок, а не порядок титров этого фильма. Единственное, что она приносит, —
+    ещё одна ссылка на портрет.
+
+    Сопоставляем по устойчивому идентификатору, а если его нет — по ТОЧНОМУ
+    нормализованному имени, и только когда оно однозначно с обеих сторон.
+    Похожие имена не сближаем: «почти тот же человек» в титрах не бывает.
+    """
+    def key(value: str | None) -> str:
+        return " ".join(str(value or "").split()).casefold()
+
+    by_id = {str(item.get("wikidata_id")): item for item in researched if item.get("wikidata_id")}
+    name_counts: dict[str, int] = {}
+    for item in researched:
+        for value in (item.get("name"), item.get("original_name")):
+            if key(value):
+                name_counts[key(value)] = name_counts.get(key(value), 0) + 1
+    by_unique_name = {}
+    for item in researched:
+        for value in (item.get("name"), item.get("original_name")):
+            if key(value) and name_counts.get(key(value)) == 1:
+                by_unique_name.setdefault(key(value), item)
+
+    enriched: list[dict] = []
+    for person in cast:
+        match = by_id.get(str(person.get("wikidata_id"))) if person.get("wikidata_id") else None
+        if match is None:
+            own = [key(person.get("name")), key(person.get("original_name"))]
+            unique_own = [value for value in own if value and own.count(value) == 1]
+            for value in unique_own:
+                match = by_unique_name.get(value)
+                if match is not None:
+                    break
+        updated = dict(person)
+        if match is not None:
+            # Порядок кандидатов — это лицензия, а не приоритет источника в
+            # составе: свободный Commons идёт первым, каталожный остаётся
+            # запасным. На ПОРЯДОК АКТЁРОВ это не влияет никак.
+            urls = [match.get("photo_url"), updated.get("photo_url"),
+                    *(updated.get("fallback_photo_urls") or [])]
+            ordered: list[str] = []
+            for url in urls:
+                text = str(url or "").strip()
+                if text.startswith("https://") and text not in ordered:
+                    ordered.append(text)
+            updated["photo_url"] = ordered[0] if ordered else None
+            updated["fallback_photo_urls"] = ordered[1:]
+            if match.get("wikidata_id") and not updated.get("wikidata_id"):
+                updated["wikidata_id"] = match["wikidata_id"]
+        enriched.append(updated)
+    return enriched
 
 
 async def get_cast_by_imdb(imdb_ids: list[str], max_actors: int = 10) -> dict[str, list[dict]]:

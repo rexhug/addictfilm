@@ -65,6 +65,46 @@ def extract_credits(persons: list[dict], max_actors: int = 5) -> tuple[str | Non
     return (", ".join(directors) or None), (", ".join(actors) or None)
 
 
+MAX_CAST = 12
+
+
+def extract_cast(persons: list[dict], max_actors: int = MAX_CAST) -> list[dict]:
+    """Канонический состав фильма. Kinopoisk — единственный источник ПОРЯДКА.
+
+    Порядок в `persons` — это порядок в титрах именно этого фильма, и он
+    единственный осмысленный: ни алфавит, ни общая известность, ни наличие
+    фотографии не говорят, кто здесь главный. Поэтому сохраняем позицию как
+    billing_order и больше нигде её не пересчитываем.
+
+    Сохраняем и то, что раньше выбрасывалось: id (устойчивая личность вместо
+    сравнения по имени — тёзки больше не сливаются), enName и роль. Актёр без
+    фотографии остаётся в списке на своём месте: пропуск главного героя ради
+    того, что у второстепенного есть портрет, — это неверные данные, а не
+    «аккуратная выдача».
+    """
+    cast: list[dict] = []
+    for person in persons or []:
+        name = str(person.get("name") or "").strip()
+        if not name or person.get("enProfession") != "actor":
+            continue
+        photo_url = str(person.get("photo") or "").strip() or None
+        cast.append({
+            "person_id": str(person["id"]) if person.get("id") is not None else None,
+            "wikidata_id": None,
+            "name": name,
+            "original_name": str(person.get("enName") or "").strip() or None,
+            "character": str(person.get("description") or "").strip() or None,
+            "billing_order": len(cast),
+            "source": "kinopoisk",
+            "photo_url": photo_url,
+            "fallback_photo_urls": [],
+            "photo_state": "unverified",
+        })
+        if len(cast) >= max_actors:
+            break
+    return cast
+
+
 def extract_actor_photos(persons: list[dict], max_actors: int = 5) -> list[dict]:
     """Те же актёры, что и extract_credits (тот же порядок/лимит) — но с фото,
     под карточки в UI. photo_url может быть None у конкретного актёра (фронтенд
@@ -302,6 +342,29 @@ async def actor_photos_by_imdb(imdb_ids: list[str]) -> dict[str, list[dict]]:
             photos = extract_actor_photos(m.get("persons") or [])
             if photos:
                 out[imdb] = photos
+    return out
+
+
+async def cast_by_imdb(imdb_ids: list[str]) -> dict[str, list[dict]]:
+    """Канонический состав по списку IMDb ID. Тот же батч, что и у портретов —
+    отдельного запроса на состав не делаем, `persons` приходит один раз."""
+    ids = [i for i in imdb_ids if i and i.startswith("tt")]
+    if not KINOPOISK_TOKENS or not ids:
+        return {}
+    out: dict[str, list[dict]] = {}
+    for start in range(0, len(ids), 20):
+        chunk = ids[start:start + 20]
+        params = [("externalId.imdb", x) for x in chunk]
+        params += [("selectFields", "externalId"), ("selectFields", "persons"),
+                   ("limit", "250"), ("page", "1")]
+        data = await _request("/movie", params)
+        if not data:
+            continue
+        for movie in data.get("docs", []):
+            imdb = (movie.get("externalId") or {}).get("imdb")
+            cast = extract_cast(movie.get("persons") or []) if imdb else []
+            if cast:
+                out[imdb] = cast
     return out
 
 

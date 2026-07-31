@@ -47,7 +47,7 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
                          "hero_checked_at", "hero_fit", "hero_focus_x", "hero_focus_y",
                          "poster_display_state", "poster_display_url",
                          "poster_reject_reason", "movie_flow_state",
-                         "movie_flow_reason"}.issubset(
+                         "movie_flow_reason", "cast_json", "cast_checked_at"}.issubset(
             {row[1] for row in films}))
         self.assertEqual({row[2] for row in user_films_fks}, {"users", "films"})
         self.assertTrue({"commented_at", "comment_status"}.issubset(
@@ -74,6 +74,7 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
             db._SCHEMA_MIGRATION_HERO_MEDIA,
             db._SCHEMA_MIGRATION_HERO_PRESENTATION,
             db._SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION,
+            db._SCHEMA_MIGRATION_CAST_V2,
             db._SCHEMA_MIGRATION_FILM_IDENTITY,
             db._SCHEMA_MIGRATION_PUBLIC_REVIEWS,
         ])

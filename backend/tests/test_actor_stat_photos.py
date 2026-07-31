@@ -73,11 +73,18 @@ class ActorStatPhotoTests(unittest.IsolatedAsyncioTestCase):
         ))
         stored = await db.get_film(film_id)
 
-        self.assertEqual(stored["actors"], "Тоби Магуайр, Джейк Джилленхол, Случайный актёр")
+        # Порядок задаёт каталог, а не Wikidata: чужой источник доносит
+        # портреты, но не решает, кто в этом фильме идёт первым. Раньше он
+        # вставал впереди и молча переставлял состав.
+        self.assertEqual(stored["actors"], "Случайный актёр, Тоби Магуайр, Джейк Джилленхол")
         merged = json.loads(stored["actors_photos"])
-        self.assertEqual(merged[0]["name"], "Тоби Магуайр")
-        self.assertEqual(merged[1]["name"], "Джейк Джилленхол")
-        self.assertEqual(merged[2]["photo_url"], "https://st.kp.yandex.net/k.jpg")
+        self.assertEqual([person["name"] for person in merged],
+                         ["Случайный актёр", "Тоби Магуайр", "Джейк Джилленхол"])
+        self.assertEqual(merged[0]["photo_url"], "https://st.kp.yandex.net/k.jpg")
+        self.assertEqual(merged[1]["photo_url"],
+                         "https://commons.wikimedia.org/wiki/Special:FilePath/Tobey.jpg")
+        # Актёр без портрета остаётся в составе на своём месте.
+        self.assertIsNone(merged[2]["photo_url"])
         self.assertIsNotNone(stored["actor_photos_checked_at"])
         self.assertEqual(await db.films_needing_actor_photo_enrichment(), [])
 

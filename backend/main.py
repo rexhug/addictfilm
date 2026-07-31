@@ -43,6 +43,7 @@ from config import (
     ADMIN_TOKEN,
     ADMIN_USER_IDS,
     BOT_TOKEN,
+    CAST_V2_ENABLED,
     DATABASE_URL,
     FANART_HERO_ENABLED,
     FULLSCREEN_SINGLE_PICK_ENABLED,
@@ -401,6 +402,11 @@ async def movie(film_id: int, user: dict = Depends(current_user)):
     f["my_commented_at"] = mine["commented_at"] if mine else None
     f["partner"] = context["partner"]
     f["share_link"] = _movie_link(film_id)
+    # Канонический состав отдаём только под флагом: пока он выключен, клиент
+    # видит прежние actors/actors_photos и ведёт себя ровно как раньше.
+    if not CAST_V2_ENABLED:
+        f.pop("cast_json", None)
+    f.pop("cast_checked_at", None)
     return f
 
 

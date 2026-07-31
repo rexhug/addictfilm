@@ -380,5 +380,7 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
             main.db.set_film_cast_from_wikidata = old_store
 
         stored = await db.get_film(film_id)
-        self.assertEqual(stored["actors"], "Тоби Магуайр")
+        # Wikidata ДОПОЛНЯЕТ каталожный состав, а не заменяет его: порядок задаёт
+        # каталог, чужой источник только доносит портреты и недостающие имена.
+        self.assertEqual(stored["actors"], "Случайный актёр, Тоби Магуайр")
         self.assertIsNotNone(stored["actor_photos_checked_at"])
