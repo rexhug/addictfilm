@@ -98,10 +98,10 @@ class PairNotificationStoreTests(unittest.IsolatedAsyncioTestCase):
         await self._dispatch(event)  # retry is idempotent by event + recipient + channel
         inviter_item, = await self._items(1)
         invitee_item, = await self._items(2)
-        self.assertEqual(inviter_item["payload"]["title"], "Теперь вы в паре")
-        self.assertEqual(inviter_item["payload"]["body"], "Вы теперь в паре с Alex. Общая статистика уже доступна.")
-        self.assertEqual(invitee_item["payload"]["title"], "Теперь вы в паре")
-        self.assertEqual(invitee_item["payload"]["body"], "Вы теперь в паре с Alex. Общая статистика уже доступна.")
+        self.assertEqual(inviter_item["payload"]["title"], "Партнёр подключён")
+        self.assertEqual(inviter_item["payload"]["body"], "Теперь твой партнёр — Alex. Общая статистика уже доступна.")
+        self.assertEqual(invitee_item["payload"]["title"], "Партнёр подключён")
+        self.assertEqual(invitee_item["payload"]["body"], "Теперь твой партнёр — Alex. Общая статистика уже доступна.")
         self.assertEqual(invitee_item["payload"]["roles"]["recipient_user_id"], 2)
         self.assertEqual(invitee_item["payload"]["roles"]["partner_user_id"], 1)
         # The accepting person gets in-app confirmation only, never a bot echo.
@@ -113,8 +113,8 @@ class PairNotificationStoreTests(unittest.IsolatedAsyncioTestCase):
         token = await db.create_invite(1)
         accepted = await db.accept_invite(token, 2)
         await self._dispatch(accepted["event"])
-        self.assertEqual((await self._items(1))[0]["payload"]["title"], "Теперь вы в паре")
-        self.assertEqual((await self._items(2))[0]["payload"]["title"], "You're now paired")
+        self.assertEqual((await self._items(1))[0]["payload"]["title"], "Партнёр подключён")
+        self.assertEqual((await self._items(2))[0]["payload"]["title"], "Partner connected")
 
         # A deleted/anonymous recipient must never crash a retry worker.
         token = await db.create_invite(3)
@@ -161,8 +161,8 @@ class PairNotificationStoreTests(unittest.IsolatedAsyncioTestCase):
         await self._dispatch(ended["event"])
         self.assertEqual(await self._items(1), [])
         partner_item, = await self._items(2)
-        self.assertEqual(partner_item["payload"]["title"], "Пара завершена")
-        self.assertEqual(partner_item["payload"]["body"], "Пара с Alex завершена. Совместная статистика сохранена.")
+        self.assertEqual(partner_item["payload"]["title"], "Партнёр отключён")
+        self.assertEqual(partner_item["payload"]["body"], "Связь с Alex завершена. Общая статистика сохранена.")
         self.assertEqual(pair_notifications.delivery_channels(self._context(ended["event"], 1)), ())
 
     async def test_inbox_categories_filter_rows_and_report_global_unread_counts(self):

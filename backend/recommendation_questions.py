@@ -37,15 +37,15 @@ QUESTIONS: dict[str, dict] = {
     "r1": {"id": "r1", "branch": "relax", "answer_type": "single", "text": _text("Как именно ты хочешь отдохнуть?", "How would you like to unwind?"), "options": [
         _option("warm", "Уютная и добрая история", "A warm, kind story", weights={"warm": 4, "low_tension": 3}, reason="warm"),
         _option("adventure", "Лёгкое приключение", "A light adventure", weights={"adventure": 3, "medium_pace": 2}, reason="adventure"),
-        _option("visual", "Красивый фильм с атмосферой", "A beautiful, atmospheric film", weights={"visuals": 4, "slow_pace": 2}, reason="atmosphere"),
+        _option("visual", "Красивый фильм с атмосферой", "A beautiful, atmospheric movie", weights={"visuals": 4, "slow_pace": 2}, reason="atmosphere"),
         _option("simple", "Что-то весёлое и простое", "Something fun and easy", weights={"light_humor": 4, "complexity_low": 3}, reason="light humor"),
     ]},
-    "r2": {"id": "r2", "branch": "relax", "answer_type": "single", "text": _text("Насколько спокойно должен идти фильм?", "How calm should the pace be?"), "options": [
+    "r2": {"id": "r2", "branch": "relax", "answer_type": "single", "text": _text("В каком темпе смотрим?", "What pace are you after?"), "options": [
         _option("fast", "Пусть события начнутся сразу", "Let it start right away", weights={"fast_pace": 4}, reason="fast pace"),
         _option("medium", "Нормальный темп, без спешки", "A steady pace, no rush", weights={"medium_pace": 4}, reason="steady pace"),
         _option("slow", "Хочу медленно погрузиться в атмосферу", "Let me slowly sink into the atmosphere", weights={"slow_pace": 4, "visuals": 2}, reason="atmosphere"),
     ]},
-    "r3": {"id": "r3", "branch": "relax", "answer_type": "single", "text": _text("Какой конфликт ты сегодня готов терпеть?", "What level of conflict can you handle today?"), "options": [
+    "r3": {"id": "r3", "branch": "relax", "answer_type": "single", "text": _text("Сколько конфликта ты сегодня выдержишь?", "How much conflict are you up for today?"), "options": [
         _option("comfort", "Почти никакой — мне нужен комфорт", "Almost none — I need comfort", weights={"low_conflict": 5}, reason="comfort"),
         _option("positive", "Небольшие проблемы, но всё будет хорошо", "Small problems, but it should turn out well", weights={"positive": 3}, reason="a hopeful tone"),
         _option("drama", "Можно немного драмы", "A little drama is fine", weights={"drama": 3}, reason="some drama"),
@@ -56,9 +56,9 @@ QUESTIONS: dict[str, dict] = {
         _option("mystery", "Тайна, которую хочется разгадать", "A mystery to solve", weights={"mystery": 5, "detective": 3}, reason="a mystery"),
         _option("horror", "Страх и неизвестность", "Fear and the unknown", weights={"horror": 5, "supernatural": 2}, reason="fear of the unknown"),
     ]},
-    "t2_psychological": {"id": "t2_psychological", "branch": "tension", "answer_type": "single", "text": _text("Кому ты хочешь доверять меньше всего?", "Whom do you want to trust least?"), "options": [
+    "t2_psychological": {"id": "t2_psychological", "branch": "tension", "answer_type": "single", "text": _text("Кому меньше всего хочется доверять?", "Who should you trust the least?"), "options": [
         _option("hero", "Главному герою", "The main character", weights={"unreliable_narrator": 5}, reason="an unreliable hero"),
-        _option("close", "Его близким", "Their closest people", weights={"betrayal": 4, "relationship_tension": 3}, reason="relationship tension"),
+        _option("close", "Его близким", "The people closest to them", weights={"betrayal": 4, "relationship_tension": 3}, reason="relationship tension"),
         _option("everyone", "Всем персонажам", "Everyone", weights={"paranoia": 5}, reason="paranoia"),
         _option("eyes", "Даже собственным глазам", "Even your own eyes", weights={"surreal": 4, "mind_bending": 5}, reason="a mind-bending angle"),
     ]},
@@ -74,15 +74,15 @@ QUESTIONS: dict[str, dict] = {
         _option("system", "Системы", "The system", weights={"dystopia": 5, "conspiracy": 3}, reason="a system to fight"),
         _option("self", "Самого себя", "Themselves", weights={"psychological": 5, "drama": 3}, reason="an internal struggle"),
     ]},
-    "t2_horror": {"id": "t2_horror", "branch": "tension", "answer_type": "single", "text": _text("Что пугает интереснее всего?", "What kind of fear works best for you?"), "options": [
+    "t2_horror": {"id": "t2_horror", "branch": "tension", "answer_type": "single", "text": _text("Какой страх тебе интереснее?", "What kind of fear works best for you?"), "options": [
         _option("unknown", "Неизвестность", "The unknown", weights={"supernatural": 4, "mystery": 4}, reason="the unknown"),
         _option("mind", "Собственный разум", "The mind", weights={"psychological": 5, "mind_bending": 3}, reason="psychological fear"),
         _option("threat", "Реальная опасность", "A real threat", weights={"survival": 4, "fast_pace": 2}, reason="real danger"),
     ]},
-    "t4": {"id": "t4", "branch": "tension", "answer_type": "single", "text": _text("Фильм должен всё объяснить?", "Should the film explain everything?"), "options": [
+    "t4": {"id": "t4", "branch": "tension", "answer_type": "single", "text": _text("Финал должен всё объяснить?", "Should the ending explain everything?"), "options": [
         _option("clear", "Да, хочу получить ответы", "Yes, I want answers", weights={"clear_ending": 5}, reason="a clear resolution"),
         _option("semi", "Можно оставить несколько вопросов", "A few open questions are okay", weights={"semi_open": 4}, reason="some ambiguity"),
-        _option("open", "Пусть я ещё час думаю, что это было", "Let me think about it for an hour", weights={"open_ending": 5, "complexity": 3}, reason="an open ending"),
+        _option("open", "Пусть останется загадкой", "Let it stay a puzzle", weights={"open_ending": 5, "complexity": 3}, reason="an open ending"),
     ]},
     "h1": {"id": "h1", "branch": "humor", "answer_type": "single", "text": _text("Над чем тебе хочется смеяться?", "What do you feel like laughing at?"), "options": [
         _option("situational", "Неловкие жизненные ситуации", "Awkward life situations", weights={"situational_humor": 5, "comedy": 3}, reason="situational humor"),
@@ -116,7 +116,7 @@ QUESTIONS: dict[str, dict] = {
     "e2": {"id": "e2", "branch": "emotion", "answer_type": "single", "text": _text("Насколько больно может быть в финале?", "How painful can the ending be?"), "options": [
         _option("positive", "Сегодня нужен хороший конец", "I need a good ending today", weights={"positive": 5}, reason="a hopeful tone"),
         _option("bittersweet", "Можно немного погрустить", "A little sadness is okay", weights={"bittersweet": 5}, reason="bittersweet emotion"),
-        _option("tragic", "Я готов эмоционально пострадать", "I'm ready to feel it deeply", weights={"tragic": 5, "emotion": 3}, reason="emotional intensity"),
+        _option("tragic", "Можно тяжёлый финал", "I'm ready to feel it deeply", weights={"tragic": 5, "emotion": 3}, reason="emotional intensity"),
     ]},
     "e3": {"id": "e3", "branch": "emotion", "answer_type": "single", "text": _text("Что важнее: события или люди?", "What matters more: events or people?"), "options": [
         _option("characters", "Персонажи и их отношения", "Characters and their relationships", weights={"character_driven": 5}, reason="character relationships"),
@@ -144,10 +144,10 @@ QUESTIONS: dict[str, dict] = {
     "c1": {"id": "c1", "branch": "common", "answer_type": "single", "text": _text("Сколько времени у тебя есть?", "How much time do you have?"), "options": [
         _option("short", "До 90 минут", "Up to 90 minutes", filters={"runtime_max": 100}),
         _option("two_hours", "До двух часов", "Up to two hours", filters={"runtime_max": 125}),
-        _option("long", "Можно длинный фильм", "A longer film is fine", filters={"runtime_max": 180}),
+        _option("long", "Можно длинный фильм", "A longer movie is fine", filters={"runtime_max": 180}),
         _option("any", "Время не важно", "Time does not matter"),
     ]},
-    "c2": {"id": "c2", "branch": "common", "answer_type": "single", "text": _text("Насколько новый фильм ты хочешь?", "How new should the film be?"), "options": [
+    "c2": {"id": "c2", "branch": "common", "answer_type": "single", "text": _text("Насколько новый фильм ты хочешь?", "How new should the movie be?"), "options": [
         _option("modern", "Только что-то современное", "Something modern", filters={"year_min": 2018}),
         _option("any", "Неважно, главное — хороший", "Any year, as long as it is good"),
         _option("classic", "Хочу проверенную классику", "A proven classic", filters={"year_max": 2005}),
@@ -157,8 +157,8 @@ QUESTIONS: dict[str, dict] = {
         _option("less_known", "Что-то не слишком известное", "Something not too well known", weights={"less_known": 4}, context={"risk": "medium"}),
         _option("surprise", "Удиви меня", "Surprise me", weights={"risk": 5, "diversity": 3}, context={"risk": "high"}),
     ]},
-    "c4": {"id": "c4", "branch": "common", "answer_type": "single", "text": _text("Ты будешь смотреть один?", "Will you be watching alone?"), "options": [
-        _option("solo", "Один", "Alone", context={"watch_context": "solo"}),
+    "c4": {"id": "c4", "branch": "common", "answer_type": "single", "text": _text("С кем смотришь?", "Who are you watching with?"), "options": [
+        _option("solo", "В одиночку", "On my own", context={"watch_context": "solo"}),
         _option("pair", "С партнёром", "With a partner", context={"watch_context": "pair"}),
         _option("group", "С друзьями", "With friends", weights={"group": 4, "fast_pace": 1}, context={"watch_context": "group"}),
     ]},

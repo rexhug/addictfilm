@@ -59,7 +59,7 @@ class PairRatingNotificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["payload"]["action_label"], "Оценить")
         self.assertEqual(
             item["payload"]["body"],
-            "Новая оценка фильма «Точный фильм» от Alex. А теперь твоя очередь!",
+            "У Alex есть оценка фильма «Точный фильм». Теперь твоя очередь.",
         )
 
         async with db.db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
