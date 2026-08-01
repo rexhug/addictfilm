@@ -39,7 +39,7 @@ import search
 import sentry_sdk
 import stats_cache
 import wikidata
-from auth import validate_init_data
+from auth import extract_start_param, validate_init_data
 from config import (
     ADMIN_TOKEN,
     ADMIN_USER_IDS,
@@ -253,7 +253,9 @@ async def current_user(x_init_data: str = Header(default="")) -> dict:
     if not user or not user_id or user_id < 0:
         raise HTTPException(status_code=401, detail="Не авторизован")
     user["id"] = user_id
-    await db.upsert_user(user)
+    # Параметр берём из той же строки, подпись которой только что проверена, и
+    # передаём отдельным аргументом: в профиль он не подмешивается.
+    await db.upsert_user(user, start_param=extract_start_param(x_init_data))
     return user
 
 
@@ -283,6 +285,18 @@ async def require_editor(user: dict = Depends(current_user)) -> dict:
     как require_admin ниже — тот для curl/скриптов обслуживания)."""
     role = await _effective_role(user["id"])
     if role not in ("editor", "admin"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    return user
+
+
+async def require_admin_user(user: dict = Depends(current_user)) -> dict:
+    """Строже require_editor: только роль "admin".
+
+    Редактор ведёт подборки, и знать размер и источники аудитории ему для этого
+    не нужно. Отдельный гейт, а не проверка внутри обработчика: иначе следующий
+    аналитический эндпоинт легко повесят на editor по невнимательности.
+    """
+    if await _effective_role(user["id"]) != "admin":
         raise HTTPException(status_code=403, detail="Недостаточно прав")
     return user
 
@@ -1810,6 +1824,17 @@ async def collection_remove_film(collection_id: int, film_id: int,
 @app.get("/api/admin/audit-log", dependencies=[Depends(require_editor)])
 async def admin_audit_log(limit: int = 50):
     return {"items": await db.list_audit_log(max(1, min(200, limit)))}
+
+
+@app.get("/api/admin/analytics", dependencies=[Depends(require_admin_user)])
+async def admin_analytics():
+    """Размер и происхождение аудитории. Только агрегаты.
+
+    Ни одного идентификатора, имени или @username: чтобы понять, растёт ли
+    продукт, знать, КТО именно зарегистрировался, не нужно, а выгрузка людей
+    из админки — это уже совсем другой уровень доступа к чужим данным.
+    """
+    return await db.user_analytics()
 
 
 # ── API: диагностика обогащения (только исключения) ───────────────────────────

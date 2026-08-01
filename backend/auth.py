@@ -41,3 +41,21 @@ def validate_init_data(init_data: str, bot_token: str, max_age_sec: int = 86400)
         return json.loads(data.get("user", "{}")) or None
     except json.JSONDecodeError:
         return None
+
+
+def extract_start_param(init_data: str) -> str:
+    """Параметр `startapp` из уже ПРОВЕРЕННОЙ подписью строки initData.
+
+    Отдельная функция, а не поле в ответе validate_init_data: тот возвращает
+    профиль пользователя, и он же уходит в upsert_user — подмешивать туда
+    произвольную строку от клиента значит смешивать личность и маркетинговую
+    метку.
+
+    Вызывать ТОЛЬКО после успешной проверки той же строки: подпись покрывает
+    весь initData, поэтому после неё start_param — доверенное значение, а до
+    неё это просто текст из запроса.
+    """
+    if not init_data:
+        return ""
+    data = dict(parse_qsl(init_data, keep_blank_values=True))
+    return (data.get("start_param") or "").strip()
