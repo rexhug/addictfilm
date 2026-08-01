@@ -2496,6 +2496,24 @@ window.addEventListener("pagehide", () => CollectionEditor.persistNow());
 // ── Подборки (публичный просмотр + in-app редактирование в режиме админа) ─────
 function canEditCollections() { return AdminMode.active("collections.write"); }
 
+async function openCollection(c) {
+  if (canEditCollections() || Number(c.film_count) !== 1) {
+    showCollectionDetail(c.id);
+    return;
+  }
+  try {
+    const collection = await api(`/api/collections/${c.id}`);
+    if (Array.isArray(collection.items) && collection.items.length === 1) {
+      const movie = collection.items[0];
+      openDetail(movie.id, () => { setActiveTab("home"); showHome(); }, movie);
+      return;
+    }
+  } catch (_) {
+    // Public collection may have changed or be temporarily unavailable.
+  }
+  showCollectionDetail(c.id);
+}
+
 // Крупная редакционная подборка. ОДИН рендерер и для главной, и для
 // предпросмотра в редакторе — превью не может разойтись с продакшеном.
 function featuredCollectionCard(c, { preview = false } = {}) {
@@ -2516,9 +2534,9 @@ function featuredCollectionCard(c, { preview = false } = {}) {
   if (!preview) {
     card.setAttribute("role", "button");
     card.tabIndex = 0;
-    card.onclick = () => showCollectionDetail(c.id);
+    card.onclick = () => openCollection(c);
     card.onkeydown = (event) => {
-      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); showCollectionDetail(c.id); }
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openCollection(c); }
     };
   }
   return card;
@@ -2541,7 +2559,7 @@ function collectionCard(c) {
           ? `<span class="admin-badge admin-badge-${esc(c.status)}">${esc(t(COLLECTION_STATUS_LABEL[c.status] || "admin_status_draft"))}</span>`
           : ""}</div>
     </div>`;
-  card.onclick = () => showCollectionDetail(c.id);
+  card.onclick = () => openCollection(c);
   return card;
 }
 
@@ -3979,7 +3997,7 @@ function showSearch(mode = null) {
   unwireDetailScroll();
   window.scrollTo(0, 0);
   const start = emptyState("🔍", t("search_start_t"), t("search_start_s"));
-  screen.innerHTML = `<div class="search-bar">${backBtn()}<input id="si" placeholder="${esc(t("search_ph"))}" autofocus></div><div id="sr">${start}</div>`;
+  screen.innerHTML = `<div class="search-bar" id="search-bar" aria-busy="false">${backBtn()}<input id="si" placeholder="${esc(t("search_ph"))}" autofocus><span class="search-loading" id="search-loading" aria-hidden="true"></span></div><div id="sr">${start}</div>`;
   // Возврат зависит от того, откуда пришли: редактор восстанавливаем по сессии
   // (введённое название и остальные поля переживают этот переход).
   wireBack(() => {
@@ -3992,14 +4010,29 @@ function showSearch(mode = null) {
   let timer;
   let requestVersion = 0;
   let searchController = null;
+  let lastNormalized = "";
+  let hasResults = false;
+  const searchBar = document.getElementById("search-bar");
+  const loading = document.getElementById("search-loading");
+  const normalizeInput = (value) => value.normalize("NFKC").toLocaleLowerCase().replace(/[\p{P}\p{S}_-]+/gu, " ").replace(/\s+/g, " ").trim();
+  const setLoading = (value) => {
+    searchBar?.classList.toggle("is-loading", value);
+    if (searchBar) searchBar.setAttribute("aria-busy", String(value));
+    if (loading) loading.setAttribute("aria-hidden", String(!value));
+    results.classList.toggle("is-refreshing", value && hasResults);
+  };
   input.oninput = () => {
     const version = ++requestVersion;
     clearTimeout(timer);
     searchController?.abort();
     timer = setTimeout(async () => {
       const q = input.value.trim();
-      if (q.length < 2) { results.innerHTML = start; return; }
-      results.innerHTML = skeletonGrid(6);
+      const normalized = normalizeInput(q);
+      if (normalized === lastNormalized) return;
+      lastNormalized = normalized;
+      if (q.length < 2) { hasResults = false; setLoading(false); results.innerHTML = start; return; }
+      setLoading(true);
+      if (!hasResults) results.innerHTML = skeletonGrid(6);
       searchController = new AbortController();
       let data;
       try { data = await api(`/api/search?q=${encodeURIComponent(q)}`, { signal: searchController.signal }); }
@@ -4010,12 +4043,14 @@ function showSearch(mode = null) {
         results.innerHTML = e.status === 429
           ? emptyState("⏳", t("search_toomany_t"), t("search_toomany_s"))
           : emptyState("⚠️", t("search_err_t"), uiError(e, "search_err_t"));
+        hasResults = false;
+        setLoading(false);
         return;
       }
       if (version !== requestVersion || !input.isConnected) return;
-      if (data.limited) { results.innerHTML = emptyState("⏳", t("search_limited_t"), t("search_limited_s")); return; }
+      if (data.limited) { results.innerHTML = emptyState("⏳", t("search_limited_t"), t("search_limited_s")); hasResults = false; setLoading(false); return; }
       const items = data.items;
-      if (!items.length) { results.innerHTML = emptyState("🤷", t("search_none_t"), t("search_none_s")); return; }
+      if (!items.length) { results.innerHTML = emptyState("🤷", t("search_none_t"), t("search_none_s")); hasResults = false; setLoading(false); return; }
       results.replaceChildren(gridOf(items, it => posterTile(
         { poster_url: it.poster || it.poster_url, title: it.title, title_original: it.title_original, year: it.year, imdb_rating: it.rating },
         {
@@ -4059,7 +4094,9 @@ function showSearch(mode = null) {
               }
             }),
         })));
-    }, 400);
+      hasResults = true;
+      setLoading(false);
+    }, 250);
   };
   input.focus();
 }

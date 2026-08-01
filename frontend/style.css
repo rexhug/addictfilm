@@ -313,6 +313,11 @@ section{margin-top:30px;}
   color:var(--ink);font-size:16px;font-family:var(--font);padding:0 16px;outline:none;letter-spacing:-0.01em;}
 .search-bar input::placeholder{color:var(--ink-2);}
 .search-bar input:focus{border-color:rgba(123,97,255,.5);}
+.search-bar{position:relative;}
+.search-loading{width:14px;height:14px;position:absolute;right:28px;top:calc(var(--safe-top) + 31px);border:2px solid rgba(255,255,255,.2);border-top-color:var(--accent);border-radius:50%;opacity:0;pointer-events:none;}
+.search-bar.is-loading .search-loading{opacity:1;animation:search-spin .7s linear infinite;}
+#sr.is-refreshing{opacity:.62;transition:opacity .16s;}
+@keyframes search-spin{to{transform:rotate(360deg);}}
 #sr{padding-top:2px;}
 
 /* ── статистика ─────────────────────────────── */
