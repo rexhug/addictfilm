@@ -38,7 +38,7 @@ _QMAX = 300        # максимум запросов в L1
 # TTL постоянного кэша (БД): результаты поиска стабильны неделями. Настраивается.
 _DB_TTL = int(os.getenv("SEARCH_CACHE_TTL_SEC", str(180 * 24 * 3600)))
 _EMPTY_DB_TTL = int(os.getenv("SEARCH_EMPTY_CACHE_TTL_SEC", str(6 * 3600)))
-SEARCH_CACHE_VERSION = "v2"
+SEARCH_CACHE_VERSION = "v3"
 _INFLIGHT: dict[str, asyncio.Task] = {}
 _puts = 0  # счётчик записей в L2 — для периодической уборки протухшего
 
@@ -79,7 +79,7 @@ def _title_match(item: dict, query: str) -> tuple[int, int]:
         title_tokens = title.split()
         if title == title_query:
             title_match = min(title_match, 0)
-        elif title.startswith(title_query + " ") or title.startswith(title_query):
+        elif title.startswith(title_query + " "):
             title_match = min(title_match, 2)
         elif tokens and all(token in title_tokens for token in tokens):
             title_match = min(title_match, 3)
@@ -110,7 +110,10 @@ def _rank_items(items: list[dict], query: str, limit: int = 8) -> list[dict]:
 
 
 def _strong_title_match(item: dict, query: str) -> bool:
-    return _title_match(item, query)[0] <= 2
+    # Only an exact normalized title is safe to use as a local early return.
+    # Franchise prefixes must still be enriched by the providers so that the
+    # canonical standalone title is not hidden by a cached sequel.
+    return _title_match(item, query)[0] == 0
 
 
 def _dedup_key(item: dict) -> tuple:
