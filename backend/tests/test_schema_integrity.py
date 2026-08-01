@@ -32,7 +32,8 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
                 "SELECT version FROM schema_migrations ORDER BY version"
             )).fetchall()
 
-        self.assertIn("role", {row[1] for row in users})
+        self.assertTrue({"role", "acquisition_source", "acquisition_param"}.issubset(
+            {row[1] for row in users}))
         self.assertTrue({"movie_enrichment_jobs", "movie_recommendation_profiles",
                          "movie_recommendation_profile_overrides",
                          "worker_heartbeats", "wishlist_random_state",
@@ -77,6 +78,7 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
             db._SCHEMA_MIGRATION_CANONICAL_CAST,
             db._SCHEMA_MIGRATION_FILM_IDENTITY,
             db._SCHEMA_MIGRATION_PUBLIC_REVIEWS,
+            db._SCHEMA_MIGRATION_USER_ACQUISITION,
         ])
 
     async def test_foreign_keys_reject_orphaned_user_film_rows(self):

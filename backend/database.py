@@ -63,6 +63,7 @@ _SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION = "2026-07-28-movie-flow-moderation-v1"
 _SCHEMA_MIGRATION_PUBLIC_REVIEWS = "2026-07-29-public-reviews-v1"
 _SCHEMA_MIGRATION_FILM_IDENTITY = "2026-07-29-film-identity-v1"
 _SCHEMA_MIGRATION_CANONICAL_CAST = "2026-07-29-canonical-cast-v1"
+_SCHEMA_MIGRATION_USER_ACQUISITION = "2026-08-01-user-acquisition-v1"
 
 # Значения films.media_type. Дублируются константами, а не импортом media_type,
 # чтобы не затенять одноимённый аргумент get_or_create_film.
@@ -908,6 +909,14 @@ async def _apply_canonical_cast_migration() -> None:
     await _add_column_if_missing("films", "cast_checked_at TEXT")
 
 
+async def _apply_user_acquisition_migration() -> None:
+    """Откуда пришёл пользователь. Обе колонки необязательные и заполняются
+    только у новых регистраций: у зарегистрированных РАНЬШЕ они останутся NULL,
+    и это честный ответ «неизвестно», а не повод дописать им «direct»."""
+    await _add_column_if_missing("users", "acquisition_source TEXT")
+    await _add_column_if_missing("users", "acquisition_param TEXT")
+
+
 def _row_time(row: dict, *fields: str) -> str:
     """Comparable ISO timestamp for conflict resolution during a film merge."""
     return max((str(row.get(field) or "") for field in fields), default="")
@@ -1253,6 +1262,7 @@ async def _run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_PUBLIC_REVIEWS, _apply_public_reviews_migration),
         (_SCHEMA_MIGRATION_FILM_IDENTITY, _apply_film_identity_migration),
         (_SCHEMA_MIGRATION_CANONICAL_CAST, _apply_canonical_cast_migration),
+        (_SCHEMA_MIGRATION_USER_ACQUISITION, _apply_user_acquisition_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
@@ -1599,7 +1609,39 @@ async def backup_db(keep: int = 7) -> str | None:
 
 
 # ── Пользователи ─────────────────────────────────────────────────────────────
-async def upsert_user(user: dict) -> None:
+# Telegram и так ограничивает startapp этим набором; обрезаем на своей стороне,
+# чтобы в аналитику не попало ничего, кроме метки кампании.
+_ACQUISITION_PARAM_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+ACQUISITION_DIRECT = "direct"
+ACQUISITION_PAIR_INVITE = "pair_invite"
+ACQUISITION_SHARED_FILM = "shared_film"
+ACQUISITION_CAMPAIGN = "campaign"
+ACQUISITION_UNKNOWN = "unknown"
+
+
+def normalize_acquisition(start_param: object) -> tuple[str, str | None]:
+    """Разложить startapp на бакет и (только для кампаний) сырое значение.
+
+    Токен приглашения в пару НЕ сохраняем: `inv_<token>` — действующий секрет,
+    и аналитике достаточно знать, что человек пришёл по приглашению. Ссылка на
+    фильм тоже ничего не добавляет как строка: это идентификатор, а не канал.
+    """
+    value = str(start_param or "").strip()
+    if not value:
+        return ACQUISITION_DIRECT, None
+    if value.startswith("inv_"):
+        return ACQUISITION_PAIR_INVITE, None
+    if value.startswith("film_"):
+        return ACQUISITION_SHARED_FILM, None
+    if _ACQUISITION_PARAM_RE.match(value):
+        return ACQUISITION_CAMPAIGN, value
+    # Формат, которого Telegram выдать не может: считаем каналом неизвестного
+    # происхождения и не храним само значение.
+    return ACQUISITION_CAMPAIGN, None
+
+
+async def upsert_user(user: dict, start_param: object = None) -> None:
     """Регистрация/обновление любого пользователя Telegram без write-amplification.
 
     InitData приходит с каждым API запросом. Профиль обновляем сразу при реальном
@@ -1608,11 +1650,17 @@ async def upsert_user(user: dict) -> None:
     """
     now = _now()
     last_seen_cutoff = (datetime.now(UTC) - timedelta(minutes=15)).isoformat()
+    source, param = normalize_acquisition(start_param)
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        # Источник пишется ТОЛЬКО в INSERT: ветка обновления его не трогает.
+        # Атрибуция по первому касанию — иначе достаточно один раз открыть
+        # приложение по ссылке «Поделиться», чтобы задним числом переписать
+        # канал, по которому человек пришёл в продукт.
         await db.execute(
             """
-            INSERT INTO users (id, first_name, username, photo_url, created_at, last_seen)
-            VALUES (?,?,?,?,?,?)
+            INSERT INTO users (id, first_name, username, photo_url, created_at, last_seen,
+                               acquisition_source, acquisition_param)
+            VALUES (?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
                 first_name = excluded.first_name,
                 username   = excluded.username,
@@ -1624,9 +1672,65 @@ async def upsert_user(user: dict) -> None:
                OR users.last_seen IS NULL OR users.last_seen < ?
             """,
             (user.get("id"), user.get("first_name"), user.get("username"), user.get("photo_url"), now, now,
-             last_seen_cutoff),
+             source, param, last_seen_cutoff),
         )
         await db.commit()
+
+
+async def user_analytics(now: datetime | None = None) -> dict:
+    """Сводка по аудитории. Границы считаются в UTC.
+
+    Сутки — календарные UTC, а не «последние 24 часа»: это разные числа, и
+    отчёт обязан говорить, какое из них показывает. Часовой пояс уходит в
+    ответ, чтобы цифру «сегодня» нельзя было прочитать неоднозначно.
+
+    Сравнение дат — строковое: все метки пишутся `datetime.now(UTC).isoformat()`
+    в одном формате, поэтому лексикографический порядок совпадает с временным
+    и работает одинаково в SQLite и Postgres.
+    """
+    moment = now or datetime.now(UTC)
+    day_start = moment.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    week_ago = (moment - timedelta(days=7)).isoformat()
+    month_ago = (moment - timedelta(days=30)).isoformat()
+    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        totals = dict(await (await db.execute(
+            """
+            SELECT COUNT(*) AS total,
+                   COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0) AS today,
+                   COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0) AS week,
+                   COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0) AS month,
+                   COALESCE(SUM(CASE WHEN last_seen  >= ? THEN 1 ELSE 0 END), 0) AS active_week
+            FROM users
+            """,
+            (day_start, week_ago, month_ago, week_ago),
+        )).fetchone())
+        sources = [dict(row) for row in await (await db.execute(
+            # NULL — это пользователи, зарегистрированные до появления
+            # атрибуции. Они «unknown», а не «direct»: приписать им прямой
+            # заход значило бы выдумать данные.
+            """
+            SELECT COALESCE(acquisition_source, ?) AS source, COUNT(*) AS users
+            FROM users
+            GROUP BY COALESCE(acquisition_source, ?)
+            ORDER BY COUNT(*) DESC, source
+            """,
+            (ACQUISITION_UNKNOWN, ACQUISITION_UNKNOWN),
+        )).fetchall()]
+    return {
+        "total_users": int(totals["total"] or 0),
+        "new_users": {
+            "today": int(totals["today"] or 0),
+            "7d": int(totals["week"] or 0),
+            "30d": int(totals["month"] or 0),
+        },
+        "active_users_7d": int(totals["active_week"] or 0),
+        "acquisition": [
+            {"source": str(row["source"]), "users": int(row["users"])} for row in sources
+        ],
+        "timezone": "UTC",
+        "generated_at": moment.isoformat(),
+    }
 
 
 # ── Каталог фильмов ──────────────────────────────────────────────────────────
