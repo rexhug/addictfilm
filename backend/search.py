@@ -15,6 +15,7 @@ import os
 import re
 import time
 import unicodedata
+from datetime import UTC, datetime
 
 import cast as cast_model
 import database as db
@@ -38,7 +39,7 @@ _QMAX = 300        # максимум запросов в L1
 # TTL постоянного кэша (БД): результаты поиска стабильны неделями. Настраивается.
 _DB_TTL = int(os.getenv("SEARCH_CACHE_TTL_SEC", str(180 * 24 * 3600)))
 _EMPTY_DB_TTL = int(os.getenv("SEARCH_EMPTY_CACHE_TTL_SEC", str(6 * 3600)))
-SEARCH_CACHE_VERSION = "v3"
+SEARCH_CACHE_VERSION = "v4"
 _INFLIGHT: dict[str, asyncio.Task] = {}
 _puts = 0  # счётчик записей в L2 — для периодической уборки протухшего
 
@@ -93,20 +94,53 @@ def _title_match(item: dict, query: str) -> tuple[int, int]:
     return title_match, year_match
 
 
-def _search_score(item: dict, query: str) -> tuple:
+def _search_score(item: dict, query: str) -> float:
     match, year_match = _title_match(item, query)
+    title_bonus = {0: 100.0, 2: 78.0, 3: 58.0, 4: 38.0, 5: 8.0}.get(match, float("-inf"))
+    if not math.isfinite(title_bonus):
+        return float("-inf")
     votes = max(_parse_number(item.get("votes")), _parse_number(item.get("imdb_votes")), _parse_number(item.get("kp_votes")))
     rating = max(_parse_number(item.get("rating")), _parse_number(item.get("imdb_rating")), _parse_number(item.get("kp_rating")))
     poster = 1 if item.get("poster") or item.get("poster_url") else 0
-    stable = _qnorm(item.get("title") or item.get("title_original") or "")
-    ref = str(item.get("ref") or item.get("imdb_id") or item.get("kp_id") or "")
-    # Match quality is intentionally the first component: popularity cannot
-    # lift a partial/person match above an exact title.
-    return (match, -year_match, -math.log1p(votes), -rating, -poster, stable, ref)
+    score = title_bonus
+    if year_match:
+        score += 35.0
+    elif _query_parts(query)[1]:
+        score -= 20.0
+    score += 12.0 * math.log10(votes + 1.0)
+    score += 2.5 * rating
+    score += 3.0 * poster
+    if item.get("type") == "movie":
+        score += 2.0
+    year_text = str(item.get("year") or "")[:4]
+    if year_text.isdigit():
+        current = datetime.now(UTC)
+        cutoff_year = current.year + ((current.month - 1 + 18) // 12)
+        if int(year_text) > cutoff_year:
+            score -= 6.0
+    return score
+
+
+def _credible_items(items: list[dict], query: str) -> list[dict]:
+    return [item for item in items if _title_match(item, query)[0] <= 5 and math.isfinite(_search_score(item, query))]
 
 
 def _rank_items(items: list[dict], query: str, limit: int = 8) -> list[dict]:
-    return sorted(items, key=lambda item: _search_score(item, query))[:limit]
+    candidates = _credible_items(items, query)
+    if not candidates:
+        return []
+    candidates.sort(key=lambda item: (
+        -_search_score(item, query),
+        -max(_parse_number(item.get("votes")), _parse_number(item.get("imdb_votes")), _parse_number(item.get("kp_votes"))),
+        -max(_parse_number(item.get("rating")), _parse_number(item.get("imdb_rating")), _parse_number(item.get("kp_rating"))),
+        _qnorm(item.get("title") or item.get("title_original") or ""),
+        str(item.get("ref") or item.get("imdb_id") or item.get("kp_id") or ""),
+    ))
+    if len(candidates) >= 5:
+        best = _search_score(candidates[0], query)
+        floor = best - max(45.0, abs(best) * 0.45)
+        candidates = [item for item in candidates if _search_score(item, query) >= floor]
+    return candidates[:limit]
 
 
 def _strong_title_match(item: dict, query: str) -> bool:
@@ -334,8 +368,10 @@ async def find_movies(query: str) -> list[dict]:
             kp_docs = [d for d in await kinopoisk.search_movies(query)
                        if d.get("id") and (d.get("name") or d.get("alternativeName"))]
             kp_items = [_kp_item(d) for d in kp_docs]
-            if kp_items and any(_strong_title_match(item, query) for item in kp_items):
-                ranked = _rank_items(kp_items, query)
+            kp_credible = _credible_items(kp_items, query)
+            kp_meaningful = any(_title_match(item, query)[0] <= 4 for item in kp_items)
+            if len(kp_credible) >= 5 and kp_meaningful:
+                ranked = _rank_items(kp_credible, query)
                 for item in ranked:
                     doc = next((d for d in kp_docs if str(d.get("id")) == item["ref"]), None)
                     if doc:
@@ -394,10 +430,16 @@ async def cached_search(query: str, user_id: int | None = None) -> dict:
     started = time.perf_counter()
     # The permanent catalog is the first layer: once a film entered our database,
     # every future title/actor lookup for it is free forever.
-    catalog_items = await db.search_catalog(normalized, limit=60)
-    catalog_items = _rank_items(catalog_items, normalized, 8)
-    strong_local = bool(catalog_items and _strong_title_match(catalog_items[0], normalized))
-    if strong_local:
+    catalog_candidates = await db.search_catalog(normalized, limit=60)
+    catalog_credible = _credible_items(catalog_candidates, normalized)
+    catalog_items = _rank_items(catalog_credible, normalized, 8)
+    year_query = _query_parts(normalized)[1]
+    exact_year_local = any(
+        _title_match(item, normalized) == (0, 1)
+        for item in catalog_credible
+    )
+    catalog_complete = len(catalog_credible) >= 5
+    if catalog_complete or (year_query and exact_year_local):
         logger.info("search layer=catalog elapsed_ms=%d result_count=%d strong_local=true",
                     int((time.perf_counter() - started) * 1000), len(catalog_items))
         return {"items": catalog_items, "cached": True, "limited": False, "throttled": False}
@@ -439,7 +481,7 @@ async def cached_search(query: str, user_id: int | None = None) -> dict:
         for k in sorted(_QCACHE, key=lambda k: _QCACHE[k][0])[:_QMAX // 6]:
             _QCACHE.pop(k, None)
     logger.info("search layer=provider elapsed_ms=%d result_count=%d strong_local=%s",
-                int((time.perf_counter() - started) * 1000), len(items), str(strong_local).lower())
+                int((time.perf_counter() - started) * 1000), len(items), str(catalog_complete).lower())
     return {"items": items, "cached": False, "limited": False, "throttled": False}
 
 
