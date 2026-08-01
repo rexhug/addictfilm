@@ -40,7 +40,7 @@ def _cache_put(kp_id: str, doc: dict) -> None:
 _FIELDS = [
     "id", "name", "alternativeName", "year", "type", "isSeries", "description",
     "shortDescription", "movieLength", "seriesLength",
-    "rating.kp", "rating.imdb", "votes.imdb",
+    "rating.kp", "rating.imdb", "votes.imdb", "votes.kp",
     "poster.url", "poster.previewUrl", "backdrop.url",
     "genres.name", "externalId.imdb", "ageRating",
     "persons",

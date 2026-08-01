@@ -50,6 +50,96 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["items"][0]["title"], "Матрица")
         self.assertEqual(result["items"][0]["title_original"], "The Matrix")
 
+    async def test_exact_title_beats_popular_partial_match(self):
+        items = [
+            {"src": "i", "ref": "tt-exact", "title": "Dune", "year": "2021", "votes": 200},
+            {"src": "i", "ref": "tt-popular", "title": "Dune: Part Two", "year": "2024", "votes": 2_000_000},
+        ]
+        ranked = search._rank_items(items, "Dune")
+        self.assertEqual(ranked[0]["ref"], "tt-exact")
+
+    async def test_popularity_resolves_equal_title_matches(self):
+        items = [
+            {"src": "i", "ref": "tt-low", "title": "The Thing", "votes": "200"},
+            {"src": "i", "ref": "tt-high", "title": "The Thing", "votes": "2,000,000"},
+        ]
+        self.assertEqual(search._rank_items(items, "The Thing")[0]["ref"], "tt-high")
+
+    async def test_metadata_match_cannot_hijack_title_search(self):
+        items = [
+            {"src": "i", "ref": "tt-title", "title": "Arrival", "votes": 10},
+            {"src": "i", "ref": "tt-person", "title": "Other Film", "actors": "Arrival Smith", "votes": 2_000_000},
+        ]
+        self.assertEqual(search._rank_items(items, "Arrival")[0]["ref"], "tt-title")
+
+    async def test_year_is_a_ranking_signal(self):
+        items = [
+            {"src": "i", "ref": "tt-1984", "title": "Dune", "year": "1984", "votes": 2_000_000},
+            {"src": "i", "ref": "tt-2021", "title": "Dune", "year": "2021", "votes": 200},
+        ]
+        self.assertEqual(search._rank_items(items, "Dune 2021")[0]["ref"], "tt-2021")
+
+    async def test_provider_dedup_uses_imdb_identity(self):
+        merged = search._merge_items(
+            [{"src": "k", "ref": "301", "imdb_id": "tt0133093", "title": "Матрица"}],
+            [{"src": "i", "ref": "tt0133093", "imdb_id": "tt0133093", "title": "The Matrix"}],
+        )
+        self.assertEqual(len(merged), 1)
+
+    async def test_weak_catalog_match_does_not_suppress_exact_provider_result(self):
+        await db.get_or_create_film("tt-person", "Other Film", actors="Матрица")
+        document = {
+            "id": 301, "externalId": {"imdb": "tt0133093"}, "name": "Матрица",
+            "alternativeName": "The Matrix", "year": 1999,
+            "rating": {"kp": 8.5, "imdb": 8.7}, "votes": {"imdb": 2_000_000},
+            "poster": {"url": "https://st.kp.yandex.net/matrix.jpg"}, "persons": [],
+        }
+        old_token, old_search = search.KINOPOISK_TOKEN, search.kinopoisk.search_movies
+
+        async def fake_search(_query):
+            return [document]
+
+        search.KINOPOISK_TOKEN = "test-token"
+        search.kinopoisk.search_movies = fake_search
+        try:
+            result = await search.cached_search("Матрица", user_id=1)
+        finally:
+            search.KINOPOISK_TOKEN = old_token
+            search.kinopoisk.search_movies = old_search
+        self.assertEqual(result["items"][0]["title"], "Матрица")
+        self.assertEqual(result["items"][0]["ref"], "301")
+
+    async def test_identical_cache_misses_share_one_provider_task(self):
+        calls = 0
+        old_find = search.find_movies
+        old_get, old_put = db.search_cache_get, db.search_cache_put
+
+        async def fake_find(_query):
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.02)
+            return [{"src": "i", "ref": "tt0133093", "title": "Матрица"}]
+
+        async def empty_cache(*_args, **_kwargs):
+            return None
+
+        async def no_write(*_args, **_kwargs):
+            return None
+
+        search.find_movies = fake_find
+        db.search_cache_get, db.search_cache_put = empty_cache, no_write
+        search._QCACHE.clear()
+        try:
+            results = await asyncio.gather(
+                search.cached_search("Матрица", user_id=1),
+                search.cached_search("МАТРИЦА", user_id=1),
+            )
+        finally:
+            search.find_movies = old_find
+            db.search_cache_get, db.search_cache_put = old_get, old_put
+        self.assertEqual(calls, 1)
+        self.assertEqual(results[0]["items"][0]["title"], "Матрица")
+
     async def test_kinopoisk_search_response_becomes_a_permanent_catalog_entry(self):
         document = {
             "id": 301,

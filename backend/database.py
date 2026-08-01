@@ -1844,21 +1844,33 @@ def _catalog_item(row) -> dict | None:
         return None
     rating = row["imdb_rating"] or row["kp_rating"]
     return {
+        "catalog_id": row["id"],
         "src": src,
         "ref": ref,
+        "imdb_id": row["imdb_id"],
+        "kp_id": row["kp_id"],
         "title": row["title"],
         "title_original": row["title_original"],
         "year": row["year"] or "?",
         "poster": row["poster_url"],
+        "poster_url": row["poster_url"],
         "rating": rating,
+        "imdb_rating": row["imdb_rating"],
+        "kp_rating": row["kp_rating"],
+        "imdb_votes": row["imdb_votes"],
+        "actors": row["actors"],
+        "directors": row["directors"],
         "genres": row["genres"],
-        "type": "movie",
+        "type": row["media_type"] or "movie",
     }
 
 
 async def search_catalog(query: str, limit: int = 8) -> list[dict]:
     """Search the permanent catalog before spending an external API request."""
     terms = [term.casefold() for term in query.split() if term]
+    # Years are ranking signals, not part of the indexed search_text.
+    if len(terms) > 1 and re.fullmatch(r"(?:19|20)\d{2}", terms[-1]):
+        terms.pop()
     if not terms:
         return []
 
@@ -1867,7 +1879,6 @@ async def search_catalog(query: str, limit: int = 8) -> list[dict]:
 
     clauses = ["search_text LIKE ? ESCAPE '\\'" for _ in terms]
     params = [like(term) for term in terms]
-    exact = " ".join(terms)
     async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
         safe_prefix = terms[0] if re.fullmatch(r"[\w-]+", terms[0], flags=re.UNICODE) else None
@@ -1880,17 +1891,18 @@ async def search_catalog(query: str, limit: int = 8) -> list[dict]:
             prefix_value = safe_prefix + ("%" if _PG else "*")
             cur = await db.execute(
                 "SELECT * FROM films WHERE " + prefix_clause + " AND " + " AND ".join(clauses) + " "
-                "ORDER BY CASE WHEN search_text LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END, id DESC LIMIT ?",
-                (prefix_value, *params, like(exact), max(1, min(limit, 20))),
+                "ORDER BY id DESC LIMIT ?",
+                (prefix_value, *params, max(1, min(limit, 60))),
             )
             rows = await cur.fetchall()
-        if len(rows) < max(1, min(limit, 20)):
+        candidate_limit = max(1, min(limit, 60))
+        if len(rows) < candidate_limit:
             existing_ids = [row["id"] for row in rows]
             exclusion = "" if not existing_ids else " AND id NOT IN (" + ",".join("?" for _ in existing_ids) + ")"
             cur = await db.execute(
                 "SELECT * FROM films WHERE " + " AND ".join(clauses) + exclusion + " "
-                "ORDER BY CASE WHEN search_text LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END, id DESC LIMIT ?",
-                (*params, *existing_ids, like(exact), max(1, min(limit, 20)) - len(rows)),
+                "ORDER BY id DESC LIMIT ?",
+                (*params, *existing_ids, candidate_limit - len(rows)),
             )
             rows += await cur.fetchall()
     return [item for row in rows if (item := _catalog_item(row)) is not None]

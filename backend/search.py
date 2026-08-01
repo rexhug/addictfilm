@@ -10,9 +10,11 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import time
+import unicodedata
 
 import cast as cast_model
 import database as db
@@ -36,11 +38,104 @@ _QMAX = 300        # максимум запросов в L1
 # TTL постоянного кэша (БД): результаты поиска стабильны неделями. Настраивается.
 _DB_TTL = int(os.getenv("SEARCH_CACHE_TTL_SEC", str(180 * 24 * 3600)))
 _EMPTY_DB_TTL = int(os.getenv("SEARCH_EMPTY_CACHE_TTL_SEC", str(6 * 3600)))
+SEARCH_CACHE_VERSION = "v2"
+_INFLIGHT: dict[str, asyncio.Task] = {}
 _puts = 0  # счётчик записей в L2 — для периодической уборки протухшего
 
 
 def _qnorm(query: str) -> str:
-    return " ".join(query.lower().split())
+    text = unicodedata.normalize("NFKC", str(query or "")).casefold().replace("ё", "е")
+    text = "".join(" " if (unicodedata.category(ch).startswith("P") or ch in "-_—–") else ch for ch in text)
+    return " ".join(text.split())
+
+
+def _query_parts(query: str) -> tuple[str, str | None]:
+    normalized = _qnorm(query)
+    parts = normalized.rsplit(" ", 1)
+    if len(parts) == 2 and re.fullmatch(r"(?:19|20)\d{2}", parts[1]):
+        return parts[0], parts[1]
+    return normalized, None
+
+
+def _parse_number(value) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return max(0.0, float(value))
+    text = str(value).strip().replace(" ", "").replace(",", "")
+    try:
+        return max(0.0, float(text))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _title_match(item: dict, query: str) -> tuple[int, int]:
+    title_query, year = _query_parts(query)
+    tokens = title_query.split()
+    title_values = [_qnorm(item.get("title")), _qnorm(item.get("title_original"))]
+    title_values = [value for value in title_values if value]
+    title_match = 6
+    for title in title_values:
+        title_tokens = title.split()
+        if title == title_query:
+            title_match = min(title_match, 0)
+        elif title.startswith(title_query + " ") or title.startswith(title_query):
+            title_match = min(title_match, 2)
+        elif tokens and all(token in title_tokens for token in tokens):
+            title_match = min(title_match, 3)
+        elif title_query and title_query in title:
+            title_match = min(title_match, 4)
+    if title_match == 6:
+        metadata = _qnorm(" ".join((item.get("actors") or "", item.get("directors") or "")))
+        if title_query and all(token in metadata for token in tokens):
+            title_match = 5
+    year_match = 1 if year and str(item.get("year") or "")[:4] == year else 0
+    return title_match, year_match
+
+
+def _search_score(item: dict, query: str) -> tuple:
+    match, year_match = _title_match(item, query)
+    votes = max(_parse_number(item.get("votes")), _parse_number(item.get("imdb_votes")), _parse_number(item.get("kp_votes")))
+    rating = max(_parse_number(item.get("rating")), _parse_number(item.get("imdb_rating")), _parse_number(item.get("kp_rating")))
+    poster = 1 if item.get("poster") or item.get("poster_url") else 0
+    stable = _qnorm(item.get("title") or item.get("title_original") or "")
+    ref = str(item.get("ref") or item.get("imdb_id") or item.get("kp_id") or "")
+    # Match quality is intentionally the first component: popularity cannot
+    # lift a partial/person match above an exact title.
+    return (match, -year_match, -math.log1p(votes), -rating, -poster, stable, ref)
+
+
+def _rank_items(items: list[dict], query: str, limit: int = 8) -> list[dict]:
+    return sorted(items, key=lambda item: _search_score(item, query))[:limit]
+
+
+def _strong_title_match(item: dict, query: str) -> bool:
+    return _title_match(item, query)[0] <= 2
+
+
+def _dedup_key(item: dict) -> tuple:
+    imdb = str(item.get("imdb_id") or (item.get("ref") if item.get("src") == "i" else "")).lower()
+    kp = str(item.get("kp_id") or (item.get("ref") if item.get("src") == "k" else ""))
+    if imdb.startswith("tt"):
+        return ("imdb", imdb)
+    if kp:
+        return ("kp", kp)
+    return ("title", _qnorm(item.get("title") or item.get("title_original") or ""), str(item.get("year") or "")[:4])
+
+
+def _merge_items(*groups: list[dict]) -> list[dict]:
+    merged: dict[tuple, dict] = {}
+    for group in groups:
+        for item in group:
+            key = _dedup_key(item)
+            current = merged.get(key)
+            if current is None:
+                merged[key] = dict(item)
+                continue
+            for name, value in item.items():
+                if value not in (None, "", "N/A") and current.get(name) in (None, "", "N/A"):
+                    current[name] = value
+    return list(merged.values())
 
 
 def extract_imdb_id(text: str) -> str | None:
@@ -60,17 +155,21 @@ def best_title(wikidata_title: str | None, fallback: str) -> str:
 def _kp_item(doc: dict) -> dict:
     poster = (doc.get("poster") or {}).get("url")
     r = doc.get("rating") or {}
+    v = doc.get("votes") or {}
     rating = r.get("imdb") or r.get("kp")
     title = doc.get("name") or doc.get("alternativeName") or ""
     alternate = doc.get("alternativeName")
     return {
         "src": "k",
         "ref": str(doc["id"]),
+        "kp_id": str(doc["id"]),
+        "imdb_id": (doc.get("externalId") or {}).get("imdb"),
         "title": title,
         "title_original": alternate if alternate and alternate != title else None,
         "year": str(doc.get("year") or "?"),
         "poster": poster,
         "rating": f"{rating:.1f}" if rating else None,
+        "votes": max(_parse_number(v.get("imdb")), _parse_number(v.get("kp"))),
         "genres": ", ".join(g["name"] for g in (doc.get("genres") or [])) or None,
         "type": "series" if kinopoisk.is_series(doc) else "movie",
     }
@@ -123,11 +222,13 @@ def _omdb_item(r: dict) -> dict:
     return {
         "src": "i",
         "ref": r["imdbID"],
+        "imdb_id": r["imdbID"],
         "title": title,
         "title_original": title or None,
         "year": r.get("Year", "?"),
         "poster": poster if poster and poster != "N/A" else None,
         "rating": None,
+        "votes": _parse_number(r.get("imdbVotes")),
         "genres": None,
         "type": "series" if r.get("Type") == "series" else "movie",
     }
@@ -189,6 +290,8 @@ async def _enrich_items(items: list[dict]) -> dict[str, dict]:
             rt = d.get("imdbRating")
             if rt and rt != "N/A":
                 it["rating"] = rt
+        if not it.get("votes"):
+            it["votes"] = _parse_number(d.get("imdbVotes"))
         g = d.get("Genre")
         if g and g != "N/A":
             it["genres"] = g
@@ -221,47 +324,58 @@ def _omdb_catalog_details(data: dict, title: str, poster_url: str | None) -> dic
 
 async def find_movies(query: str) -> list[dict]:
     """Поиск. Возвращает нормализованные item'ы (пустой список = не найдено)."""
+    kp_items: list[dict] = []
+    kp_docs: list[dict] = []
     if KINOPOISK_TOKEN:
         try:
-            docs = await kinopoisk.search_movies(query)
-            items = [_kp_item(d) for d in docs if (d.get("name") or d.get("alternativeName"))]
-            if items:
-                # A Kinopoisk search response already contains all fields we need.
-                # Save every hit now, so a later add/detail/synonym search is local.
-                for doc in docs:
-                    if not doc.get("id") or not (doc.get("name") or doc.get("alternativeName")):
-                        continue
-                    try:
-                        await db.get_or_create_film(**_kp_details(doc))
-                    except Exception:
-                        logger.warning("Could not cache Kinopoisk film %s", doc.get("id"), exc_info=True)
-                return items
+            kp_docs = [d for d in await kinopoisk.search_movies(query)
+                       if d.get("id") and (d.get("name") or d.get("alternativeName"))]
+            kp_items = [_kp_item(d) for d in kp_docs]
+            if kp_items and any(_strong_title_match(item, query) for item in kp_items):
+                ranked = _rank_items(kp_items, query)
+                for item in ranked:
+                    doc = next((d for d in kp_docs if str(d.get("id")) == item["ref"]), None)
+                    if doc:
+                        try:
+                            await db.get_or_create_film(**_kp_details(doc))
+                        except Exception:
+                            logger.warning("Could not cache Kinopoisk film %s", doc.get("id"), exc_info=True)
+                return ranked
         except Exception as e:
             logger.warning("Kinopoisk search failed, fallback: %s", e)
 
     results, _translated, _fail = await omdb.search_movies(query)
-    items = [_omdb_item(r) for r in results]
-    if not items:
-        return []
-
-    items = await _expand(items)
-    items = items[:6]
+    omdb_items = [_omdb_item(r) for r in results]
+    if omdb_items:
+        omdb_items = await _expand(omdb_items)
+        omdb_items = omdb_items[:8]
 
     ru_titles, omdb_details = await asyncio.gather(
-        wikidata.get_titles_by_imdb([it["ref"] for it in items], "ru"),
-        _enrich_items(items),
+        wikidata.get_titles_by_imdb([it["ref"] for it in omdb_items], "ru"),
+        _enrich_items(omdb_items),
     )
-    for it in items:
+    for it in omdb_items:
         wt = ru_titles.get(it["ref"])
         if wt and has_cyrillic(wt):
             it["title"] = wt
-        data = omdb_details.get(it["ref"])
-        if data:
-            try:
-                await db.get_or_create_film(**_omdb_catalog_details(data, it["title"], it.get("poster")))
-            except Exception:
-                logger.warning("Could not cache OMDb film %s", it["ref"], exc_info=True)
-    return items
+    merged = _merge_items(kp_items, omdb_items)
+    ranked = _rank_items(merged, query)
+    for item in ranked:
+        if item.get("src") == "k":
+            doc = next((d for d in kp_docs if str(d.get("id")) == item["ref"]), None)
+            if doc:
+                try:
+                    await db.get_or_create_film(**_kp_details(doc))
+                except Exception:
+                    logger.warning("Could not cache Kinopoisk film %s", doc.get("id"), exc_info=True)
+        else:
+            data = omdb_details.get(item["ref"])
+            if data:
+                try:
+                    await db.get_or_create_film(**_omdb_catalog_details(data, item["title"], item.get("poster")))
+                except Exception:
+                    logger.warning("Could not cache OMDb film %s", item["ref"], exc_info=True)
+    return ranked
 
 
 async def cached_search(query: str, user_id: int | None = None) -> dict:
@@ -271,28 +385,45 @@ async def cached_search(query: str, user_id: int | None = None) -> dict:
       limited   — дневной бюджет исчерпан и свежего кэша нет;
       throttled — пользователь превысил per-user лимит (штрафуем ТОЛЬКО реальные
                   обращения к API — кэш-хиты бесплатны и не throttl-ятся)."""
-    key = _qnorm(query)
+    normalized = _qnorm(query)
+    key = f"{SEARCH_CACHE_VERSION}:{normalized}"
     now = time.time()
+    started = time.perf_counter()
     # The permanent catalog is the first layer: once a film entered our database,
     # every future title/actor lookup for it is free forever.
-    catalog_items = await db.search_catalog(key)
-    if catalog_items:
+    catalog_items = await db.search_catalog(normalized, limit=60)
+    catalog_items = _rank_items(catalog_items, normalized, 8)
+    strong_local = bool(catalog_items and _strong_title_match(catalog_items[0], normalized))
+    if strong_local:
+        logger.info("search layer=catalog elapsed_ms=%d result_count=%d strong_local=true",
+                    int((time.perf_counter() - started) * 1000), len(catalog_items))
         return {"items": catalog_items, "cached": True, "limited": False, "throttled": False}
     # L1: in-memory.
     hit = _QCACHE.get(key)
     if hit and now - hit[0] < _QTTL:
-        return {"items": hit[1], "cached": True, "limited": False, "throttled": False}
+        items = _rank_items(_merge_items(catalog_items, hit[1]), normalized)
+        return {"items": items, "cached": True, "limited": False, "throttled": False}
     # L2: постоянный кэш в БД (переживает рестарт/деплой, общий на всех).
     stored = await db.search_cache_get(key, _DB_TTL, _EMPTY_DB_TTL)
     if stored is not None:
         _QCACHE[key] = (now, stored)
-        return {"items": stored, "cached": True, "limited": False, "throttled": False}
+        items = _rank_items(_merge_items(catalog_items, stored), normalized)
+        return {"items": items, "cached": True, "limited": False, "throttled": False}
 
     # Дальше — реальный внешний вызов. Per-user throttle считаем только здесь.
     if user_id is not None and not ratelimit.allow_user(user_id):
         return {"items": [], "cached": False, "limited": False, "throttled": True}
 
-    items = await find_movies(query)
+    task = _INFLIGHT.get(key)
+    if task is None:
+        task = asyncio.create_task(find_movies(query))
+        _INFLIGHT[key] = task
+    try:
+        provider_items = await task
+    finally:
+        if _INFLIGHT.get(key) is task:
+            _INFLIGHT.pop(key, None)
+    items = _rank_items(_merge_items(catalog_items, provider_items), normalized)
     _QCACHE[key] = (now, items)
     # Short-lived negative entries are also useful: repeated misspellings or bot
     # probes must not consume a provider call every time.
@@ -304,6 +435,8 @@ async def cached_search(query: str, user_id: int | None = None) -> dict:
     if len(_QCACHE) > _QMAX:  # простая очистка старейших L1
         for k in sorted(_QCACHE, key=lambda k: _QCACHE[k][0])[:_QMAX // 6]:
             _QCACHE.pop(k, None)
+    logger.info("search layer=provider elapsed_ms=%d result_count=%d strong_local=%s",
+                int((time.perf_counter() - started) * 1000), len(items), str(strong_local).lower())
     return {"items": items, "cached": False, "limited": False, "throttled": False}
 
 
