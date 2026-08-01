@@ -503,6 +503,20 @@ function attrEsc(s) {
     .replaceAll("'", "&#39;");
 }
 function cap(s) { s = String(s || ""); return s ? s[0].toUpperCase() + s.slice(1) : s; }
+function normalizedMovieTitle(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+function movieTitleParts(movie) {
+  const localized = normalizedMovieTitle(movie?.title);
+  const alternate = normalizedMovieTitle(movie?.title_original);
+  const distinct = Boolean(localized && alternate && localized.toLowerCase() !== alternate.toLowerCase());
+  if (lang === "en" && distinct) return { primary: alternate, secondary: localized };
+  return { primary: localized || alternate || "—", secondary: distinct ? alternate : "" };
+}
+function movieTitle(movie) { return movieTitleParts(movie).primary; }
 // В Telegram-шапке уже есть «Addict Film» — на самом экране не дублируем название,
 // а здороваемся по имени (реальные данные), иначе мягкий фолбэк на бренд.
 function homeGreeting() {
@@ -722,6 +736,7 @@ function emptyState(icon, text, sub = "") {
 }
 
 function posterTile(m, { onClick, badge } = {}) {
+  const titles = movieTitleParts(m);
   const card = document.createElement("div");
   card.className = "poster";
   card.dataset.filmId = m.id;  // для точечного обновления карточки при возврате из фильма
@@ -732,11 +747,12 @@ function posterTile(m, { onClick, badge } = {}) {
   const rating = rv ? `<span class="rate-pill"><span class="s">★</span>${esc(rv)}</span>` : "";
   card.innerHTML = `
     <div class="art">
-      <div class="noposter">${esc(m.title)}</div>
+      <div class="noposter">${esc(titles.primary)}</div>
       ${m.poster_url ? `<img loading="lazy" decoding="async" src="${posterSrc(m.poster_url, true)}" alt="" data-img-retry>` : ""}
     </div>
     <div class="meta">
-      <div class="t">${esc(m.title)}</div>
+      <div class="t">${esc(titles.primary)}</div>
+      ${titles.secondary ? `<div class="title-alt">${esc(titles.secondary)}</div>` : ""}
       ${year || rating ? `<div class="meta-row">${year}${rating}</div>` : ""}
     </div>`;
   if (onClick) card.onclick = () => {
@@ -1062,13 +1078,14 @@ function recommendationReasons(item) {
 }
 
 function recommendationMovieCard(item, { sessionId = null, onAnother = null } = {}) {
-  const poster = item.poster_url ? `<img src="${posterSrc(item.poster_url, true)}" alt="${esc(item.title)}" loading="eager" decoding="async" data-img-retry>` : `<span class="picker-poster-fallback">${esc((item.title || "?").slice(0, 1))}</span>`;
+  const titles = movieTitleParts(item);
+  const poster = item.poster_url ? `<img src="${posterSrc(item.poster_url, true)}" alt="${esc(titles.primary)}" loading="eager" decoding="async" data-img-retry>` : `<span class="picker-poster-fallback">${esc(titles.primary.slice(0, 1))}</span>`;
   const years = [item.year, item.runtime].filter(Boolean).join(" · ");
   const genres = String(item.genres || "").split(",").slice(0, 3).join(" · ");
   return `<article class="recommendation-film" data-recommendation-film="${item.id}">
     <button class="recommendation-poster" type="button" data-pick-open>${poster}</button>
-    <div class="recommendation-film-copy"><h2>${esc(item.title || "—")}</h2>
-      ${item.title_original ? `<p class="recommendation-original">${esc(item.title_original)}</p>` : ""}
+    <div class="recommendation-film-copy"><h2>${esc(titles.primary)}</h2>
+      ${titles.secondary ? `<p class="recommendation-original">${esc(titles.secondary)}</p>` : ""}
       ${years ? `<p class="recommendation-meta">${esc(years)}</p>` : ""}${genres ? `<p class="recommendation-meta">${esc(genres)}</p>` : ""}
       ${item.rating ? `<span class="recommendation-rating">★ ${esc(item.rating)}</span>` : ""}
       <p class="recommendation-explanation">${esc(recommendationReasons(item))}</p>
@@ -1321,7 +1338,7 @@ function singlePickMediaHTML(item) {
   // Резкий постер и его размытая копия — ОДИН и тот же URL: браузер берёт вторую
   // отрисовку из кэша, сети на неё не тратится.
   const src = singlePickSrc(hero.url, hero.type);
-  const title = esc(item.title || "");
+  const title = esc(movieTitle(item));
   if (hero.type === "backdrop") {
     const style = `--hero-focus-x:${hero.focusX};--hero-focus-y:${hero.focusY}`;
     return `<div class="single-pick-media single-pick-media-backdrop"
@@ -1492,6 +1509,7 @@ function secondaryActionsHTML(allowWant) {
 }
 
 function singlePickScreenHTML(item, { label = "", allowAnother = true, allowWant = true } = {}) {
+  const titles = movieTitleParts(item);
   const chips = [item.rating ? `<span class="single-pick-chip single-pick-rating">★ ${esc(item.rating)}</span>` : ""]
     .concat([item.year, item.runtime].filter(Boolean)
       .map(value => `<span class="single-pick-chip">${esc(value)}</span>`))
@@ -1506,8 +1524,8 @@ function singlePickScreenHTML(item, { label = "", allowAnother = true, allowWant
         <div class="single-pick-back-slot">${backBtn()}</div>
         <div class="single-pick-hero-content">
           ${label ? `<p class="single-pick-label">${esc(label)}</p>` : ""}
-          <h1 class="single-pick-title">${esc(item.title || "—")}</h1>
-          ${item.title_original ? `<p class="single-pick-original">${esc(item.title_original)}</p>` : ""}
+          <h1 class="single-pick-title">${esc(titles.primary)}</h1>
+          ${titles.secondary ? `<p class="single-pick-original">${esc(titles.secondary)}</p>` : ""}
           ${chips ? `<div class="single-pick-chips">${chips}</div>` : ""}
           ${genres ? `<p class="single-pick-genres">${esc(genres)}</p>` : ""}
           ${reasons ? `<p class="single-pick-reason">${esc(reasons)}</p>` : ""}
@@ -3324,7 +3342,8 @@ function closeDetailThen(fn) {
 }
 
 function renderDetailPreview(preview) {
-  const title = preview.title || "…";
+  const titles = movieTitleParts(preview);
+  const title = titles.primary;
   const poster = preview.poster_url || preview.poster || "";
   const meta = [preview.year, preview.age_rating, preview.runtime].filter(Boolean).join(" · ");
   screen.innerHTML = `
@@ -3339,7 +3358,7 @@ function renderDetailPreview(preview) {
       <div class="d-body">
         <div class="d-poster-wrap"><div class="d-poster"><span class="fb">${esc(title)}</span>${poster ? `<img src="${posterSrc(poster, true)}" alt="" data-img-retry>` : ""}</div></div>
         <h1 class="d-title">${esc(title)}</h1>
-        ${preview.title_original && preview.title_original !== title ? `<div class="d-original">${esc(preview.title_original)}</div>` : ""}
+        ${titles.secondary ? `<div class="d-original">${esc(titles.secondary)}</div>` : ""}
         ${meta ? `<div class="d-meta">${esc(meta)}</div>` : ""}
         <div class="d-preview-lines"><div class="sk sk-line wide"></div><div class="sk sk-line"></div></div>
       </div>
@@ -3452,12 +3471,13 @@ function renderDetail(id, m) {
   const metaParts = [m.year, m.age_rating, m.runtime].filter(Boolean);
   const bdUrl = m.backdrop_url || m.poster_url;
   const cast = normalizeDetailCast(m);
+  const titles = movieTitleParts(m);
 
   screen.innerHTML = `
     <div class="detail-v2">
       <div class="d-sticky" id="d-sticky">
         <button class="d-ctrl" id="d-back-sticky" aria-label="${attrEsc(t("detail_back"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
-        <span class="t">${esc(m.title)}</span>
+        <span class="t">${esc(titles.primary)}</span>
         <button class="d-ctrl" id="d-more-sticky" aria-label="${attrEsc(t("detail_share"))}">${shareSvg()}</button>
       </div>
       <div class="d-backdrop${m.backdrop_url ? "" : " no-bd"}" id="d-backdrop">
@@ -3471,12 +3491,12 @@ function renderDetail(id, m) {
       <div class="d-body">
         <div class="d-poster-wrap" id="d-poster-wrap">
           <div class="d-poster">
-            <span class="fb">${esc(m.title)}</span>
+            <span class="fb">${esc(titles.primary)}</span>
             ${m.poster_url ? `<img src="${posterSrc(m.poster_url, true)}" alt="" data-img-retry>` : ""}
           </div>
         </div>
-        <h1 class="d-title">${esc(m.title)}</h1>
-        ${m.title_original && m.title_original !== m.title ? `<div class="d-original">${esc(m.title_original)}</div>` : ""}
+        <h1 class="d-title">${esc(titles.primary)}</h1>
+        ${titles.secondary ? `<div class="d-original">${esc(titles.secondary)}</div>` : ""}
         ${metaParts.length ? `<div class="d-meta">${metaParts.map(esc).join(" · ")}</div>` : ""}
         ${genres ? `<div class="d-genres">${esc(genres)}</div>` : ""}
         ${m.directors ? `<div class="d-director">${esc(t("dir"))}<b>${esc(m.directors)}</b></div>` : ""}
@@ -3939,7 +3959,7 @@ function renderActions(id, m) {
   document.getElementById("d-primary")?.addEventListener("click", () => setStatus(m.status == null ? "want_to_watch" : "watched"));
   document.getElementById("d-quick-watched")?.addEventListener("click", () => setStatus("watched"));
   document.getElementById("d-to-want")?.addEventListener("click", () => setStatus("want_to_watch"));
-  document.getElementById("d-remove")?.addEventListener("click", () => tg.showConfirm(t("confirm_remove", m.title), async ok => {
+  document.getElementById("d-remove")?.addEventListener("click", () => tg.showConfirm(t("confirm_remove", movieTitle(m)), async ok => {
     if (!ok) return;
     await api(`/api/movie/${id}`, { method: "DELETE" });
     m.status = null; m.my_rating = null; m.my_comment = null; m.my_comment_status = null;
@@ -3948,7 +3968,7 @@ function renderActions(id, m) {
 }
 
 function shareMovie(m) {
-  const url = "https://t.me/share/url?url=" + encodeURIComponent(m.share_link || "") + "&text=" + encodeURIComponent(t("share_text", m.title));
+  const url = "https://t.me/share/url?url=" + encodeURIComponent(m.share_link || "") + "&text=" + encodeURIComponent(t("share_text", movieTitle(m)));
   if (tg.openTelegramLink) tg.openTelegramLink(url); else window.open(url, "_blank");
 }
 
@@ -3997,10 +4017,10 @@ function showSearch(mode = null) {
       const items = data.items;
       if (!items.length) { results.innerHTML = emptyState("🤷", t("search_none_t"), t("search_none_s")); return; }
       results.replaceChildren(gridOf(items, it => posterTile(
-        { poster_url: it.poster || it.poster_url, title: it.title, year: it.year, imdb_rating: it.rating },
+        { poster_url: it.poster || it.poster_url, title: it.title, title_original: it.title_original, year: it.year, imdb_rating: it.rating },
         {
           onClick: () => tg.showConfirm(
-            mode ? t("coll_confirm_add", it.title) : t("confirm_add", it.title),
+            mode ? t("coll_confirm_add", movieTitle(it)) : t("confirm_add", movieTitle(it)),
             async ok => {
               if (!ok) return;
               if (mode?.type === "collection-editor") {
@@ -4342,16 +4362,17 @@ function pairHighlightsHTML(ps) {
   const poster = (item, alt) => item.poster_url
     ? `<img loading="lazy" decoding="async" src="${esc(posterSrc(item.poster_url, true))}" alt="${esc(alt)}" data-img-remove-on-error>`
     : `<span class="pair-poster-fallback" aria-hidden="true">✦</span>`;
-  const favoriteCards = favorites.map((item, index) => `<button class="pair-favorite-card" type="button" data-film-id="${item.film_id}" aria-label="${esc(item.title)}">
-    <span class="pair-favorite-rank">${index + 1}</span><span class="pair-favorite-poster">${poster(item, item.title)}</span>
-    <span class="pair-favorite-copy"><b>${esc(item.title)}</b><small>♥ ${esc(t("pair_loved_by_both"))}</small><strong>★ ${item.avg ?? "—"}/10</strong></span>
-  </button>`).join("");
+  const favoriteCards = favorites.map((item, index) => { const title = movieTitle(item); return `<button class="pair-favorite-card" type="button" data-film-id="${item.film_id}" aria-label="${esc(title)}">
+    <span class="pair-favorite-rank">${index + 1}</span><span class="pair-favorite-poster">${poster(item, title)}</span>
+    <span class="pair-favorite-copy"><b>${esc(title)}</b><small>♥ ${esc(t("pair_loved_by_both"))}</small><strong>★ ${item.avg ?? "—"}/10</strong></span>
+  </button>`; }).join("");
   const differenceCards = disagreements.map(item => {
     const a = Number(item.a) || 0;
     const b = Number(item.b) || 0;
     const diff = item.diff ?? Math.abs(a - b);
-    return `<button class="pair-difference-card" type="button" data-film-id="${item.film_id}" aria-label="${esc(item.title)}">
-      <span class="pair-difference-heading"><span class="pair-difference-poster">${poster(item, item.title)}</span><span class="pair-difference-copy"><b>${esc(item.title)}</b><small>${esc(t("pair_difference"))} <strong>+${diff}</strong></small></span></span>
+    const title = movieTitle(item);
+    return `<button class="pair-difference-card" type="button" data-film-id="${item.film_id}" aria-label="${esc(title)}">
+      <span class="pair-difference-heading"><span class="pair-difference-poster">${poster(item, title)}</span><span class="pair-difference-copy"><b>${esc(title)}</b><small>${esc(t("pair_difference"))} <strong>+${diff}</strong></small></span></span>
       <span class="pair-rating-compare">
         <span class="pair-rating-row pair-rating-me"><span>${esc(t("pair_rating_you"))} <b>★ ${a}</b></span><i><em style="width:${Math.min(100, Math.max(0, a * 10))}%"></em></i></span>
         <span class="pair-rating-row pair-rating-partner"><span>${esc(t("pair_rating_partner"))} <b>★ ${b}</b></span><i><em style="width:${Math.min(100, Math.max(0, b * 10))}%"></em></i></span>

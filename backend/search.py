@@ -61,10 +61,13 @@ def _kp_item(doc: dict) -> dict:
     poster = (doc.get("poster") or {}).get("url")
     r = doc.get("rating") or {}
     rating = r.get("imdb") or r.get("kp")
+    title = doc.get("name") or doc.get("alternativeName") or ""
+    alternate = doc.get("alternativeName")
     return {
         "src": "k",
         "ref": str(doc["id"]),
-        "title": doc.get("name") or doc.get("alternativeName") or "",
+        "title": title,
+        "title_original": alternate if alternate and alternate != title else None,
         "year": str(doc.get("year") or "?"),
         "poster": poster,
         "rating": f"{rating:.1f}" if rating else None,
@@ -116,10 +119,12 @@ def _kp_details(doc: dict) -> dict:
 
 def _omdb_item(r: dict) -> dict:
     poster = r.get("Poster")
+    title = r.get("Title", "")
     return {
         "src": "i",
         "ref": r["imdbID"],
-        "title": r.get("Title", ""),
+        "title": title,
+        "title_original": title or None,
         "year": r.get("Year", "?"),
         "poster": poster if poster and poster != "N/A" else None,
         "rating": None,
