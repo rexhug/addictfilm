@@ -90,27 +90,27 @@ def format_pair_notification(context: RecipientContext) -> dict:
 
     if language == "ru":
         if event_type == "pair.invite.accepted":
-            return {"title": "Теперь вы в паре", "body": f"Вы теперь в паре с {partner_name}. Общая статистика уже доступна.", "action_label": "Статистика", "deep_link": "stats"}
+            return {"title": "Партнёр подключён", "body": f"Теперь твой партнёр — {partner_name}. Общая статистика уже доступна.", "action_label": "Статистика", "deep_link": "stats"}
         if event_type == "pair.invite.declined":
-            return {"title": "Приглашение отклонено", "body": f"Пользователь {invitee_name} отклонил приглашение в пару.", "action_label": "Открыть приложение", "deep_link": "stats"}
+            return {"title": "Приглашение отклонено", "body": f"Твоё приглашение для {invitee_name} отклонено.", "action_label": "Открыть приложение", "deep_link": "stats"}
         if event_type == "pair.invite.cancelled":
-            return {"title": "Приглашение отменено", "body": f"Пользователь {inviter_name} отменил приглашение в пару.", "action_label": "Открыть приложение", "deep_link": ""}
+            return {"title": "Приглашение отменено", "body": f"Приглашение от {inviter_name} отменено.", "action_label": "Открыть приложение", "deep_link": ""}
         if event_type == "pair.invite.expired":
-            body = (f"Ваше приглашение для {invitee_name} больше не активно."
+            body = (f"Приглашение для {invitee_name} больше не активно."
                     if recipient_id == inviter_id and context.invitee
-                    else "Ваше приглашение больше не активно." if recipient_id == inviter_id
+                    else "Твоё приглашение больше не активно." if recipient_id == inviter_id
                     else f"Приглашение от {inviter_name} больше не активно.")
             return {"title": "Приглашение истекло", "body": body, "action_label": "Открыть приложение", "deep_link": ""}
         if event_type == "pair.ended":
-            return {"title": "Пара завершена", "body": f"Пара с {partner_name} завершена. Совместная статистика сохранена.", "action_label": "Открыть", "deep_link": "stats"}
-        return {"title": "Пара завершена", "body": f"Пара с {partner_name} завершена. Совместная статистика сохранена.", "action_label": "Открыть", "deep_link": "stats"}
+            return {"title": "Партнёр отключён", "body": f"Подключение к {partner_name} завершено. Общая статистика сохранена.", "action_label": "Открыть", "deep_link": "stats"}
+        return {"title": "Партнёр отключён", "body": f"Подключение к {partner_name} завершено. Общая статистика сохранена.", "action_label": "Открыть", "deep_link": "stats"}
 
     if event_type == "pair.invite.accepted":
-        return {"title": "You're now paired", "body": f"You are now paired with {partner_name}. Your shared stats are ready.", "action_label": "View stats", "deep_link": "stats"}
+        return {"title": "Partner connected", "body": f"You are now connected with {partner_name}. Your shared stats are ready.", "action_label": "View stats", "deep_link": "stats"}
     if event_type == "pair.invite.declined":
-        return {"title": "Invitation declined", "body": f"{invitee_name} declined the pair invitation.", "action_label": "Open app", "deep_link": "stats"}
+        return {"title": "Invitation declined", "body": f"{invitee_name} declined your partner invitation.", "action_label": "Open app", "deep_link": "stats"}
     if event_type == "pair.invite.cancelled":
-        return {"title": "Invitation cancelled", "body": f"{inviter_name} cancelled the pair invitation.", "action_label": "Open app", "deep_link": ""}
+        return {"title": "Invitation cancelled", "body": f"{inviter_name} cancelled the partner invitation.", "action_label": "Open app", "deep_link": ""}
     if event_type == "pair.invite.expired":
         body = (f"Your invitation for {invitee_name} is no longer active."
                 if recipient_id == inviter_id and context.invitee
@@ -118,8 +118,8 @@ def format_pair_notification(context: RecipientContext) -> dict:
                 else f"The invitation from {inviter_name} is no longer active.")
         return {"title": "Invitation expired", "body": body, "action_label": "Open app", "deep_link": ""}
     if event_type == "pair.ended":
-        return {"title": "Pair ended", "body": f"Your pair with {partner_name} has ended. Your shared stats are saved.", "action_label": "Open", "deep_link": "stats"}
-    return {"title": "Pair ended", "body": f"Your pair with {partner_name} has ended. Your shared stats are saved.", "action_label": "Open", "deep_link": "stats"}
+        return {"title": "Partner disconnected", "body": f"You're no longer connected with {partner_name}. Your shared stats are saved.", "action_label": "Open", "deep_link": "stats"}
+    return {"title": "Partner disconnected", "body": f"You're no longer connected with {partner_name}. Your shared stats are saved.", "action_label": "Open", "deep_link": "stats"}
 
 
 async def _send_telegram(*, recipient_id: int, text: dict) -> None:

@@ -56,7 +56,7 @@ def format_partner_rating_notification(*, context: dict, rating: int) -> dict:
     elif recipient_rating is None:
         text = {
             "title": "Новая оценка партнёра",
-            "body": f"Новая оценка фильма «{film_title}» от {name}. А теперь твоя очередь!",
+            "body": f"Появилась новая оценка фильма «{film_title}» от {name}. Теперь твоя очередь.",
             "action_label": "Оценить",
         }
     else:

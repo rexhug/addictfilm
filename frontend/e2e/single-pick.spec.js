@@ -223,8 +223,8 @@ async function openPicker(page, options = {}) {
   return state;
 }
 
-const openWishlist = page => page.getByRole("button", { name: /Случайный из «Хочу»/ }).click();
-const openSmartRandom = page => page.getByRole("button", { name: /Умный случайный фильм/ }).click();
+const openWishlist = page => page.getByRole("button", { name: /Случайный фильм из «Хочу»/ }).click();
+const openSmartRandom = page => page.getByRole("button", { name: /Случайный фильм по твоему вкусу/ }).click();
 const MOBILE_VIEWPORTS = [
   { width: 320, height: 568 },
   { width: 360, height: 667 },
@@ -286,7 +286,7 @@ test("wishlist roulette safely contains a backdrop with no saved fit", async ({ 
   const backdrop = page.locator(".single-pick-backdrop");
   await expect(backdrop).toBeVisible();
   await expect(page.getByRole("heading", { name: "Wishlist Pick" })).toBeVisible();
-  await expect(page.locator(".single-pick-label")).toHaveText("Случайный из «Хочу»");
+  await expect(page.locator(".single-pick-label")).toHaveText("Случайный фильм из «Хочу»");
 
   const hero = page.locator(".single-pick-media-backdrop");
   await expect(hero).toHaveAttribute("data-hero-fit", "contain");
@@ -380,7 +380,7 @@ test("smart random keeps its strategy label on the fullscreen renderer", async (
   await openSmartRandom(page);
 
   await expect(page.locator(".single-pick-screen")).toBeVisible();
-  await expect(page.locator(".single-pick-label")).toHaveText("Находка");
+  await expect(page.locator(".single-pick-label")).toHaveText("Малоизвестная находка");
   await expect(page.locator(".picker-result")).toHaveCount(0);
 });
 
@@ -506,7 +506,7 @@ test("initial random failure has working retry and never renders a dead end", as
   await expect(page.getByRole("button", { name: "Назад к выбору" })).toBeVisible();
   await page.getByRole("button", { name: "Попробовать ещё раз" }).click();
   await expect(page.getByRole("heading", { name: "Recovered Pick" })).toBeVisible();
-  await expect(page.locator(".single-pick-label")).toHaveText("Доступный вариант");
+  await expect(page.locator(".single-pick-label")).toHaveText("Хороший вариант");
   expect(state.randomCalls).toBe(2);
 });
 
@@ -526,7 +526,7 @@ test("zero quiz results expose all three recovery paths without duplicate restar
 
   await expect(page.getByRole("button", { name: "Изменить ответы" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Начать заново" })).toHaveCount(1);
-  await expect(page.getByRole("button", { name: "Умный случайный фильм" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Случайный фильм по твоему вкусу" })).toBeVisible();
   await page.getByRole("button", { name: "Изменить ответы" }).click();
   await expect(page.getByRole("heading", {
     name: "Что тебе сейчас больше всего хочется?",

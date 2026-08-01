@@ -76,16 +76,16 @@ const DICT = {
     tagline: "Кино, которое ты любишь",
     greeting: (n) => `Привет, ${n}`,
     search_ph: "Поиск фильмов, сериалов, актёров…",
-    chip_popular: "Популярное", chip_top: "Топ сообщества", chip_genres: "Жанры", chip_collections: "Подборки", chip_nav: "Разделы каталога",
+    chip_popular: "Популярное", chip_top: "Выбор сообщества", chip_genres: "Жанры", chip_collections: "Подборки", chip_nav: "Разделы каталога",
     see_all: "Смотреть все",
-    reco_title: "Не знаешь, что включить?", reco_sub: "Подберём фильм под твоё настроение", reco_cta: "Подобрать",
-    pick_tab: "Подбор", pick_title: "Что посмотреть?", pick_sub: "Быстрый вариант или подборка по настроению.", pick_wishlist_title: "Случайный из «Хочу»", pick_wishlist_sub: "Рулетка по твоему списку — без повторов",
-    pick_random_title: "Умный случайный фильм", pick_random_sub: "Одно хорошее кино из каталога, без вопросов", pick_quiz_title: "Подбор по настроению", pick_quiz_sub: "7–8 коротких вопросов — и три варианта на вечер", pick_start: "Начать", pick_loading: "Подбираю фильм…", pick_another: "Другой вариант", pick_not_suggest: "Не предлагать", pick_open: "Открыть фильм", pick_want: "В «Хочу»", pick_watched: "Уже смотрел", pick_back: "Назад", pick_restart: "Начать заново", pick_progress: (n, total) => `${n} из ${total}`, pick_best: "Лучший выбор", pick_reliable: "Надёжный вариант", pick_unexpected: "Неожиданный вариант", pick_best_sub: "Максимально совпадает с твоим запросом", pick_reliable_sub: "Высокий рейтинг и уверенный выбор", pick_unexpected_sub: "Чуть необычнее, но может приятно удивить", pick_empty: "Пока не хватает фильмов для подбора", pick_empty_sub: "Добавь несколько фильмов через поиск — каталог будет расти вместе с приложением.", pick_pair: "Смотреть с партнёром", pick_solo: "Смотреть одному", pick_pair_unavailable: "Пара сейчас не подключена",
+    reco_title: "Не знаешь, что посмотреть?", reco_sub: "Подберём фильм под твоё настроение", reco_cta: "Подобрать",
+    pick_tab: "Подбор", pick_title: "Что посмотреть?", pick_sub: "Быстрый вариант или подборка по настроению.", pick_wishlist_title: "Случайный фильм из «Хочу»", pick_wishlist_sub: "Выбор из твоего списка — без повторов",
+    pick_random_title: "Случайный фильм по твоему вкусу", pick_random_sub: "Один подходящий фильм из каталога — без вопросов", pick_quiz_title: "Подбор по настроению", pick_quiz_sub: "7–8 коротких вопросов — и три варианта на вечер", pick_start: "Начать", pick_loading: "Подбираю фильм…", pick_another: "Другой вариант", pick_not_suggest: "Не предлагать", pick_open: "Открыть фильм", pick_want: "В «Хочу»", pick_watched: "Уже смотрел", pick_back: "Назад", pick_restart: "Начать заново", pick_progress: (n, total) => `${n} из ${total}`, pick_best: "Лучший выбор", pick_reliable: "Надёжный вариант", pick_unexpected: "Неожиданный вариант", pick_best_sub: "Максимально совпадает с твоим запросом", pick_reliable_sub: "Высокий рейтинг и проверенный выбор", pick_unexpected_sub: "Чуть необычнее, но может приятно удивить", pick_empty: "Пока не хватает фильмов для подбора", pick_empty_sub: "Добавь несколько фильмов через поиск, чтобы улучшить рекомендации.", pick_pair: "Смотреть с партнёром", pick_solo: "Смотреть одному", pick_pair_unavailable: "Партнёр сейчас не подключён",
     pick_wishlist_empty: "В списке «Хочу посмотреть» пока пусто",
-    strategy_reliable: "Надёжный выбор", strategy_taste_match: "Под твой вкус", strategy_discovery: "Находка", strategy_available: "Доступный вариант",
+    strategy_reliable: "Надёжный выбор", strategy_taste_match: "Под твой вкус", strategy_discovery: "Малоизвестная находка", strategy_available: "Хороший вариант",
     pick_recovery_title: "Не удалось подобрать фильм", pick_retry: "Попробовать ещё раз",
     pick_back_to_picker: "Назад к выбору", pick_change_answers: "Изменить ответы",
-    pick_smart_random: "Умный случайный фильм",
+    pick_smart_random: "Случайный фильм по твоему вкусу",
     pick_partial: "Под такой запрос в каталоге нашлось меньше вариантов, чем обычно — показываем только то, что действительно подходит.",
     pick_rejected: "Больше не предложим",
     pick_version_changed: "Подбор обновился — начнём опрос заново",
@@ -107,18 +107,18 @@ const DICT = {
     reason_INTELLECTUAL: "Требует внимания и размышления", reason_COZY_TONE: "Спокойный и светлый тон",
     reason_EMOTIONAL_STORY: "Сильная эмоциональная история", reason_LIGHT_HUMOR: "Много юмора",
     reason_FAST_PACE: "Быстрый темп с самого начала", reason_SLOW_ATMOSPHERE: "Медленная, атмосферная подача",
-    reason_UNREAL_WORLD: "Придуманный, ненастоящий мир", reason_GROUNDED_STORY: "Достоверная, приземлённая история",
+    reason_UNREAL_WORLD: "Вымышленный мир", reason_GROUNDED_STORY: "Реалистичная история",
     reason_MATCHES_MOOD: "Совпадает с твоим запросом", reason_MATCHES_USER_TASTE: "Похож на то, что тебе нравится",
-    reason_HIGH_QUALITY: "Высокая оценка зрителей", reason_HIDDEN_GEM: "Не на слуху, но крепкий",
+    reason_HIGH_QUALITY: "Высокая оценка зрителей", reason_HIDDEN_GEM: "Малоизвестный, но достойный",
     reason_IN_WISHLIST: "Уже в твоём списке «Хочу посмотреть»", reason_PAIR_FRIENDLY: "Подходит вам обоим",
-    reason_UNSEEN_PICK: "Из фильмов, которых ты ещё не видел",
+    reason_UNSEEN_PICK: "Из фильмов, которые ты ещё не видел",
     reason_RANDOM_RELIABLE: "Надёжный выбор", reason_RANDOM_TASTE_MATCH: "Похоже на то, что ты любишь",
-    reason_RANDOM_DISCOVERY: "Находка не на слуху", reason_RANDOM_AVAILABLE: "Доступный вариант",
-    notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся новые оценки, события пары и важные сообщения", notif_filtered_empty_t: "В этой категории пока пусто", notif_filtered_empty_s: "Новые события появятся здесь автоматически", notif_mark_all: "Прочитать все", notif_load_more: "Показать ещё", notif_loading: "Загружаю уведомления…", notif_error: "Не удалось загрузить уведомления", notif_error_s: "Проверь соединение и попробуй ещё раз", notif_retry: "Повторить", notif_filter_all: "Все", notif_filter_pair: "Пара", notif_filter_films: "Фильмы", notif_filter_system: "Система", notif_now: "Только что", notif_min_ago: (n) => `${n} мин назад`, notif_hour_ago: (n) => `${n} ч назад`, notif_day_ago: (n) => `${n} дн назад`, notif_inapp: "В приложении", notif_telegram: "В Telegram", notif_telegram_hint: "События пары от бота Addict Film", notif_telegram_unavailable: "Бот сейчас недоступен", notif_browser: "В браузере", notif_browser_hint: "Локальные напоминания на этом устройстве",
+    reason_RANDOM_DISCOVERY: "Малоизвестная находка", reason_RANDOM_AVAILABLE: "Хороший вариант",
+    notif_title: "Уведомления", notif_empty_t: "Уведомлений пока нет", notif_empty_s: "Здесь появятся новые оценки, события партнёра и важные сообщения", notif_filtered_empty_t: "В этой категории пока пусто", notif_filtered_empty_s: "Новые события появятся здесь автоматически", notif_mark_all: "Отметить все как прочитанные", notif_load_more: "Показать ещё", notif_loading: "Загружаю уведомления…", notif_error: "Не удалось загрузить уведомления", notif_error_s: "Проверь соединение и попробуй ещё раз", notif_retry: "Повторить", notif_filter_all: "Все", notif_filter_pair: "Партнёр", notif_filter_films: "Фильмы", notif_filter_system: "Система", notif_now: "Только что", notif_min_ago: (n) => `${n} мин назад`, notif_hour_ago: (n) => `${n} ч назад`, notif_day_ago: (n) => `${n} дн назад`, notif_inapp: "В приложении", notif_telegram: "В Telegram", notif_telegram_hint: "События партнёра от бота Addict Film", notif_telegram_unavailable: "Бот сейчас недоступен", notif_browser: "В браузере", notif_browser_hint: "Локальные напоминания на этом устройстве",
     back: "Назад", settings_title: "Настройки", settings_loading: "Загружаю настройки…",
-    settings_notifications: "Уведомления", settings_notifications_hint: "Важные события пары всегда видны в приложении", settings_notifications_on: "Включены", settings_notifications_off: "Выключены", settings_notifications_permission: "Нужно разрешение", settings_notifications_denied: "Разрешения отключены в Telegram или браузере", settings_notifications_unavailable: "Недоступны на этом устройстве", settings_notifications_error: "Не удалось запросить разрешение",
+    settings_notifications: "Уведомления", settings_notifications_hint: "Важные события партнёра всегда видны в приложении", settings_notifications_on: "Включены", settings_notifications_off: "Выключены", settings_notifications_permission: "Нужно разрешение", settings_notifications_denied: "Разрешения отключены в Telegram или браузере", settings_notifications_unavailable: "Недоступны на этом устройстве", settings_notifications_error: "Не удалось запросить разрешение",
     settings_language: "Язык", settings_language_hint: "Изменится сразу во всём приложении", settings_language_ru: "Русский", settings_language_en: "English",
-    settings_pair: "Пара", settings_pair_none: "Создайте пару, чтобы смотреть и оценивать фильмы вместе", settings_pair_create: "Создать пару", settings_pair_current: "Ваша пара", settings_pair_manage: "Управление парой", settings_pair_invited: "Приглашение ожидает принятия", settings_pair_load_error: "Не удалось загрузить статус пары", settings_pair_try_again: "Повторить",
+    settings_pair: "Партнёр", settings_pair_none: "Подключи партнёра, чтобы смотреть и оценивать фильмы вместе", settings_pair_create: "Подключить партнёра", settings_pair_current: "Твой партнёр", settings_pair_manage: "Настройки партнёра", settings_pair_invited: "Приглашение отправлено", settings_pair_load_error: "Не удалось загрузить статус партнёра", settings_pair_try_again: "Повторить",
     collections_empty_s: "Загляни позже", collections_empty_admin_s: "Создай первую подборку",
     collections_title_ph: "Название подборки", collections_create_btn: "Создать",
     admin_section: "Администрирование", admin_mode_row: "Режим администратора",
@@ -173,84 +173,97 @@ const DICT = {
     want_empty_t: "Список пуст", want_empty_s: "Добавь фильмы через поиск",
     watched_empty_t: "Пока ничего не просмотрено", watched_empty_s: "Отмечай фильмы «Смотрел»",
     load_more: "Показать ещё", loading: "Загрузка…", retry: "Повторить",
-    my_rating: "Моя оценка", rate_hint: " · тап = «Смотрел(а)»", dir: "Режиссёр ",
+    my_rating: "Моя оценка", rate_hint: " · нажми, чтобы отметить просмотренным", dir: "Режиссёр ",
     act_want: "Хочу посмотреть", act_watched: "Отметить как просмотрено", act_to_want: "В «Хочу»", act_remove: "Убрать из списка",
-    already_watched_link: "Уже смотрел? Отметить",
-    my_review: "Моя оценка и комментарий",
-    comment_editor_subtitle: "Поделитесь своим мнением о фильме",
+    already_watched_link: "Отметить как просмотренное",
+    my_review: "Моя оценка и отзыв",
+    comment_editor_subtitle: "Поделись мнением о фильме",
     comment_rating_label: "Моя оценка",
-    comment_ph: "Напишите свой комментарий…",
-    your_ratings: "Ваши оценки", your_rating: "Вы", partner_rating: "Партнёр",
+    comment_ph: "Напиши отзыв…",
+    your_ratings: "Ваши оценки", your_rating: "Ты", partner_rating: "Партнёр",
     review_publish: "Опубликовать", review_save: "Сохранить", review_saving: "Сохраняю…",
-    review_delete: "Удалить комментарий",
-    review_delete_confirm: "Удалить комментарий? Это действие нельзя отменить.",
-    review_deleted: "Комментарий удалён",
-    review_saved: "Комментарий сохранён", review_required: "Выберите оценку и напишите комментарий",
-    review_public_hint: "Ваш комментарий увидят все пользователи",
-    review_legacy_title: "Это ваша старая личная заметка",
-    review_legacy_hint: "Опубликовать её как комментарий?", review_legacy_publish: "Опубликовать",
+    review_delete: "Удалить отзыв",
+    review_delete_confirm: "Удалить отзыв? Это действие нельзя отменить.",
+    review_deleted: "Отзыв удалён",
+    review_saved: "Отзыв сохранён", review_required: "Поставь оценку и напиши отзыв",
+    review_public_hint: "Отзыв увидят все пользователи",
+    review_legacy_title: "Это твоя старая личная заметка",
+    review_legacy_hint: "Опубликовать её как отзыв?", review_legacy_publish: "Опубликовать",
     review_legacy_keep: "Оставить личной", review_legacy_delete: "Удалить",
-    reviews_title: "Комментарии пользователей", reviews_partner: "Комментарий партнёра",
-    reviews_empty: "Пока нет публичных комментариев", reviews_load_more: "Показать ещё",
-    reviews_loading: "Загружаю комментарии…", reviews_error: "Не удалось загрузить комментарии",
-    review_report: "Пожаловаться", review_reported: "Жалоба отправлена", review_menu: "Действия с комментарием",
+    reviews_title: "Отзывы сообщества", reviews_partner: "Отзыв партнёра",
+    reviews_empty: "Пока нет отзывов", reviews_load_more: "Показать ещё",
+    reviews_loading: "Загружаю отзывы…", reviews_error: "Не удалось загрузить отзывы",
+    review_report: "Пожаловаться", review_reported: "Жалоба отправлена", review_menu: "Действия с отзывом",
     cast_title: "Актёры", share_text: (title) => `Смотри «${title}» в Addict Film`,
     confirm_remove: (title) => `Убрать «${title}» из своего списка?`,
     search_start_t: "Что смотрим?", search_start_s: "Введи название — минимум 2 буквы",
     search_toomany_t: "Слишком часто", search_toomany_s: "Подожди минуту и попробуй снова",
     search_err_t: "Ошибка поиска",
-    search_limited_t: "Поиск временно ограничен", search_limited_s: "Дневной лимит источника. Попробуй позже",
+    search_limited_t: "Поиск временно недоступен", search_limited_s: "Поиск временно недоступен. Попробуй позже.",
     search_none_t: "Ничего не найдено", search_none_s: "Попробуй год или английское название",
     confirm_add: (title) => `Добавить «${title}» в «Хочу посмотреть»?`, already_in_list: "Уже в твоём списке!",
     stats_title: "Мой кинопрофиль", my_stats: "Моя статистика", stats_empty_t: "Пока нет статистики", stats_empty_s: "Добавь фильмы и поставь оценки", calc: "Считаю…",
     stats_profile_fallback: "Киноман", stats_profile_sub: "Твоя история в кино", stats_more: "Показать ещё", stats_less: "Свернуть", stats_view_all: "Посмотреть всех",
     stats_me_tab: "Я", stats_together_tab: "Мы вместе", stats_taste: "Твой вкус", stats_together: "Ваша история",
-    stats_ratings_hint: "Сколько фильмов ты поставил(а) на каждую оценку", stats_ratings_hint_pair: "Сколько общих фильмов попало в каждую оценку", stats_genres_hint: "Доля жанра среди просмотренных фильмов",
-    stats_people_hint: "Чаще всего встречаются в просмотренных фильмах", stats_directors_hint: "Чаще всего среди просмотренных фильмов", stats_people_hint_pair: "Чаще всего встречаются в общих фильмах", stats_directors_hint_pair: "Чаще всего среди общих фильмов", stats_films: (n) => `${n} ${pl(n, ["фильм", "фильма", "фильмов"])}`,
+    stats_ratings_hint: "Распределение твоих оценок", stats_ratings_hint_pair: "Распределение ваших общих оценок", stats_genres_hint: "Доля жанра среди просмотренных фильмов",
+    stats_people_hint: "Актёры, которых ты смотришь чаще всего", stats_directors_hint: "Режиссёры, чьи фильмы ты смотришь чаще всего", stats_people_hint_pair: "Актёры, которые чаще всего встречаются в ваших общих фильмах", stats_directors_hint_pair: "Режиссёры ваших общих фильмов", stats_films: (n) => `${n} ${pl(n, ["фильм", "фильма", "фильмов"])}`,
     stats_favorite_actor: "Любимый актёр", stats_favorite_director: "Любимый режиссёр", stats_actors_empty: "Недостаточно данных об актёрах", stats_directors_empty: "Недостаточно данных о режиссёрах", stats_people_empty_hint: "Статистика появится после просмотра фильмов.", stats_person_films: (name) => `Фильмы с ${name}`, stats_person_films_pair: (name) => `Общие фильмы с ${name}`, stats_person_open: (name) => `Открыть фильмы с ${name}`, stats_person_empty: "Таких просмотренных фильмов пока нет",
     stats_taste_hint: (genre, rating) => genre ? `Тебе особенно нравятся ${genre}; чаще всего ты ставишь ${rating}.` : `Чаще всего ты ставишь ${rating}.`,
     tile_watched: "просмотрено", tile_want: "в «Хочу»", tile_shared_watched: "вместе посмотрено", tile_shared_want: "вместе в «Хочу»", tile_avg: "средняя", tile_hours: "часов",
     chart_ratings: "Как ты оцениваешь фильмы", chart_ratings_pair: "Общие оценки", chart_genres: "Жанры", chart_actors: "Актёры", chart_directors: "Режиссёры",
     auth_err_s: "Открой через кнопку меню бота в Telegram",
-    partner_title: "Пара", partner_none_sub: "Добавь партнёра — считайте совместимость вкусов вместе",
-    partner_invite_btn: "Добавить партнёра", partner_invited_sub: "Приглашение готово. Отправь ссылку партнёру в Telegram.",
+    partner_title: "Партнёр", partner_none_sub: "Подключи партнёра, чтобы сравнивать вкусы и вести общую статистику",
+    partner_invite_btn: "Подключить партнёра", partner_invited_sub: "Приглашение готово. Отправь ссылку партнёру в Telegram.",
     partner_share_btn: "Поделиться ссылкой", partner_share_text: "Давай смотреть фильмы вместе ❤️",
-    partner_with: "Пара с", partner_word: "партнёром", partner_compat: "совместимость",
+    partner_with: "Партнёр —", partner_word: "партнёром", partner_compat: "совместимость",
     pair_title: "Мы вместе", pair_subtitle: "Общие фильмы и ваш вкус", pair_compat_title: "Совместимость вкусов",
-    pair_common_favorites: "Общие любимчики", pair_common_favorites_hint: "Фильмы, которые понравились вам обоим",
-    pair_disagreements: "Наши расхождения", pair_disagreements_hint: "Где ваши оценки расходятся сильнее всего",
-    pair_loved_by_both: "Понравилось вам обоим", pair_rating_you: "Вы", pair_rating_partner: "Партнёр", pair_difference: "Разница",
+    pair_common_favorites: "Общие фавориты", pair_common_favorites_hint: "Фильмы, которые понравились вам обоим",
+    pair_disagreements: "Где мнения расходятся", pair_disagreements_hint: "Где ваши оценки расходятся сильнее всего",
+    pair_loved_by_both: "Понравилось вам обоим", pair_rating_you: "Ты", pair_rating_partner: "Партнёр", pair_difference: "Разница",
     pair_more: "Показать все",
-    partner_explainer: (n) => `Считаем по разнице ваших оценок у ${n} ${pl(n, ["общего фильма", "общих фильмов", "общих фильмов"])}. Чем ближе к 100%, тем чаще вы согласны.`,
-    partner_settings: "Настройки пары", partner_exact_hint: "Одинаковые оценки", partner_shared_best: "Ваш фаворит", partner_shared_dispute: "Самое большое расхождение",
+    // Считаем «фильмам», а не «фильма»: раньше здесь выходило «у 1 общего
+    // фильма», что для дательного падежа неверно при любом числе.
+    partner_explainer: (n) => `Считаем по разнице ваших оценок ${n} ${pl(n, ["общему фильму", "общим фильмам", "общим фильмам"])}. Чем ближе к 100%, тем чаще вы согласны.`,
+    partner_settings: "Настройки партнёра", partner_exact_hint: "Одинаковые оценки", partner_shared_best: "Ваш фаворит", partner_shared_dispute: "Самое большое расхождение",
     partner_no_common: "Пока нет фильмов, которые оценили оба",
-    partner_matches: "Точных совпадений", partner_best: "Лучший общий", partner_controversial: "Самый спорный", partner_genres: "Общие жанры",
-    partner_unpair_btn: "Разорвать пару", partner_unpair_confirm: "Разорвать пару? Личные списки останутся у каждого.", partner_unpair_success: "Пара завершена.",
+    partner_matches: "Точных совпадений", partner_best: "Общий фаворит", partner_controversial: "Самый спорный", partner_genres: "Общие жанры",
+    partner_unpair_btn: "Отключить партнёра", partner_unpair_confirm: "Отключить партнёра? Личные списки и оценки сохранятся.", partner_unpair_success: "Партнёр отключён.",
     partner_code_btn: "У меня есть код", partner_code_ph: "Код партнёра", partner_connect: "Подключить",
     partner_code_hint: "Или отправь партнёру этот код:",
     pair_empty: "Добавляйте фильмы вместе — здесь появится ваша совместная статистика",
-    accept_title: "Приглашение в пару", accept_title_from: (name) => `Вас зовёт ${name} в пару`, accept_sub: "Отмечайте и оценивайте фильмы вместе. У вас будет общая статистика и совместимость.",
+    accept_title: "Приглашение от партнёра", accept_title_from: (name) => `${name} приглашает тебя смотреть фильмы вместе`, accept_sub: "Смотрите и оценивайте фильмы вместе — с общей статистикой и совместимостью.",
     accept_yes: "Принять", accept_no: "Не сейчас",
-    accept_ok: (name) => `Готово! Теперь вы в паре${name ? ` с ${name}` : ""}.`,
+    accept_ok: (name) => name ? `Связь с ${name} установлена.` : "Партнёр подключён.",
     accept_fail_invalid: "Приглашение недействительно или уже использовано.",
     accept_fail_self: "Нельзя принять собственное приглашение 🙂",
-    accept_fail_inviter_taken: "У пригласившего уже есть пара.",
-    accept_fail_already_paired: "У вас уже есть пара. Сначала разорвите текущую.",
+    accept_fail_inviter_taken: "У этого пользователя уже подключён партнёр.",
+    accept_fail_already_paired: "У тебя уже подключён партнёр. Сначала отключи его.",
+    open_telegram_title: "Открой Addict Film в Telegram",
+    open_telegram_sub: "Мини-приложение доступно только внутри Telegram",
+    detail_back: "Назад", detail_share: "Поделиться",
+    user_fallback: "Пользователь",
+    community_label: "Сообщество",
+    rating_count: (n) => `${n} ${pl(n, ["оценка", "оценки", "оценок"])}`,
+    rating_out_of_10: (n) => `${n} из 10`,
+    // Всё предложение целиком в словаре: собирать русскую фразу из кусков в
+    // рендерере — верный способ получить «Самые частые общие оценки 9 and 10».
+    stats_top_ratings: (values, scope) =>
+      `${scope === "pair" ? "Самые частые общие оценки" : "Самые частые оценки"}: ${values.join(" и ")}`,
   },
   en: {
     tagline: "Movies you'll love",
     greeting: (n) => `Hi, ${n}`,
     search_ph: "Search movies, TV shows, actors…",
-    chip_popular: "Popular", chip_top: "Community Top", chip_genres: "Genres", chip_collections: "Collections", chip_nav: "Catalog sections",
+    chip_popular: "Popular", chip_top: "Community Favorites", chip_genres: "Genres", chip_collections: "Collections", chip_nav: "Catalog sections",
     see_all: "See all",
-    reco_title: "Not sure what to watch?", reco_sub: "We'll find a film for your current mood", reco_cta: "Find a film",
-    pick_tab: "Pick", pick_title: "What should we watch?", pick_sub: "A quick pick or a mood-based selection.", pick_wishlist_title: "Random from wishlist", pick_wishlist_sub: "A roulette over your own list — no repeats",
-    pick_random_title: "Smart random film", pick_random_sub: "One good film from the catalog, no questions", pick_quiz_title: "Pick by mood", pick_quiz_sub: "7–8 quick questions, then three options for tonight", pick_start: "Start", pick_loading: "Finding a film…", pick_another: "Another option", pick_not_suggest: "Don't suggest", pick_open: "Open film", pick_want: "Add to wishlist", pick_watched: "Already watched", pick_back: "Back", pick_restart: "Start over", pick_progress: (n, total) => `${n} of ${total}`, pick_best: "Best match", pick_reliable: "Reliable choice", pick_unexpected: "Unexpected choice", pick_best_sub: "The closest match for your request", pick_reliable_sub: "A highly rated, confident pick", pick_unexpected_sub: "A little more unusual, potentially rewarding", pick_empty: "There are not enough films to recommend yet", pick_empty_sub: "Add a few films through search — the catalog grows with the app.", pick_pair: "Watch with partner", pick_solo: "Watch alone", pick_pair_unavailable: "Your pair is not connected right now",
+    reco_title: "Not sure what to watch?", reco_sub: "Find a movie that fits your mood", reco_cta: "Find a movie",
+    pick_tab: "Pick", pick_title: "What to watch?", pick_sub: "A quick pick or a mood-based selection.", pick_wishlist_title: "Random from your watchlist", pick_wishlist_sub: "A random pick from your list — no repeats",
+    pick_random_title: "A smart random pick", pick_random_sub: "One strong pick from the catalog — no questions", pick_quiz_title: "Choose by mood", pick_quiz_sub: "7–8 quick questions, then three options for tonight", pick_start: "Start", pick_loading: "Finding a movie…", pick_another: "Another option", pick_not_suggest: "Don't suggest", pick_open: "Open movie", pick_want: "Add to watchlist", pick_watched: "Already watched", pick_back: "Back", pick_restart: "Start over", pick_progress: (n, total) => `${n} of ${total}`, pick_best: "Best match", pick_reliable: "Reliable choice", pick_unexpected: "Unexpected choice", pick_best_sub: "The closest match for your request", pick_reliable_sub: "A highly rated, confident pick", pick_unexpected_sub: "A little more unusual, potentially rewarding", pick_empty: "There are not enough movies to recommend yet", pick_empty_sub: "Add a few movies through search to improve recommendations.", pick_pair: "Watch with partner", pick_solo: "Watch alone", pick_pair_unavailable: "No partner is connected right now",
     pick_wishlist_empty: "Your watchlist is empty for now",
-    strategy_reliable: "Reliable choice", strategy_taste_match: "Matches your taste", strategy_discovery: "Discovery", strategy_available: "Available option",
+    strategy_reliable: "Reliable choice", strategy_taste_match: "Matches your taste", strategy_discovery: "Hidden gem", strategy_available: "Good fit",
     pick_recovery_title: "Couldn’t pick a movie", pick_retry: "Try again",
     pick_back_to_picker: "Back to picker", pick_change_answers: "Change answers",
-    pick_smart_random: "Smart random film",
+    pick_smart_random: "A smart random pick",
     pick_partial: "This request has fewer good matches in the catalog than usual — we only show what genuinely fits.",
     pick_rejected: "We won't suggest it again",
     pick_version_changed: "The picker was updated — let's start the quiz again",
@@ -271,18 +284,18 @@ const DICT = {
     reason_INTELLECTUAL: "Asks for attention and thought", reason_COZY_TONE: "Calm, light tone",
     reason_EMOTIONAL_STORY: "A strong emotional story", reason_LIGHT_HUMOR: "Plenty of humour",
     reason_FAST_PACE: "Fast from the first minute", reason_SLOW_ATMOSPHERE: "Slow, atmospheric pacing",
-    reason_UNREAL_WORLD: "An invented, unreal world", reason_GROUNDED_STORY: "A grounded, believable story",
+    reason_UNREAL_WORLD: "An imagined world", reason_GROUNDED_STORY: "A grounded, believable story",
     reason_MATCHES_MOOD: "Matches what you asked for", reason_MATCHES_USER_TASTE: "Close to what you usually like",
-    reason_HIGH_QUALITY: "Highly rated by viewers", reason_HIDDEN_GEM: "Not well known, but solid",
+    reason_HIGH_QUALITY: "Highly rated by viewers", reason_HIDDEN_GEM: "Lesser-known, but worth watching",
     reason_IN_WISHLIST: "Already on your watchlist", reason_PAIR_FRIENDLY: "Works for both of you",
-    reason_UNSEEN_PICK: "From films you have not seen yet",
+    reason_UNSEEN_PICK: "From movies you haven't seen yet",
     reason_RANDOM_RELIABLE: "A reliable choice", reason_RANDOM_TASTE_MATCH: "Close to what you love",
-    reason_RANDOM_DISCOVERY: "An off-the-radar find", reason_RANDOM_AVAILABLE: "An available choice",
-    notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "New ratings, pair activity, and important updates will appear here", notif_filtered_empty_t: "Nothing in this category yet", notif_filtered_empty_s: "New activity will appear here automatically", notif_mark_all: "Mark all read", notif_load_more: "Show more", notif_loading: "Loading notifications…", notif_error: "Couldn't load notifications", notif_error_s: "Check your connection and try again", notif_retry: "Try again", notif_filter_all: "All", notif_filter_pair: "Pair", notif_filter_films: "Films", notif_filter_system: "System", notif_now: "Just now", notif_min_ago: (n) => `${n}m ago`, notif_hour_ago: (n) => `${n}h ago`, notif_day_ago: (n) => `${n}d ago`, notif_inapp: "In app", notif_telegram: "In Telegram", notif_telegram_hint: "Pair events from the Addict Film bot", notif_telegram_unavailable: "The bot is unavailable right now", notif_browser: "In browser", notif_browser_hint: "Local reminders on this device",
+    reason_RANDOM_DISCOVERY: "An off-the-radar find", reason_RANDOM_AVAILABLE: "A good fit",
+    notif_title: "Notifications", notif_empty_t: "No notifications yet", notif_empty_s: "New ratings, partner activity, and important updates will appear here", notif_filtered_empty_t: "Nothing in this category yet", notif_filtered_empty_s: "New activity will appear here automatically", notif_mark_all: "Mark all as read", notif_load_more: "Show more", notif_loading: "Loading notifications…", notif_error: "Couldn't load notifications", notif_error_s: "Check your connection and try again", notif_retry: "Try again", notif_filter_all: "All", notif_filter_pair: "Partner", notif_filter_films: "Movies", notif_filter_system: "System", notif_now: "Just now", notif_min_ago: (n) => `${n}m ago`, notif_hour_ago: (n) => `${n}h ago`, notif_day_ago: (n) => `${n}d ago`, notif_inapp: "In app", notif_telegram: "In Telegram", notif_telegram_hint: "Partner activity from the Addict Film bot", notif_telegram_unavailable: "The bot is unavailable right now", notif_browser: "In browser", notif_browser_hint: "Local reminders on this device",
     back: "Back", settings_title: "Settings", settings_loading: "Loading settings…",
-    settings_notifications: "Notifications", settings_notifications_hint: "Important pair events are always shown in the app", settings_notifications_on: "On", settings_notifications_off: "Off", settings_notifications_permission: "Permission needed", settings_notifications_denied: "Notifications are blocked in Telegram or your browser", settings_notifications_unavailable: "Unavailable on this device", settings_notifications_error: "Couldn't request permission",
+    settings_notifications: "Notifications", settings_notifications_hint: "Important partner activity is always shown in the app", settings_notifications_on: "On", settings_notifications_off: "Off", settings_notifications_permission: "Permission needed", settings_notifications_denied: "Notifications are blocked in Telegram or your browser", settings_notifications_unavailable: "Unavailable on this device", settings_notifications_error: "Couldn't request permission",
     settings_language: "Language", settings_language_hint: "Applies immediately across the app", settings_language_ru: "Русский", settings_language_en: "English",
-    settings_pair: "Partner", settings_pair_none: "Create a pair to watch and rate films together", settings_pair_create: "Create a pair", settings_pair_current: "Your pair", settings_pair_manage: "Manage pair", settings_pair_invited: "Invite is waiting to be accepted", settings_pair_load_error: "Couldn't load pair status", settings_pair_try_again: "Try again",
+    settings_pair: "Partner", settings_pair_none: "Connect with a partner to watch and rate movies together", settings_pair_create: "Connect with a partner", settings_pair_current: "Your partner", settings_pair_manage: "Partner settings", settings_pair_invited: "Invitation sent", settings_pair_load_error: "Couldn't load partner status", settings_pair_try_again: "Try again",
     collections_empty_s: "Check back later", collections_empty_admin_s: "Create your first collection",
     collections_title_ph: "Collection name", collections_create_btn: "Create",
     admin_section: "Administration", admin_mode_row: "Admin mode",
@@ -303,13 +316,13 @@ const DICT = {
     admin_published_delete: "Unpublish the collection first",
     admin_saved: "Saved", admin_drafts_hidden: "Draft is visible to admins only",
     admin_archived_hidden: "Archived items are hidden from users",
-    admin_reorder_hint: "Use arrows to reorder films",
+    admin_reorder_hint: "Use arrows to reorder movies",
     admin_display_label: "Presentation format",
     admin_display_standard: "Standard", admin_display_standard_hint: "Compact card in the “Collections” rail",
     admin_display_featured: "Large", admin_display_featured_hint: "Large editorial block on the home screen",
     admin_backdrop_label: "Background image",
-    admin_backdrop_from_film: "From a film in the collection", admin_backdrop_url: "Link (https)",
-    admin_backdrop_none: "No image yet — add a film with a still or paste a link",
+    admin_backdrop_from_film: "From a movie in the collection", admin_backdrop_url: "Link (https)",
+    admin_backdrop_none: "No image yet — add a movie with a still or paste a link",
     admin_preview_label: "Preview",
     admin_create_featured: "Create a large collection",
     admin_featured_image_required: "A large collection needs an image",
@@ -319,98 +332,121 @@ const DICT = {
     admin_new_collection: "New collection", admin_new_featured: "New large collection",
     admin_unsaved: "Not saved", admin_new_badge: "New",
     admin_preview_title_ph: "Collection title",
-    admin_no_films: "No films yet — add the first one",
+    admin_no_films: "No movies yet — add the first one",
     admin_err_title: "Enter a collection title",
-    admin_err_films: "Add at least one film",
+    admin_err_films: "Add at least one movie",
     admin_unsaved_changes: "Changes are not saved. Leave without saving?",
     coll_confirm_add: (title) => `Add "${title}" to the collection?`, coll_already_in: "Already in this collection",
-    coll_remove_confirm: (title) => `Remove "${title}" from the collection?`, coll_add_film_btn: "+ Add film",
-    coll_edit_hint: "Tap a film to remove it from the collection",
-    coll_delete_btn: "Delete collection", coll_delete_confirm: (title) => `Delete collection "${title}"? Films stay in the catalog.`,
+    coll_remove_confirm: (title) => `Remove "${title}" from the collection?`, coll_add_film_btn: "+ Add movie",
+    coll_edit_hint: "Tap a movie to remove it from the collection",
+    coll_delete_btn: "Delete collection", coll_delete_confirm: (title) => `Delete collection "${title}"? Movies stay in the catalog.`,
     tab_home: "Home", tab_want: "Wishlist", tab_watched: "Watched", tab_pick: "Pick", tab_stats: "Stats",
     list_want: "Wishlist", list_watched: "Watched",
     sort_title: "Sort", sort_best: "Best rated", sort_new: "Newest first", sort_old: "Oldest first", sort_worst: "Worst rated",
-    count_films: (n) => (n === 1 ? "film" : "films"),
-    rail_empty: "Empty — add films via search", rail_err: "Couldn't load",
-    genres_empty: "Catalog is empty yet",
-    genre_empty_t: "Empty", genre_empty_s: "No films in this genre yet", load_err: "Loading error",
-    want_empty_t: "List is empty", want_empty_s: "Add films via search",
-    watched_empty_t: "Nothing watched yet", watched_empty_s: "Mark films as Watched",
+    count_films: (n) => (n === 1 ? "movie" : "movies"),
+    rail_empty: "Empty — add movies via search", rail_err: "Couldn't load",
+    genres_empty: "The catalog is empty",
+    genre_empty_t: "No movies yet", genre_empty_s: "No movies in this genre yet", load_err: "Couldn't load",
+    want_empty_t: "List is empty", want_empty_s: "Add movies via search",
+    watched_empty_t: "Nothing watched yet", watched_empty_s: "Mark movies as watched",
     load_more: "Show more", loading: "Loading…", retry: "Retry",
-    my_rating: "My rating", rate_hint: " · tap = Watched", dir: "Director ",
-    act_want: "Want to watch", act_watched: "Mark as watched", act_to_want: "To wishlist", act_remove: "Remove from list",
-    already_watched_link: "Already seen it? Mark watched",
-    my_review: "My rating and comment",
-    comment_editor_subtitle: "Share your thoughts about the movie",
+    my_rating: "My rating", rate_hint: " · tap to mark as watched", dir: "Director ",
+    act_want: "Want to watch", act_watched: "Mark as watched", act_to_want: "Add to watchlist", act_remove: "Remove from list",
+    already_watched_link: "Mark as watched",
+    my_review: "Your rating and review",
+    comment_editor_subtitle: "Share your thoughts about this movie",
     comment_rating_label: "My rating",
-    comment_ph: "Write your comment…",
+    comment_ph: "Write a review…",
     your_ratings: "Your ratings", your_rating: "You", partner_rating: "Partner",
     review_publish: "Publish", review_save: "Save", review_saving: "Saving…",
-    review_delete: "Delete comment",
-    review_delete_confirm: "Delete this comment? This action cannot be undone.",
-    review_deleted: "Comment deleted",
-    review_saved: "Comment saved", review_required: "Choose a rating and write a comment",
-    review_public_hint: "Your comment will be visible to everyone",
+    review_delete: "Delete review",
+    review_delete_confirm: "Delete this review? This action cannot be undone.",
+    review_deleted: "Review deleted",
+    review_saved: "Review saved", review_required: "Add a rating and write a review",
+    review_public_hint: "Your review will be visible to everyone",
     review_legacy_title: "This is your old private note",
-    review_legacy_hint: "Publish it as a comment?", review_legacy_publish: "Publish",
+    review_legacy_hint: "Publish it as a review?", review_legacy_publish: "Publish",
     review_legacy_keep: "Keep private", review_legacy_delete: "Delete",
-    reviews_title: "User comments", reviews_partner: "Partner comment",
-    reviews_empty: "No public comments yet", reviews_load_more: "Show more",
-    reviews_loading: "Loading comments…", reviews_error: "Could not load comments",
-    review_report: "Report", review_reported: "Report sent", review_menu: "Comment actions",
+    reviews_title: "Community reviews", reviews_partner: "Partner's review",
+    reviews_empty: "No reviews yet", reviews_load_more: "Show more",
+    reviews_loading: "Loading reviews…", reviews_error: "Couldn't load reviews",
+    review_report: "Report", review_reported: "Report sent", review_menu: "Review actions",
     cast_title: "Cast", share_text: (title) => `Watch "${title}" on Addict Film`,
     confirm_remove: (title) => `Remove "${title}" from your list?`,
     search_start_t: "What are we watching?", search_start_s: "Type a title — at least 2 letters",
     search_toomany_t: "Too many requests", search_toomany_s: "Wait a minute and try again",
     search_err_t: "Search error",
-    search_limited_t: "Search temporarily limited", search_limited_s: "Daily source limit. Try later",
+    search_limited_t: "Search is temporarily unavailable", search_limited_s: "Search is temporarily unavailable. Try again later.",
     search_none_t: "Nothing found", search_none_s: "Try a year or the English title",
     confirm_add: (title) => `Add "${title}" to your wishlist?`, already_in_list: "Already in your list!",
-    stats_title: "My movie profile", my_stats: "My stats", stats_empty_t: "No stats yet", stats_empty_s: "Add films and rate them", calc: "Calculating…",
+    stats_title: "My movie profile", my_stats: "My stats", stats_empty_t: "No stats yet", stats_empty_s: "Add movies and rate them", calc: "Calculating…",
     stats_profile_fallback: "Movie fan", stats_profile_sub: "Your story in movies", stats_more: "Show more", stats_less: "Show less", stats_view_all: "View all",
     stats_me_tab: "Me", stats_together_tab: "Together", stats_taste: "Your taste", stats_together: "Your story",
-    stats_ratings_hint: "How many films you gave each rating", stats_ratings_hint_pair: "How many shared films received each rating", stats_genres_hint: "Genre share among watched films",
-    stats_people_hint: "Most frequent in watched films", stats_directors_hint: "Most frequent among watched films", stats_people_hint_pair: "Most frequent in shared films", stats_directors_hint_pair: "Most frequent among shared films", stats_films: (n) => `${n} ${n === 1 ? "film" : "films"}`,
-    stats_favorite_actor: "Favorite actor", stats_favorite_director: "Favorite director", stats_actors_empty: "Not enough actor data", stats_directors_empty: "Not enough director data", stats_people_empty_hint: "Statistics will appear after you watch films.", stats_person_films: (name) => `Films with ${name}`, stats_person_films_pair: (name) => `Shared films with ${name}`, stats_person_open: (name) => `Open films with ${name}`, stats_person_empty: "No watched films found yet",
+    stats_ratings_hint: "How your ratings are distributed", stats_ratings_hint_pair: "How your shared ratings are distributed", stats_genres_hint: "Genre share among watched movies",
+    stats_people_hint: "Actors you watch most often", stats_directors_hint: "Directors you watch most often", stats_people_hint_pair: "Actors who appear most often in your shared movies", stats_directors_hint_pair: "Directors of your shared movies", stats_films: (n) => `${n} ${n === 1 ? "movie" : "movies"}`,
+    stats_favorite_actor: "Favorite actor", stats_favorite_director: "Favorite director", stats_actors_empty: "Not enough actor data", stats_directors_empty: "Not enough director data", stats_people_empty_hint: "Statistics will appear after you watch movies.", stats_person_films: (name) => `Movies with ${name}`, stats_person_films_pair: (name) => `Shared movies with ${name}`, stats_person_open: (name) => `Open movies with ${name}`, stats_person_empty: "No watched movies found yet",
     stats_taste_hint: (genre, rating) => genre ? `You lean toward ${genre} and most often give ${rating}.` : `You most often give ${rating}.`,
     tile_watched: "watched", tile_want: "wishlist", tile_shared_watched: "watched together", tile_shared_want: "shared wishlist", tile_avg: "average", tile_hours: "hours",
     chart_ratings: "How you rate movies", chart_ratings_pair: "Shared ratings", chart_genres: "Genres", chart_actors: "Actors", chart_directors: "Directors",
     auth_err_s: "Open via the bot's menu button in Telegram",
-    partner_title: "Partner", partner_none_sub: "Add a partner — see how your movie tastes match",
-    partner_invite_btn: "Add partner", partner_invited_sub: "Invite ready. Send the link to your partner in Telegram.",
+    partner_title: "Partner", partner_none_sub: "Connect with a partner to compare tastes and track shared stats",
+    partner_invite_btn: "Connect with a partner", partner_invited_sub: "Invitation ready. Send the link to your partner in Telegram.",
     partner_share_btn: "Share link", partner_share_text: "Let's watch movies together ❤️",
-    partner_with: "Paired with", partner_word: "partner", partner_compat: "compatibility",
-    pair_title: "Together", pair_subtitle: "Shared films and your taste", pair_compat_title: "Taste compatibility",
-    pair_common_favorites: "Shared favorites", pair_common_favorites_hint: "Films you both enjoyed",
-    pair_disagreements: "Where you differ", pair_disagreements_hint: "Films with the biggest rating gaps",
+    partner_with: "Partner —", partner_word: "partner", partner_compat: "compatibility",
+    pair_title: "Together", pair_subtitle: "Shared movies and your taste", pair_compat_title: "Taste compatibility",
+    pair_common_favorites: "Shared favorites", pair_common_favorites_hint: "Movies you both enjoyed",
+    pair_disagreements: "Where your ratings differ", pair_disagreements_hint: "Movies with the biggest rating gaps",
     pair_loved_by_both: "Loved by both", pair_rating_you: "You", pair_rating_partner: "Partner", pair_difference: "Difference",
     pair_more: "Show all",
-    partner_explainer: (n) => `Based on the gap between your ratings across ${n} shared ${n === 1 ? "film" : "films"}. Closer to 100% means you agree more often.`,
-    partner_settings: "Pair settings", partner_exact_hint: "Same ratings", partner_shared_best: "Your shared favorite", partner_shared_dispute: "Biggest difference",
-    partner_no_common: "No films you both rated yet",
-    partner_matches: "Exact matches", partner_best: "Best shared", partner_controversial: "Most divisive", partner_genres: "Shared genres",
-    partner_unpair_btn: "Unpair", partner_unpair_confirm: "Unpair? Each keeps their personal lists.", partner_unpair_success: "Pair ended.",
+    partner_explainer: (n) => `Based on the gap between your ratings across ${n} shared ${n === 1 ? "movie" : "movies"}. Closer to 100% means you agree more often.`,
+    partner_settings: "Partner settings", partner_exact_hint: "Same ratings", partner_shared_best: "Your shared favorite", partner_shared_dispute: "Biggest difference",
+    partner_no_common: "No movies you both rated yet",
+    partner_matches: "Exact matches", partner_best: "Shared favorite", partner_controversial: "Most divisive", partner_genres: "Shared genres",
+    partner_unpair_btn: "Disconnect partner", partner_unpair_confirm: "Disconnect your partner? Personal lists and ratings will remain.", partner_unpair_success: "Partner disconnected.",
     partner_code_btn: "I have a code", partner_code_ph: "Partner code", partner_connect: "Connect",
     partner_code_hint: "Or send your partner this code:",
-    pair_empty: "Add films together — your shared stats will show here",
-    accept_title: "Pairing invite", accept_title_from: (name) => `${name} invited you to pair up`, accept_sub: "Track and rate films together, with shared stats and compatibility.",
+    pair_empty: "Add movies together — your shared stats will show here",
+    accept_title: "Partner invitation", accept_title_from: (name) => `${name} invited you to connect`, accept_sub: "Watch and rate movies together, with shared stats and taste compatibility.",
     accept_yes: "Accept", accept_no: "Not now",
-    accept_ok: (name) => `Done! You're now paired${name ? ` with ${name}` : ""}.`,
-    accept_fail_invalid: "Invite is invalid or already used.",
-    accept_fail_self: "You can't accept your own invite 🙂",
-    accept_fail_inviter_taken: "The inviter already has a partner.",
-    accept_fail_already_paired: "You already have a partner. Unpair first.",
+    accept_ok: (name) => name ? `Connected with ${name}.` : "Partner connected.",
+    accept_fail_invalid: "This invitation is invalid or already used.",
+    accept_fail_self: "You can't accept your own invitation 🙂",
+    accept_fail_inviter_taken: "This user is already connected to a partner.",
+    accept_fail_already_paired: "You already have a partner. Disconnect them first.",
+    open_telegram_title: "Open Addict Film in Telegram",
+    open_telegram_sub: "This Mini App is available only inside Telegram",
+    detail_back: "Back", detail_share: "Share",
+    user_fallback: "User",
+    community_label: "Community",
+    rating_count: (n) => `${n} ${n === 1 ? "rating" : "ratings"}`,
+    rating_out_of_10: (n) => `${n} out of 10`,
+    stats_top_ratings: (values, scope) =>
+      `${scope === "pair" ? "Most common shared ratings" : "Most common ratings"}: ${values.join(" and ")}`,
   },
 };
 let lang = "ru";
 try { lang = localStorage.getItem("lang") || ((tg?.initDataUnsafe?.user?.language_code || "").startsWith("en") ? "en" : "ru"); } catch (e) {}
+// Сразу, до первого запроса к API: иначе англоязычный пользователь до конца
+// старта видит русскую навигацию и русский lang у документа.
+applyDocumentLanguage();
+applyTabLabels();
 function t(key, ...args) { const v = (DICT[lang] || DICT.ru)[key] ?? DICT.ru[key] ?? key; return typeof v === "function" ? v(...args) : v; }
+
+// Язык документа — не украшение: от него зависят перенос слов, экранная
+// клавиатура и то, каким голосом озвучит текст скринридер. В index.html стоит
+// статический lang="ru" как безопасный фолбэк, а реальное значение ставим сразу
+// после того, как язык определён, и на каждом переключении.
+function applyDocumentLanguage() {
+  document.documentElement.lang = lang === "en" ? "en" : "ru";
+}
+
 function setLang(l, onApplied = null) {
   if (!DICT[l]) return;
   lang = l;
   try { localStorage.setItem("lang", l); } catch (e) {}
   // The backend uses this preference for a localized Telegram bot message.
   api("/api/settings", { method: "PATCH", body: JSON.stringify({ language: l }) }).catch(() => {});
+  applyDocumentLanguage();
   applyTabLabels();
   if (typeof onApplied === "function") onApplied();
   else showHome();
@@ -444,6 +480,21 @@ async function api(path, opts = {}) {
   if (canCache) _readCache.set(path, { value, expiresAt: Date.now() + _READ_CACHE_TTL });
   if (method !== "GET") _readCache.clear();
   return value;
+}
+
+// Текст ошибки от сервера приходит по-русски — показывать его в английском
+// интерфейсе нельзя. Отдаём локализованное сообщение по статусу, а если статус
+// ни о чём не говорит — общий фолбэк. Подробности уходят в консоль: они нужны
+// для отладки, но не пользователю.
+const _ERROR_KEY_BY_STATUS = {
+  401: "auth_err_s", 403: "auth_err_s",
+  404: "load_err", 409: "load_err",
+  429: "search_toomany_s", 503: "search_limited_s",
+};
+function uiError(error, fallbackKey = "load_err") {
+  const status = error && error.status;
+  if (status) console.warn("api error", status, error.code || "", error.message || "");
+  return t(_ERROR_KEY_BY_STATUS[status] || fallbackKey);
 }
 
 // ── Утилиты ───────────────────────────────────────────────────────────────────
@@ -1043,7 +1094,7 @@ function wireRecommendationMovie(container, item, { mode, sessionId = null, role
       await feedback("want");
       want.textContent = "✓";
       tg?.HapticFeedback?.notificationOccurred?.("success");
-    } catch (error) { want.disabled = false; tg?.showAlert?.(String(error.message || t("load_err"))); }
+    } catch (error) { want.disabled = false; tg?.showAlert?.(uiError(error)); }
   };
   const watched = container.querySelector("[data-pick-watched]");
   if (watched) watched.onclick = async () => {
@@ -1055,7 +1106,7 @@ function wireRecommendationMovie(container, item, { mode, sessionId = null, role
       // exactly one implementation across the product.
       singlePickMode(false);
       openDetail(item.id, returnTo, item);
-    } catch (error) { watched.disabled = false; tg?.showAlert?.(String(error.message || t("load_err"))); }
+    } catch (error) { watched.disabled = false; tg?.showAlert?.(uiError(error)); }
   };
   const reject = container.querySelector("[data-pick-reject]");
   if (reject) reject.onclick = async () => {
@@ -1589,7 +1640,7 @@ async function showWishlistRandom() {
     renderWishlistPick(item, fullscreen);
     installPreparedWishlistPick(next);
   } catch (error) {
-    const message = error.status === 404 ? t("pick_wishlist_empty") : error.message;
+    const message = error.status === 404 ? t("pick_wishlist_empty") : uiError(error);
     if (fullscreen) {
       screen.innerHTML = singlePickStateHTML(message, { error: true });
       wireBack(showPicker);
@@ -1632,7 +1683,7 @@ async function showRandomRecommendation() {
     }
     renderLegacyPick(strategy, item, showRandomRecommendation, "random");
   } catch (error) {
-    const message = error.status === 404 ? t("pick_empty") : (error.message || t("load_err"));
+    const message = error.status === 404 ? t("pick_empty") : uiError(error);
     if (preserveCurrent) {
       currentCard.classList.remove("is-refreshing");
       screen.querySelectorAll("[data-pick-another],[data-pick-reject]").forEach(button => {
@@ -1661,7 +1712,7 @@ async function startRecommendationQuiz() {
     const data = await api("/api/recommendations/quiz/start", { method: "POST", body: JSON.stringify({ language: lang }) });
     rememberQuizEngine(data);
     showQuizQuestion(data);
-  } catch (error) { pickerMode(false); showPicker(); tg?.showAlert?.(String(error.message || t("load_err"))); }
+  } catch (error) { pickerMode(false); showPicker(); tg?.showAlert?.(uiError(error)); }
 }
 
 function showQuizQuestion(data) {
@@ -1675,7 +1726,7 @@ function showQuizQuestion(data) {
     try {
       const previous = await api(`/api/recommendations/quiz/${encodeURIComponent(data.id)}/back`, { method: "POST", body: JSON.stringify({ language: lang }) });
       showQuizQuestion(previous);
-    } catch (error) { tg?.showAlert?.(String(error.message || t("load_err"))); }
+    } catch (error) { tg?.showAlert?.(uiError(error)); }
   };
   screen.querySelectorAll(".picker-option").forEach(button => button.onclick = async () => {
     if (button.disabled) return;
@@ -1686,7 +1737,7 @@ function showQuizQuestion(data) {
       if (next.state === "complete") showQuizResults(next.id); else showQuizQuestion(next);
     } catch (error) {
       screen.querySelectorAll(".picker-option").forEach(option => { option.disabled = false; option.classList.remove("selected"); });
-      tg?.showAlert?.(String(error.message || t("load_err")));
+      tg?.showAlert?.(uiError(error));
     }
   });
 }
@@ -1742,7 +1793,7 @@ async function showQuizResults(sessionId) {
             method: "POST", body: JSON.stringify({ language: lang }),
           });
           showQuizQuestion(previous);
-        } catch (error) { tg?.showAlert?.(String(error.message || t("load_err"))); }
+        } catch (error) { tg?.showAlert?.(uiError(error)); }
       });
       box.querySelector("[data-quiz-restart]")?.addEventListener("click", restartQuiz);
       box.querySelector("[data-quiz-random]")?.addEventListener("click", showRandomRecommendation);
@@ -1757,7 +1808,7 @@ async function showQuizResults(sessionId) {
   } catch (error) {
     pickerMode(false);
     showPicker();
-    tg?.showAlert?.(String(error.message || t("load_err")));
+    tg?.showAlert?.(uiError(error));
   }
 }
 
@@ -1779,7 +1830,7 @@ async function replaceQuizPick(sessionId, item, apply) {
       startRecommendationQuiz();
       return;
     }
-    tg?.showAlert?.(String(error.message || t("load_err")));
+    tg?.showAlert?.(uiError(error));
   }
 }
 
@@ -1978,7 +2029,7 @@ async function showBrowseAll(sort, title) {
   };
   const moreBtn = document.createElement("button");
   moreBtn.className = "load-more";
-  moreBtn.textContent = t("load_more") || "Показать ещё";
+  moreBtn.textContent = t("load_more");
   moreBtn.onclick = () => loadPage().then(() => { if (!done) screen.appendChild(moreBtn); });
   await loadPage();
   if (!done) screen.appendChild(moreBtn);
@@ -3086,7 +3137,7 @@ async function adminCall(path, options) {
   } catch (error) {
     if (error.status === 403) { AdminMode.revoked(); return null; }
     if (error.status === 409) { tg?.showAlert?.(t("admin_conflict")); return null; }
-    tg?.showAlert?.(String(error.message || t("load_err")));
+    tg?.showAlert?.(uiError(error));
     return null;
   }
 }
@@ -3185,7 +3236,7 @@ async function loadList(tab) {
       };
       el.appendChild(more);
     }
-  } catch (e) { el.innerHTML = emptyState("⚠️", t("load_err"), String(e.message)); }
+  } catch (e) { el.innerHTML = emptyState("⚠️", t("load_err"), uiError(e)); }
 }
 
 // ── Карточка фильма ───────────────────────────────────────────────────────────
@@ -3284,7 +3335,7 @@ function renderDetailPreview(preview) {
         ${poster ? `<img src="${posterSrc(poster, true)}" alt="" data-img-retry>` : ""}
         <div class="d-scrim-t"></div><div class="d-scrim-b"></div>
         <div class="d-floatctrls">
-          <button class="d-ctrl" id="d-back-preview" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
+          <button class="d-ctrl" id="d-back-preview" aria-label="${attrEsc(t("detail_back"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
         </div>
       </div>
       <div class="d-body">
@@ -3320,7 +3371,7 @@ async function showDetail(id, preview = null) {
   } catch (e) {
     if (!controller.signal.aborted) {
       const body = screen.querySelector(".detail-v2 .d-body");
-      if (body) body.insertAdjacentHTML("beforeend", emptyState("⚠️", t("load_err"), String(e.message)));
+      if (body) body.insertAdjacentHTML("beforeend", emptyState("⚠️", t("load_err"), uiError(e)));
     }
   } finally {
     if (_detailLoadController === controller) _detailLoadController = null;
@@ -3407,16 +3458,16 @@ function renderDetail(id, m) {
   screen.innerHTML = `
     <div class="detail-v2">
       <div class="d-sticky" id="d-sticky">
-        <button class="d-ctrl" id="d-back-sticky" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
+        <button class="d-ctrl" id="d-back-sticky" aria-label="${attrEsc(t("detail_back"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
         <span class="t">${esc(m.title)}</span>
-        <button class="d-ctrl" id="d-more-sticky" aria-label="Share">${shareSvg()}</button>
+        <button class="d-ctrl" id="d-more-sticky" aria-label="${attrEsc(t("detail_share"))}">${shareSvg()}</button>
       </div>
       <div class="d-backdrop${m.backdrop_url ? "" : " no-bd"}" id="d-backdrop">
         ${bdUrl ? `<img id="d-backdrop-img" src="${posterSrc(bdUrl, !m.backdrop_url)}" alt="">` : ""}
         <div class="d-scrim-t"></div><div class="d-scrim-b"></div>
         <div class="d-floatctrls">
-          <button class="d-ctrl" id="d-back-top" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
-          <button class="d-ctrl" id="d-more-top" aria-label="Share">${shareSvg()}</button>
+          <button class="d-ctrl" id="d-back-top" aria-label="${attrEsc(t("detail_back"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
+          <button class="d-ctrl" id="d-more-top" aria-label="${attrEsc(t("detail_share"))}">${shareSvg()}</button>
         </div>
       </div>
       <div class="d-body">
@@ -3503,7 +3554,7 @@ function ratingsHTML(m) {
   const pills = [];
   if (m.kp_rating) pills.push(`<div class="d-rpill"><div class="v">${esc(m.kp_rating)}</div><div class="l">КП</div></div>`);
   if (m.imdb_rating) pills.push(`<div class="d-rpill"><div class="v">${esc(m.imdb_rating)}</div><div class="l">IMDb</div></div>`);
-  if (m.community && m.community.count) pills.push(`<div class="d-rpill accent"><div class="v">${esc(m.community.avg)}</div><div class="l">${lang === "ru" ? "Комьюнити" : "Community"}</div><div class="c">${m.community.count} ${lang === "ru" ? pl(m.community.count, ["оценка", "оценки", "оценок"]) : (m.community.count === 1 ? "rating" : "ratings")}</div></div>`);
+  if (m.community && m.community.count) pills.push(`<div class="d-rpill accent"><div class="v">${esc(m.community.avg)}</div><div class="l">${esc(t("community_label"))}</div><div class="c">${esc(t("rating_count", m.community.count))}</div></div>`);
   return pills.length ? `<div class="d-ratings">${pills.join("")}</div>` : "";
 }
 
@@ -3534,7 +3585,7 @@ function renderStars(id, m) {
       return `<button type="button"
           class="d-rating-option${selected ? " on" : ""}"
           data-n="${number}"
-          aria-label="${esc(`${number} ${lang === "ru" ? "из 10" : "out of 10"}`)}"
+          aria-label="${attrEsc(t("rating_out_of_10", number))}"
           aria-pressed="${selected ? "true" : "false"}">${number}</button>`;
     }).join("");
 
@@ -3707,7 +3758,7 @@ function reviewDate(value) {
 
 function reviewCardHTML(review, { pinned = false, filmId } = {}) {
   const user = review.user || {};
-  const name = user.name || (lang === "ru" ? "Пользователь" : "User");
+  const name = user.name || t("user_fallback");
   const avatar = user.photo_url
     ? `<img src="${esc(user.photo_url)}" alt="" loading="lazy" data-img-remove-on-error>`
     : "";
@@ -3850,12 +3901,12 @@ async function loadMovieReviews(id, beforeId = null, append = false) {
         button.textContent = t("review_reported");
       } catch (error) {
         button.disabled = false;
-        tg?.showAlert?.(error.message);
+        tg?.showAlert?.(uiError(error));
       }
     });
     wireOwnCommentMenus(id);
   } catch (error) {
-    if (!append) list.innerHTML = `<div class="d-reviews-state error">${esc(t("reviews_error"))}<small>${esc(error.message)}</small></div>`;
+    if (!append) list.innerHTML = `<div class="d-reviews-state error">${esc(t("reviews_error"))}</div>`;
   }
 }
 
@@ -3936,9 +3987,11 @@ function showSearch(mode = null) {
       try { data = await api(`/api/search?q=${encodeURIComponent(q)}`, { signal: searchController.signal }); }
       catch (e) {
         if (e.name === "AbortError" || version !== requestVersion || !input.isConnected) return;
-        results.innerHTML = String(e.message) === "429"
+        // Раньше сравнивали текст ошибки со строкой "429": он совпадал только
+        // когда сервер не прислал detail. Статус для этого надёжнее.
+        results.innerHTML = e.status === 429
           ? emptyState("⏳", t("search_toomany_t"), t("search_toomany_s"))
-          : emptyState("⚠️", t("search_err_t"), String(e.message));
+          : emptyState("⚠️", t("search_err_t"), uiError(e, "search_err_t"));
         return;
       }
       if (version !== requestVersion || !input.isConnected) return;
@@ -4424,7 +4477,11 @@ function personalStatsHTML(s, scope = "me", expanded = { genres: false }) {
   const dist = s.rating_dist || [];
   const maxD = Math.max(1, ...dist);
   const rankedRatings = dist.map((count, index) => ({ rating: index + 1, count })).filter(x => x.count).sort((a, b) => b.count - a.count).slice(0, 2).map(x => x.rating);
-  const ratingFooter = rankedRatings.length ? `<div class="chart-footer">${esc(scope === "pair" ? "Больше всего ставим: " : "Больше всего ставишь: ")}<b>${rankedRatings.join(" и ")}</b></div>` : "";
+  // Значения — целые 1…10, полученные из индекса гистограммы, поэтому <b> вокруг
+  // них безопасен: пользовательского текста здесь нет. Само предложение и союз
+  // между числами живут в словаре — по-русски их нельзя склеивать в рендерере.
+  const markedRatings = rankedRatings.map(rating => `<b>${rating}</b>`);
+  const ratingFooter = rankedRatings.length ? `<div class="chart-footer">${t("stats_top_ratings", markedRatings, scope)}</div>` : "";
   const hist = dist.some(v => v > 0) ? chartCard(t(scope === "pair" ? "chart_ratings_pair" : "chart_ratings"), `<div class="chart-badge">${esc(t("tile_avg"))} <b>${s.avg_rating ?? "—"}</b></div><div class="stats-hint">${esc(t(scope === "pair" ? "stats_ratings_hint_pair" : "stats_ratings_hint"))}</div><div class="hist">${
     dist.map((c, i) => `<div class="hist-col"><div class="hist-bar-area">${c ? `<div class="hist-val">${c}</div>` : ""}<div class="hist-bar" style="height:${c ? Math.max(6, Math.round(c / maxD * 100)) : 0}%"></div></div><div class="hist-x">${i + 1}</div></div>`).join("")}</div>${ratingFooter}`) : "";
   const genres = s.top_genres_pct.length ? genreStatsCard(s.top_genres_pct, expanded) : "";
@@ -4592,7 +4649,7 @@ function wireTabbarAutoHide() {
 bindCommentMenuOutsideClose();
 // Вне Telegram (нет window.Telegram.WebApp) — не падаем, а объясняем.
 if (!tg) {
-  screen.innerHTML = emptyState("💬", "Откройте в Telegram", "Это мини-приложение работает внутри Telegram");
+  screen.innerHTML = emptyState("💬", t("open_telegram_title"), t("open_telegram_sub"));
 } else {
   const activateTab = btn => {
     const tab = btn.dataset.tab;
@@ -4634,7 +4691,7 @@ if (!tg) {
       else if (sp.startsWith("film_")) openDetail(+sp.slice(5));  // пришли по ссылке «Поделиться» фильмом
       else showHome();
     } catch (e) {
-      screen.innerHTML = emptyState("⛔", esc(e.message), t("auth_err_s"));
+      screen.innerHTML = emptyState("⛔", t("load_err"), uiError(e, "auth_err_s"));
     }
   })();
 }
