@@ -47,6 +47,8 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["cached"])
         self.assertEqual(result["items"][0]["ref"], "tt0133093")
         self.assertEqual(result["items"][0]["src"], "i")
+        self.assertEqual(result["items"][0]["title"], "Матрица")
+        self.assertEqual(result["items"][0]["title_original"], "The Matrix")
 
     async def test_kinopoisk_search_response_becomes_a_permanent_catalog_entry(self):
         document = {
@@ -75,8 +77,12 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
             search.kinopoisk.search_movies = old_search
 
         self.assertEqual(items[0]["ref"], "301")
+        self.assertEqual(items[0]["title"], "Матрица")
+        self.assertEqual(items[0]["title_original"], "The Matrix")
         self.assertIsNotNone(await db.get_film_id_by_source("k", "301"))
-        self.assertEqual((await db.search_catalog("the matrix"))[0]["ref"], "tt0133093")
+        catalog_item = (await db.search_catalog("the matrix"))[0]
+        self.assertEqual(catalog_item["ref"], "tt0133093")
+        self.assertEqual(catalog_item["title_original"], "The Matrix")
 
     async def test_imdb_and_kinopoisk_aliases_share_one_catalog_record(self):
         poster = "https://st.kp.yandex.net/brothers.jpg"
@@ -297,13 +303,15 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
         search.omdb.get_movie = fake_movie
         search.wikidata.get_titles_by_imdb = fake_titles
         try:
-            await search.find_movies("матрица")
+            items = await search.find_movies("матрица")
         finally:
             search.KINOPOISK_TOKEN = old_token
             search.omdb.search_movies = old_search
             search.omdb.get_movie = old_movie
             search.wikidata.get_titles_by_imdb = old_titles
 
+        self.assertEqual(items[0]["title"], "Матрица")
+        self.assertEqual(items[0]["title_original"], "The Matrix")
         self.assertEqual((await db.search_catalog("матрица"))[0]["ref"], "tt0133093")
 
     async def test_missing_visual_assets_are_checked_once_and_do_not_retry_forever(self):

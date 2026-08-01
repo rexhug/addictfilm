@@ -1847,6 +1847,7 @@ def _catalog_item(row) -> dict | None:
         "src": src,
         "ref": ref,
         "title": row["title"],
+        "title_original": row["title_original"],
         "year": row["year"] or "?",
         "poster": row["poster_url"],
         "rating": rating,
@@ -5026,7 +5027,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         period_sql, period_params = _pair_session_predicate(sessions)
         rows = await (await db.execute(
             f"""
-            SELECT f.id AS film_id, f.genres, f.actors, f.actors_photos, f.directors, f.directors_photos, f.runtime, f.title, f.poster_url,
+            SELECT f.id AS film_id, f.genres, f.actors, f.actors_photos, f.directors, f.directors_photos, f.runtime, f.title, f.title_original, f.poster_url,
                    a.status AS sa, a.rating AS ra, a.watched_at AS wa,
                    b.status AS sb, b.rating AS rb, b.watched_at AS wb
             FROM user_films a
@@ -5098,7 +5099,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
                      for n, c in _rank_people(director_counts, director_prominence)]
 
     # Совместимость по фильмам пар-периода, которые оценили ОБА.
-    rated = [{"film_id": r["film_id"], "a": r["ra"], "b": r["rb"], "title": r["title"], "poster_url": r["poster_url"]}
+    rated = [{"film_id": r["film_id"], "a": r["ra"], "b": r["rb"], "title": r["title"], "title_original": r["title_original"], "poster_url": r["poster_url"]}
              for r in rows if r["ra"] is not None and r["rb"] is not None]
     agreement = matches = None
     controversial = best = None
@@ -5111,11 +5112,11 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
         ranked_favorites = sorted(rated, key=lambda item: (item["a"] + item["b"], item["a"], item["b"]), reverse=True)
         # These rails are swipeable, not paginated.  A bounded 10/5 payload
         # keeps the profile immediate even for a couple with a large history.
-        common_favorites = [{"film_id": item["film_id"], "title": item["title"], "poster_url": item["poster_url"],
+        common_favorites = [{"film_id": item["film_id"], "title": item["title"], "title_original": item["title_original"], "poster_url": item["poster_url"],
                              "avg": round((item["a"] + item["b"]) / 2, 1)} for item in ranked_favorites[:10]]
         ranked_disagreements = [item for item in sorted(rated, key=lambda item: abs(item["a"] - item["b"]), reverse=True)
                                 if item["a"] != item["b"]]
-        disagreements = [{"film_id": item["film_id"], "title": item["title"], "poster_url": item["poster_url"],
+        disagreements = [{"film_id": item["film_id"], "title": item["title"], "title_original": item["title_original"], "poster_url": item["poster_url"],
                           "a": item["a"], "b": item["b"], "diff": abs(item["a"] - item["b"])}
                          for item in ranked_disagreements[:5]]
         top_dispute = disagreements[0] if disagreements else None

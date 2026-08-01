@@ -160,6 +160,8 @@ section{margin-top:30px;}
 .meta{padding:11px 2px 0;}
 .meta .t{font-size:14px;font-weight:550;letter-spacing:-0.015em;line-height:1.3;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.meta .title-alt{margin-top:3px;color:var(--ink-2);font-size:11.5px;font-weight:450;line-height:1.25;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .meta-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;}
 .meta .y{font-size:12.5px;color:var(--ink-2);font-variant-numeric:tabular-nums;}
 /* компактная оценка в мета-строке (вынесена из-под постера): деликатная, не спорит с годом */
