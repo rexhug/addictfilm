@@ -45,7 +45,7 @@ QUESTIONS: dict[str, dict] = {
         _option("medium", "Нормальный темп, без спешки", "A steady pace, no rush", weights={"medium_pace": 4}, reason="steady pace"),
         _option("slow", "Хочу медленно погрузиться в атмосферу", "Let me slowly sink into the atmosphere", weights={"slow_pace": 4, "visuals": 2}, reason="atmosphere"),
     ]},
-    "r3": {"id": "r3", "branch": "relax", "answer_type": "single", "text": _text("Сколько конфликта ты сегодня выдержишь?", "How much conflict are you up for today?"), "options": [
+    "r3": {"id": "r3", "branch": "relax", "answer_type": "single", "text": _text("Сколько драмы тебе сегодня подходит?", "How much conflict are you up for today?"), "options": [
         _option("comfort", "Почти никакой — мне нужен комфорт", "Almost none — I need comfort", weights={"low_conflict": 5}, reason="comfort"),
         _option("positive", "Небольшие проблемы, но всё будет хорошо", "Small problems, but it should turn out well", weights={"positive": 3}, reason="a hopeful tone"),
         _option("drama", "Можно немного драмы", "A little drama is fine", weights={"drama": 3}, reason="some drama"),
@@ -82,7 +82,7 @@ QUESTIONS: dict[str, dict] = {
     "t4": {"id": "t4", "branch": "tension", "answer_type": "single", "text": _text("Финал должен всё объяснить?", "Should the ending explain everything?"), "options": [
         _option("clear", "Да, хочу получить ответы", "Yes, I want answers", weights={"clear_ending": 5}, reason="a clear resolution"),
         _option("semi", "Можно оставить несколько вопросов", "A few open questions are okay", weights={"semi_open": 4}, reason="some ambiguity"),
-        _option("open", "Пусть останется загадкой", "Let it stay a puzzle", weights={"open_ending": 5, "complexity": 3}, reason="an open ending"),
+        _option("open", "Пусть останется загадкой", "Leave me with something to think about", weights={"open_ending": 5, "complexity": 3}, reason="an open ending"),
     ]},
     "h1": {"id": "h1", "branch": "humor", "answer_type": "single", "text": _text("Над чем тебе хочется смеяться?", "What do you feel like laughing at?"), "options": [
         _option("situational", "Неловкие жизненные ситуации", "Awkward life situations", weights={"situational_humor": 5, "comedy": 3}, reason="situational humor"),
@@ -116,7 +116,7 @@ QUESTIONS: dict[str, dict] = {
     "e2": {"id": "e2", "branch": "emotion", "answer_type": "single", "text": _text("Насколько больно может быть в финале?", "How painful can the ending be?"), "options": [
         _option("positive", "Сегодня нужен хороший конец", "I need a good ending today", weights={"positive": 5}, reason="a hopeful tone"),
         _option("bittersweet", "Можно немного погрустить", "A little sadness is okay", weights={"bittersweet": 5}, reason="bittersweet emotion"),
-        _option("tragic", "Можно тяжёлый финал", "I'm ready to feel it deeply", weights={"tragic": 5, "emotion": 3}, reason="emotional intensity"),
+        _option("tragic", "Можно тяжёлый финал", "I'm ready for a heavy ending", weights={"tragic": 5, "emotion": 3}, reason="emotional intensity"),
     ]},
     "e3": {"id": "e3", "branch": "emotion", "answer_type": "single", "text": _text("Что важнее: события или люди?", "What matters more: events or people?"), "options": [
         _option("characters", "Персонажи и их отношения", "Characters and their relationships", weights={"character_driven": 5}, reason="character relationships"),
@@ -147,7 +147,7 @@ QUESTIONS: dict[str, dict] = {
         _option("long", "Можно длинный фильм", "A longer movie is fine", filters={"runtime_max": 180}),
         _option("any", "Время не важно", "Time does not matter"),
     ]},
-    "c2": {"id": "c2", "branch": "common", "answer_type": "single", "text": _text("Насколько новый фильм ты хочешь?", "How new should the movie be?"), "options": [
+    "c2": {"id": "c2", "branch": "common", "answer_type": "single", "text": _text("Насколько современный фильм тебе нужен?", "How new should the movie be?"), "options": [
         _option("modern", "Только что-то современное", "Something modern", filters={"year_min": 2018}),
         _option("any", "Неважно, главное — хороший", "Any year, as long as it is good"),
         _option("classic", "Хочу проверенную классику", "A proven classic", filters={"year_max": 2005}),

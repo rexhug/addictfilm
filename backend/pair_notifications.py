@@ -102,8 +102,8 @@ def format_pair_notification(context: RecipientContext) -> dict:
                     else f"Приглашение от {inviter_name} больше не активно.")
             return {"title": "Приглашение истекло", "body": body, "action_label": "Открыть приложение", "deep_link": ""}
         if event_type == "pair.ended":
-            return {"title": "Партнёр отключён", "body": f"Связь с {partner_name} завершена. Общая статистика сохранена.", "action_label": "Открыть", "deep_link": "stats"}
-        return {"title": "Партнёр отключён", "body": f"Связь с {partner_name} завершена. Общая статистика сохранена.", "action_label": "Открыть", "deep_link": "stats"}
+            return {"title": "Партнёр отключён", "body": f"Подключение к {partner_name} завершено. Общая статистика сохранена.", "action_label": "Открыть", "deep_link": "stats"}
+        return {"title": "Партнёр отключён", "body": f"Подключение к {partner_name} завершено. Общая статистика сохранена.", "action_label": "Открыть", "deep_link": "stats"}
 
     if event_type == "pair.invite.accepted":
         return {"title": "Partner connected", "body": f"You are now connected with {partner_name}. Your shared stats are ready.", "action_label": "View stats", "deep_link": "stats"}
@@ -118,8 +118,8 @@ def format_pair_notification(context: RecipientContext) -> dict:
                 else f"The invitation from {inviter_name} is no longer active.")
         return {"title": "Invitation expired", "body": body, "action_label": "Open app", "deep_link": ""}
     if event_type == "pair.ended":
-        return {"title": "Partner disconnected", "body": f"Your connection with {partner_name} has ended. Your shared stats are saved.", "action_label": "Open", "deep_link": "stats"}
-    return {"title": "Partner disconnected", "body": f"Your connection with {partner_name} has ended. Your shared stats are saved.", "action_label": "Open", "deep_link": "stats"}
+        return {"title": "Partner disconnected", "body": f"You're no longer connected with {partner_name}. Your shared stats are saved.", "action_label": "Open", "deep_link": "stats"}
+    return {"title": "Partner disconnected", "body": f"You're no longer connected with {partner_name}. Your shared stats are saved.", "action_label": "Open", "deep_link": "stats"}
 
 
 async def _send_telegram(*, recipient_id: int, text: dict) -> None:

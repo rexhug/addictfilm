@@ -162,7 +162,7 @@ class PairNotificationStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self._items(1), [])
         partner_item, = await self._items(2)
         self.assertEqual(partner_item["payload"]["title"], "Партнёр отключён")
-        self.assertEqual(partner_item["payload"]["body"], "Связь с Alex завершена. Общая статистика сохранена.")
+        self.assertEqual(partner_item["payload"]["body"], "Подключение к Alex завершено. Общая статистика сохранена.")
         self.assertEqual(pair_notifications.delivery_channels(self._context(ended["event"], 1)), ())
 
     async def test_inbox_categories_filter_rows_and_report_global_unread_counts(self):

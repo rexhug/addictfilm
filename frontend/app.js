@@ -246,9 +246,9 @@ const DICT = {
     rating_count: (n) => `${n} ${pl(n, ["оценка", "оценки", "оценок"])}`,
     rating_out_of_10: (n) => `${n} из 10`,
     // Всё предложение целиком в словаре: собирать русскую фразу из кусков в
-    // рендерере — верный способ получить «Больше всего ставим 9 and 10».
+    // рендерере — верный способ получить «Самые частые общие оценки 9 and 10».
     stats_top_ratings: (values, scope) =>
-      `${scope === "pair" ? "Больше всего ставим" : "Больше всего ставишь"}: ${values.join(" и ")}`,
+      `${scope === "pair" ? "Самые частые общие оценки" : "Самые частые оценки"}: ${values.join(" и ")}`,
   },
   en: {
     tagline: "Movies you'll love",
@@ -421,7 +421,7 @@ const DICT = {
     rating_count: (n) => `${n} ${n === 1 ? "rating" : "ratings"}`,
     rating_out_of_10: (n) => `${n} out of 10`,
     stats_top_ratings: (values, scope) =>
-      `${scope === "pair" ? "You both rate most often" : "You rate most often"}: ${values.join(" and ")}`,
+      `${scope === "pair" ? "Most common shared ratings" : "Most common ratings"}: ${values.join(" and ")}`,
   },
 };
 let lang = "ru";

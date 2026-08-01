@@ -264,9 +264,9 @@ test("adaptive picker completes a mobile-safe eight-question flow without old to
   await expect(page.getByRole("heading", { name: "Что посмотреть?" })).toBeVisible();
   await expect(page.getByText("Мой топ")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Умный случайный фильм" }).click();
-  await expect(page.getByText("Из фильмов, которых ты ещё не видел · Находка не на слуху")).toBeVisible();
-  await expect(page.getByText("Находка", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Случайный фильм по твоему вкусу" }).click();
+  await expect(page.getByText("Из фильмов, которые ты ещё не видел · Малоизвестная находка")).toBeVisible();
+  await expect(page.getByText("Малоизвестная находка", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Уже смотрел" })).toBeVisible();
   await page.getByRole("button", { name: "Другой вариант" }).click();
   await expect(page.locator(".recommendation-film")).toHaveCount(1);
@@ -358,8 +358,8 @@ test("personal profile fits a 390px phone without a hidden final card", async ({
   await expect(page.locator(".people-stats-directors .person-stat-card.is-favorite")).toHaveCount(1);
   await expect(page.locator(".people-stats-actors .person-stat-favorite")).toHaveCount(1);
   await expect(page.locator(".people-stats-directors .person-stat-favorite")).toHaveCount(1);
-  await expect(page.getByText("Чаще всего встречаются в просмотренных фильмах")).toBeVisible();
-  await expect(page.getByText("Чаще всего среди просмотренных фильмов")).toBeVisible();
+  await expect(page.getByText("Актёры, которых ты смотришь чаще всего")).toBeVisible();
+  await expect(page.getByText("Режиссёры, чьи фильмы ты смотришь чаще всего")).toBeVisible();
   expect(await page.locator(".people-stats-actors .people-stats-rail").evaluate((rail) => rail.scrollWidth > rail.clientWidth)).toBeTruthy();
   const peopleSectionLayout = await page.locator(".people-stats-actors").evaluate((section) => {
     const styles = getComputedStyle(section);
@@ -444,7 +444,7 @@ test("personal profile fits a 390px phone without a hidden final card", async ({
 test("a temporary pair-stats failure keeps the pair tab and never exposes unlinking on the profile", async ({ page }) => {
   await openStats(page, true, { pairStatsFailure: true });
   await expect(page.getByRole("tab", { name: "Мы вместе" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Разорвать пару" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Отключить партнёра" })).toHaveCount(0);
   await page.getByRole("tab", { name: "Мы вместе" }).click();
   await expect(page.getByRole("button", { name: "Повторить" })).toBeVisible();
 });
@@ -478,7 +478,7 @@ test("notification inbox shows unread pair events and follows their deep link", 
   await page.getByRole("button", { name: "Уведомления" }).click();
   await expect(page.getByText("Приглашение в пару")).toBeVisible();
   await page.getByRole("button", { name: "Открыть", exact: true }).click();
-  await expect(page.getByRole("heading", { name: /Вас зовёт/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /приглашает тебя смотреть фильмы вместе/ })).toBeVisible();
 });
 
 test("rating notification uses a star and opens the exact film from row or action", async ({ page }) => {
@@ -617,9 +617,9 @@ test("mark all read is optimistic and sends one request", async ({ page }) => {
   });
   await page.getByRole("button", { name: "Главная" }).click();
   await page.getByRole("button", { name: "Уведомления" }).click();
-  await page.getByRole("button", { name: "Прочитать все" }).click();
+  await page.getByRole("button", { name: "Отметить все как прочитанные" }).click();
   await expect(page.locator('[data-notification-id="111"]')).toHaveClass(/is-read/);
-  await expect(page.getByRole("button", { name: "Прочитать все" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Отметить все как прочитанные" })).toBeDisabled();
   await expect.poll(() => readAllCalls).toBe(1);
 });
 
@@ -682,7 +682,7 @@ test("settings persists the single Telegram notification preference and language
   await expect(toggle).toHaveAttribute("aria-checked", "true");
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-checked", "false");
-  await expect(page.getByText("События пары от бота Addict Film · Выключены")).toBeVisible();
+  await expect(page.getByText("События партнёра от бота Addict Film · Выключены")).toBeVisible();
   await expect(page.getByRole("switch")).toHaveCount(1);
   await expect(page.getByText("Локальные напоминания на этом устройстве")).toHaveCount(0);
   await page.getByRole("button", { name: "English" }).click();
@@ -714,24 +714,24 @@ test("settings uses the existing invite and paired management states", async ({ 
     },
   });
   await page.getByRole("button", { name: "Настройки" }).click();
-  await page.getByRole("button", { name: "Создать пару" }).click();
-  await expect(page.getByText("Приглашение ожидает принятия")).toBeVisible();
+  await page.getByRole("button", { name: "Подключить партнёра" }).click();
+  await expect(page.getByText("Приглашение отправлено")).toBeVisible();
   await expect(page.getByText("inv_settings")).toBeVisible();
   partnerState = { status: "paired", partner: { name: "Kristina", username: "kristina" } };
   await page.locator(".sub-head .back").click();
   await page.getByRole("button", { name: "Настройки" }).click();
-  await expect(page.getByText("Ваша пара")).toBeVisible();
+  await expect(page.getByText("Твой партнёр")).toBeVisible();
   const readsBeforeManage = partnerReads;
-  await page.getByRole("button", { name: "Управление парой" }).click();
-  await expect(page.getByRole("button", { name: "Разорвать пару" })).toBeVisible();
+  await page.getByRole("button", { name: "Настройки партнёра" }).click();
+  await expect(page.getByRole("button", { name: "Отключить партнёра" })).toBeVisible();
   expect(partnerReads).toBe(readsBeforeManage);
   await page.locator(".settings-pair-management-back").click();
-  await expect(page.getByRole("button", { name: "Управление парой" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Настройки партнёра" })).toBeVisible();
 });
 
 test("pair invite stays balanced and safe across compact mobile viewports", async ({ page }) => {
   await openStats(page, false, { startParam: "inv_test" });
-  await expect(page.getByRole("heading", { name: /Вас зовёт/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /приглашает тебя смотреть фильмы вместе/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Принять" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Не сейчас" })).toBeVisible();
   const assertSafeInvite = async () => {
@@ -761,11 +761,11 @@ test("pair invite stays balanced and safe across compact mobile viewports", asyn
   await assertSafeInvite();
   await page.setViewportSize({ width: 320, height: 568 });
   await page.reload();
-  await expect(page.getByRole("heading", { name: /Вас зовёт/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /приглашает тебя смотреть фильмы вместе/ })).toBeVisible();
   await assertSafeInvite();
   await page.setViewportSize({ width: 430, height: 932 });
   await page.reload();
-  await expect(page.getByRole("heading", { name: /Вас зовёт/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /приглашает тебя смотреть фильмы вместе/ })).toBeVisible();
   await assertSafeInvite();
   await page.locator(".accept-illustration-img").evaluate((image) => image.dispatchEvent(new Event("error")));
   await expect(page.locator(".accept-illustration-fallback")).toBeVisible();
@@ -916,13 +916,17 @@ test("movie detail rating, list actions and public comments stay focused and saf
 
   await expect(page.locator(".detail-v2")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Ваши оценки" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Моя оценка и комментарий" })).toBeVisible();
-  await expect(page.getByText("Поделитесь своим мнением о фильме", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Комментарии пользователей" })).toBeVisible();
-  await expect(page.locator("#d-comment-input")).toHaveAttribute("placeholder", "Напишите свой комментарий…");
-  await expect(page.getByText("Ваш комментарий увидят все пользователи", { exact: true })).toBeVisible();
-  await expect(page.locator("#d-review").getByText(/отзыв/i)).toHaveCount(0);
-  await expect(page.locator("#d-public-reviews").getByText(/отзыв/i)).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Моя оценка и отзыв" })).toBeVisible();
+  await expect(page.getByText("Поделись мнением о фильме", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Отзывы сообщества" })).toBeVisible();
+  await expect(page.locator("#d-comment-input")).toHaveAttribute("placeholder", "Напиши отзыв…");
+  await expect(page.getByText("Отзыв увидят все пользователи", { exact: true })).toBeVisible();
+  // Раньше здесь проверялось отсутствие слова «отзыв»: публичный текст назывался
+  // «комментарием», и «отзыв» на этом экране означал бы утечку чужого состояния.
+  // Теперь «отзыв» — штатное слово интерфейса, поэтому проверяем исходный смысл
+  // напрямую: пользователь ещё ничего не публиковал, карточек быть не должно.
+  await expect(page.locator("#d-review .d-review-card")).toHaveCount(0);
+  await expect(page.locator("#d-public-reviews .d-review-card.own")).toHaveCount(0);
   await expect(page.locator("#d-review").getByRole("button", { name: /Удалить/i })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Опубликовать" })).toBeDisabled();
   await expect(page.locator(".d-rating-option")).toHaveCount(10);
@@ -985,10 +989,10 @@ test("movie detail rating, list actions and public comments stay focused and saf
 
   await expect(page.locator(".d-review-card").first()).toHaveClass(/pinned/);
   await expect(page.locator(".d-review-card").first()).toContainText("Kristina");
-  await expect(page.locator(".d-review-card").first().getByRole("button", { name: "Действия с комментарием" })).toHaveCount(0);
+  await expect(page.locator(".d-review-card").first().getByRole("button", { name: "Действия с отзывом" })).toHaveCount(0);
   await expect(page.getByText("<img src=x onerror=alert(1)>", { exact: true })).toBeVisible();
   await expect(page.locator('.d-review-card img[src="x"]')).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Действия с комментарием" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Действия с отзывом" })).toHaveCount(0);
 
   await expect(page.locator("[data-review-sort]")).toHaveCount(0);
   await expect.poll(() => requests.some(request => request.method === "GET" && request.sort === "newest")).toBeTruthy();
@@ -1028,13 +1032,13 @@ test("movie detail rating, list actions and public comments stay focused and saf
   await expect(page.locator("#d-comment-input")).toHaveValue("Мой публичный комментарий");
 
   const ownCard = page.locator('.d-review-card[data-comment-card-id="101"]');
-  const menuTrigger = ownCard.getByRole("button", { name: "Действия с комментарием" });
+  const menuTrigger = ownCard.getByRole("button", { name: "Действия с отзывом" });
   await expect(menuTrigger).toHaveCount(1);
-  await expect(page.locator('.d-review-card[data-comment-card-id="90"]').getByRole("button", { name: "Действия с комментарием" })).toHaveCount(0);
+  await expect(page.locator('.d-review-card[data-comment-card-id="90"]').getByRole("button", { name: "Действия с отзывом" })).toHaveCount(0);
 
   await menuTrigger.click();
   await expect(menuTrigger).toHaveAttribute("aria-expanded", "true");
-  await expect(ownCard.getByRole("menuitem", { name: "Удалить комментарий" })).toBeVisible();
+  await expect(ownCard.getByRole("menuitem", { name: "Удалить отзыв" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(menuTrigger).toHaveAttribute("aria-expanded", "false");
 
@@ -1044,20 +1048,20 @@ test("movie detail rating, list actions and public comments stay focused and saf
 
   await page.evaluate(() => { window.__confirmResult = false; });
   await menuTrigger.click();
-  await ownCard.getByRole("menuitem", { name: "Удалить комментарий" }).click();
+  await ownCard.getByRole("menuitem", { name: "Удалить отзыв" }).click();
   expect(requests.filter(request => request.method === "DELETE" && request.path.endsWith("/review"))).toHaveLength(0);
   await expect(ownCard).toBeVisible();
 
   await page.evaluate(() => { window.__confirmResult = true; });
   await menuTrigger.click();
-  await ownCard.getByRole("menuitem", { name: "Удалить комментарий" }).click();
+  await ownCard.getByRole("menuitem", { name: "Удалить отзыв" }).click();
   await expect.poll(() => publishedText).toBeNull();
   expect(requests.filter(request => request.method === "DELETE" && request.path.endsWith("/review"))).toHaveLength(1);
   await expect(ownCard).toHaveCount(0);
   await expect(page.locator("#d-comment-input")).toHaveValue("");
   await expect(page.getByRole("button", { name: "Опубликовать" })).toBeDisabled();
   await expect(page.locator('.d-rating-option[data-n="7"]')).toHaveAttribute("aria-pressed", "true");
-  expect(await page.evaluate(() => window.__confirmMessages.at(-1))).toBe("Удалить комментарий? Это действие нельзя отменить.");
+  expect(await page.evaluate(() => window.__confirmMessages.at(-1))).toBe("Удалить отзыв? Это действие нельзя отменить.");
 
   await page.getByRole("button", { name: "Пожаловаться" }).first().click();
   await expect(page.getByText("Жалоба отправлена", { exact: true })).toBeVisible();
@@ -1418,12 +1422,12 @@ test("wishlist roulette is a separate mode from smart random", async ({ page }) 
   await page.getByRole("button", { name: "Подбор" }).click();
   // Два разных режима с разными обещаниями: рулетка по своему списку и подбор
   // из каталога. Раньше оба назывались «случайный фильм».
-  await expect(page.getByRole("button", { name: /Случайный из «Хочу»/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Умный случайный фильм/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Случайный фильм из «Хочу»/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Случайный фильм по твоему вкусу/ })).toBeVisible();
 
-  await page.getByRole("button", { name: /Случайный из «Хочу»/ }).click();
+  await page.getByRole("button", { name: /Случайный фильм из «Хочу»/ }).click();
   await expect(page.locator(".recommendation-film-copy h2", { hasText: "Wishlist Pick" })).toBeVisible();
-  await expect(page.getByText("Случайный из «Хочу»", { exact: true })).toBeVisible();
+  await expect(page.getByText("Случайный фильм из «Хочу»", { exact: true })).toBeVisible();
 });
 
 

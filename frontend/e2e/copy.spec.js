@@ -183,3 +183,54 @@ test("movie detail labels its controls in the current language", async ({ page }
   await expect(page.locator(".d-rpill.accent .c")).toHaveText("3 ratings");
   await expect(page.locator('.d-rating-option[data-n="7"]')).toHaveAttribute("aria-label", "7 out of 10");
 });
+
+test.describe("search rate limiting is recognised by status, not by error text", () => {
+  // Раньше состояние «слишком часто» показывалось только когда текст ошибки
+  // буквально равнялся "429" — то есть лишь если сервер не прислал detail.
+  // С обычным человеческим detail пользователь видел общую ошибку поиска.
+  async function searchWithRateLimit(page, language) {
+    await page.route("https://telegram.org/js/telegram-web-app.js", route => route.fulfill({ body: "" }));
+    await page.addInitScript(([lang]) => {
+      window.localStorage.setItem("lang", lang);
+      window.Telegram = { WebApp: {
+        initData: "test",
+        initDataUnsafe: { user: { id: 1, first_name: "D", language_code: lang } },
+        ready() {}, expand() {}, setHeaderColor() {}, setBackgroundColor() {},
+        disableVerticalSwipes() {}, onEvent() {}, HapticFeedback: { impactOccurred() {} },
+      } };
+    }, [language]);
+    // Общий обработчик регистрируется ПЕРВЫМ: Playwright примеряет маршруты в
+    // обратном порядке, и иначе он перехватил бы поиск раньше конкретного.
+    await page.route("**/api/**", async route => {
+      const path = new URL(route.request().url()).pathname;
+      let body = {};
+      if (path === "/api/me") body = { id: 1, label: "D", language, features: {} };
+      else if (path === "/api/me/capabilities") body = { is_admin: false, capabilities: [] };
+      else if (path === "/api/notifications/unread-count") body = { count: 0 };
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+    });
+    await page.route("**/api/search**", route => route.fulfill({
+      status: 429,
+      contentType: "application/json",
+      // Текст, который реально отдаёт бэкенд, — не строка "429".
+      body: JSON.stringify({ detail: "Забагато запитів, спробуйте за хвилину" }),
+    }));
+    await page.goto("/");
+    await page.evaluate(() => showSearch());
+    await page.locator("#si").fill("матрица");
+  }
+
+  test("Russian", async ({ page }) => {
+    await searchWithRateLimit(page, "ru");
+    await expect(page.locator("#sr")).toContainText("Слишком часто");
+    await expect(page.locator("#sr")).toContainText("Подожди минуту и попробуй снова");
+    await expect(page.locator("#sr")).not.toContainText("Забагато");
+  });
+
+  test("English", async ({ page }) => {
+    await searchWithRateLimit(page, "en");
+    await expect(page.locator("#sr")).toContainText("Too many requests");
+    await expect(page.locator("#sr")).toContainText("Wait a minute and try again");
+    await expect(page.locator("#sr")).not.toContainText("Забагато");
+  });
+});
