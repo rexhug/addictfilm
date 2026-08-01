@@ -425,6 +425,16 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    # Только для запуска как команды. У приложения свой logging.basicConfig в
+    # main.py, и при импорте модуля трогать корневой логер нельзя — иначе
+    # библиотека молча меняет настройки чужого процесса. Без этой строки
+    # диагностика портретов из validate_cast_portraits() уходила в никуда:
+    # корневой уровень оставался WARNING, а смотрит эти строки как раз
+    # оператор, запускающий команду руками.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     args = _parser().parse_args()
     args.limit = max(1, min(args.limit, 500))
     args.batch_size = max(1, min(args.batch_size, 50))
