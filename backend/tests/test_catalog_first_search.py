@@ -109,6 +109,34 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["items"][0]["title"], "Матрица")
         self.assertEqual(result["items"][0]["ref"], "301")
 
+    async def test_franchise_prefix_keeps_provider_exact_title(self):
+        await db.get_or_create_film("tt-prefix-2018", "Мстители: Война бесконечности", year="2018")
+        await db.get_or_create_film("tt-prefix-2026", "Мстители: Судный день", year="2026")
+
+        calls = 0
+        old_find = search.find_movies
+
+        async def fake_find(_query):
+            nonlocal calls
+            calls += 1
+            return [
+                {"src": "i", "ref": "tt-2012", "imdb_id": "tt-2012", "title": "Мстители", "year": "2012"},
+                {"src": "i", "ref": "tt-2019", "imdb_id": "tt-2019", "title": "Мстители: Финал", "year": "2019"},
+            ]
+
+        search.find_movies = fake_find
+        try:
+            result = await search.cached_search("Мстители", user_id=1)
+        finally:
+            search.find_movies = old_find
+
+        titles = [item["title"] for item in result["items"]]
+        self.assertEqual(calls, 1)
+        self.assertEqual(titles[0], "Мстители")
+        self.assertIn("Мстители: Война бесконечности", titles)
+        self.assertIn("Мстители: Судный день", titles)
+        self.assertEqual(len(titles), len(set(titles)))
+
     async def test_identical_cache_misses_share_one_provider_task(self):
         calls = 0
         old_find = search.find_movies
