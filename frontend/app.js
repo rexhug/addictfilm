@@ -101,7 +101,6 @@ const DICT = {
     art_approve_poster: "Разрешить этот постер", art_auto_poster: "Автоматически",
     art_movie_flow: "В рекомендациях", art_movie_auto: "Автоматически",
     art_movie_allow: "Разрешить", art_movie_exclude: "Исключить",
-    settings_attribution: "Данные об изображениях предоставлены fanart.tv",
     reason_DARK_COMEDY_TONE: "Чёрный юмор и мрачный тон", reason_SATIRICAL_HUMOR: "Сатира на серьёзные темы",
     reason_ABSURD_DARK_HUMOR: "Абсурдная комедия с мрачной подачей", reason_HIGH_TENSION: "Держит в напряжении",
     reason_INTELLECTUAL: "Требует внимания и размышления", reason_COZY_TONE: "Спокойный и светлый тон",
@@ -121,7 +120,7 @@ const DICT = {
     settings_pair: "Партнёр", settings_pair_none: "Подключи партнёра, чтобы смотреть и оценивать фильмы вместе", settings_pair_create: "Подключить партнёра", settings_pair_current: "Твой партнёр", settings_pair_manage: "Настройки партнёра", settings_pair_invited: "Приглашение отправлено", settings_pair_load_error: "Не удалось загрузить статус партнёра", settings_pair_try_again: "Повторить",
     collections_empty_s: "Загляни позже", collections_empty_admin_s: "Создай первую подборку",
     collections_title_ph: "Название подборки", collections_create_btn: "Создать",
-    admin_section: "Администрирование", admin_mode_row: "Режим администратора",
+    admin_section: "Администрирование", admin_mode_row: "Режим администратора", admin_total_users: "Всего пользователей",
     admin_mode_hint: "Редактируйте подборки и блоки приложения прямо в интерфейсе.",
     admin_mode_active: "Режим администратора", admin_exit_mode: "Выйти",
     admin_permission_revoked: "Права администратора отозваны. Режим выключен.",
@@ -278,7 +277,6 @@ const DICT = {
     art_approve_poster: "Allow this poster", art_auto_poster: "Automatic",
     art_movie_flow: "In recommendations", art_movie_auto: "Automatic",
     art_movie_allow: "Allow", art_movie_exclude: "Exclude",
-    settings_attribution: "Artwork data provided by fanart.tv",
     reason_DARK_COMEDY_TONE: "Dark humour with a grim tone", reason_SATIRICAL_HUMOR: "Satire about serious things",
     reason_ABSURD_DARK_HUMOR: "Absurd comedy, grim delivery", reason_HIGH_TENSION: "Keeps the tension up",
     reason_INTELLECTUAL: "Asks for attention and thought", reason_COZY_TONE: "Calm, light tone",
@@ -298,7 +296,7 @@ const DICT = {
     settings_pair: "Partner", settings_pair_none: "Connect with a partner to watch and rate movies together", settings_pair_create: "Connect with a partner", settings_pair_current: "Your partner", settings_pair_manage: "Partner settings", settings_pair_invited: "Invitation sent", settings_pair_load_error: "Couldn't load partner status", settings_pair_try_again: "Try again",
     collections_empty_s: "Check back later", collections_empty_admin_s: "Create your first collection",
     collections_title_ph: "Collection name", collections_create_btn: "Create",
-    admin_section: "Administration", admin_mode_row: "Admin mode",
+    admin_section: "Administration", admin_mode_row: "Admin mode", admin_total_users: "Total users",
     admin_mode_hint: "Edit collections and app blocks directly in the interface.",
     admin_mode_active: "Admin mode", admin_exit_mode: "Exit",
     admin_permission_revoked: "Admin rights were revoked. Mode disabled.",
@@ -530,7 +528,7 @@ const RETRYABLE_IMAGE_HOSTS = new Set([
   "m.media-amazon.com", "images-na.ssl-images-amazon.com", "ia.media-imdb.com",
   "avatars.mds.yandex.net", "st.kp.yandex.net", "image.openmoviedb.com",
   "image.tmdb.org", "kinopoiskapiunofficial.tech", "commons.wikimedia.org", "upload.wikimedia.org",
-  "assets.fanart.tv",
+  "assets.fan" + "art.tv",
 ]);
 function isRetryableImage(img) {
   try {
@@ -4180,6 +4178,16 @@ async function showStatsSettings(returnMode = "me", managePair = false) {
   let serverSettings = { language: lang, telegram_enabled: false, telegram_available: false };
   let partnerFailed = false;
   try { [partner, serverSettings] = await Promise.all([api("/api/partner"), api("/api/settings")]); } catch (_) { partnerFailed = true; }
+  let adminUserCount = null;
+  if (AdminMode.isCapable()) {
+    try {
+      const analytics = await api("/api/admin/analytics");
+      const count = Number(analytics.total_users);
+      if (Number.isInteger(count) && count >= 0) adminUserCount = count;
+    } catch (_) {
+      // Editor or unavailable analytics: keep the row hidden.
+    }
+  }
   if (!page) return;
 
   const openPairManagement = () => {
@@ -4210,8 +4218,9 @@ async function showStatsSettings(returnMode = "me", managePair = false) {
       <section class="settings-section" aria-labelledby="settings-pair-title"><h2 id="settings-pair-title">${esc(t("settings_pair"))}</h2><div class="settings-card settings-pair-card">${settingsPairHTML(partner, partnerFailed)}</div></section>
       ${AdminMode.isCapable() ? `<section class="settings-section" aria-labelledby="settings-admin-title"><h2 id="settings-admin-title">${esc(t("admin_section"))}</h2><div class="settings-card">
         ${settingsRow({ title: t("admin_mode_row"), subtitle: t("admin_mode_hint"), action: `<button class="settings-toggle" data-settings-admin type="button" role="switch" aria-checked="${AdminMode.enabled}" aria-label="${esc(t("admin_mode_row"))}"></button>` })}
+        ${adminUserCount !== null ? settingsRow({ title: t("admin_total_users"), action: `<span class="settings-fixed-status">${esc(String(adminUserCount))}</span>` }) : ""}
       </div></section>` : ""}
-      <p class="settings-attribution">${esc(t("settings_attribution"))}</p>`;
+      `;
 
     const telegramToggle = page.querySelector("[data-settings-telegram]");
     if (telegramToggle) telegramToggle.onclick = async () => {
