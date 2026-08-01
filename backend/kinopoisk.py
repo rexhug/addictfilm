@@ -201,7 +201,7 @@ async def _request(path: str, params) -> dict | None:
     return None
 
 
-async def search_movies(query: str, limit: int = 8) -> list[dict]:
+async def search_movies(query: str, limit: int = 20) -> list[dict]:
     """Поиск по названию. Возвращает список «сырых» документов (или [])."""
     if not KINOPOISK_TOKENS:
         return []

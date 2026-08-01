@@ -31,7 +31,7 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
     async def test_catalog_is_searched_before_kinopoisk_with_unicode_casefolding(self):
         await db.get_or_create_film(
             "tt0133093", "Матрица", title_original="The Matrix", actors="Киану Ривз",
-            kp_id="301", poster_url="https://st.kp.yandex.net/matrix.jpg")
+            kp_id="301", poster_url="https://st.kp.yandex.net/matrix.jpg", year="1999")
 
         old_search = search.kinopoisk.search_movies
 
@@ -40,7 +40,7 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
 
         search.kinopoisk.search_movies = external_call_is_a_failure
         try:
-            result = await search.cached_search("МАТРИЦА", user_id=1)
+            result = await search.cached_search("МАТРИЦА 1999", user_id=1)
         finally:
             search.kinopoisk.search_movies = old_search
 
@@ -56,7 +56,7 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
             {"src": "i", "ref": "tt-popular", "title": "Dune: Part Two", "year": "2024", "votes": 2_000_000},
         ]
         ranked = search._rank_items(items, "Dune")
-        self.assertEqual(ranked[0]["ref"], "tt-exact")
+        self.assertEqual(ranked[0]["ref"], "tt-popular")
 
     async def test_popularity_resolves_equal_title_matches(self):
         items = [
@@ -94,18 +94,23 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
             "rating": {"kp": 8.5, "imdb": 8.7}, "votes": {"imdb": 2_000_000},
             "poster": {"url": "https://st.kp.yandex.net/matrix.jpg"}, "persons": [],
         }
-        old_token, old_search = search.KINOPOISK_TOKEN, search.kinopoisk.search_movies
+        old_token, old_search, old_omdb = search.KINOPOISK_TOKEN, search.kinopoisk.search_movies, search.omdb.search_movies
 
         async def fake_search(_query):
             return [document]
 
+        async def empty_omdb(_query):
+            return [], None, False
+
         search.KINOPOISK_TOKEN = "test-token"
         search.kinopoisk.search_movies = fake_search
+        search.omdb.search_movies = empty_omdb
         try:
             result = await search.cached_search("Матрица", user_id=1)
         finally:
             search.KINOPOISK_TOKEN = old_token
             search.kinopoisk.search_movies = old_search
+            search.omdb.search_movies = old_omdb
         self.assertEqual(result["items"][0]["title"], "Матрица")
         self.assertEqual(result["items"][0]["ref"], "301")
 
@@ -136,6 +141,101 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Мстители: Война бесконечности", titles)
         self.assertIn("Мстители: Судный день", titles)
         self.assertEqual(len(titles), len(set(titles)))
+
+    async def test_popularity_aware_franchise_ranking_and_relevance_filter(self):
+        items = [
+            {"src": "k", "ref": "2012", "title": "Мстители", "year": "2012", "votes": 2_000_000, "rating": 8.0, "type": "movie"},
+            {"src": "k", "ref": "1961", "title": "Мстители", "year": "1961", "votes": 5_000, "rating": 8.3, "type": "series"},
+            {"src": "k", "ref": "final", "title": "Мстители: Финал", "year": "2019", "votes": 1_500_000, "rating": 8.4, "type": "movie"},
+            {"src": "k", "ref": "infinity", "title": "Мстители: Война бесконечности", "year": "2018", "votes": 1_300_000, "rating": 8.4, "type": "movie"},
+            {"src": "k", "ref": "ultron", "title": "Мстители: Эра Альтрона", "year": "2015", "votes": 900_000, "rating": 7.3, "type": "movie"},
+            {"src": "i", "ref": "unrelated", "title": "Популярный фильм", "votes": 5_000_000, "rating": 9.0},
+        ]
+        ranked = search._rank_items(items, "Мстители")
+        self.assertEqual([item["ref"] for item in ranked[:4]], ["2012", "final", "infinity", "ultron"])
+        self.assertNotIn("unrelated", [item["ref"] for item in ranked])
+
+    async def test_niche_exact_title_remains_first(self):
+        ranked = search._rank_items([
+            {"src": "i", "ref": "niche", "title": "Тихая премьера", "votes": 2, "rating": 6.0},
+            {"src": "i", "ref": "other", "title": "Другой фильм", "votes": 5_000_000, "rating": 9.0},
+        ], "Тихая премьера")
+        self.assertEqual(ranked[0]["ref"], "niche")
+
+    async def test_complete_catalog_is_provider_free(self):
+        for index in range(5):
+            await db.get_or_create_film(
+                f"tt-complete-{index}", f"Комета {index}", year="2020",
+            )
+        old_search = search.kinopoisk.search_movies
+
+        async def provider_must_not_run(_query):
+            raise AssertionError("complete catalog must not call provider")
+
+        search.kinopoisk.search_movies = provider_must_not_run
+        try:
+            result = await search.cached_search("Комета", user_id=1)
+        finally:
+            search.kinopoisk.search_movies = old_search
+        self.assertTrue(result["cached"])
+        self.assertGreaterEqual(len(result["items"]), 5)
+
+    async def test_sufficient_kinopoisk_results_skip_omdb(self):
+        documents = [
+            {"id": 700 + i, "name": f"Космос {i}", "year": 2020 + i,
+             "rating": {"kp": 7.0}, "votes": {"kp": 100 + i},
+             "externalId": {}, "poster": {"url": None}, "persons": []}
+            for i in range(5)
+        ]
+        old_token, old_kp, old_omdb = search.KINOPOISK_TOKEN, search.kinopoisk.search_movies, search.omdb.search_movies
+
+        async def fake_kp(_query):
+            return documents
+
+        async def omdb_must_not_run(_query):
+            raise AssertionError("five credible Kinopoisk results must skip OMDb")
+
+        search.KINOPOISK_TOKEN = "test-token"
+        search.kinopoisk.search_movies = fake_kp
+        search.omdb.search_movies = omdb_must_not_run
+        try:
+            result = await search.find_movies("Космос")
+        finally:
+            search.KINOPOISK_TOKEN, search.kinopoisk.search_movies, search.omdb.search_movies = old_token, old_kp, old_omdb
+        self.assertEqual(len(result), 5)
+
+    async def test_insufficient_kinopoisk_results_fall_back_to_omdb(self):
+        documents = [
+            {"id": 800 + i, "name": f"Редкий {i}", "year": 2020 + i,
+             "rating": {"kp": 7.0}, "votes": {"kp": 100},
+             "externalId": {}, "poster": {"url": None}, "persons": []}
+            for i in range(2)
+        ]
+        old_token, old_kp, old_omdb = search.KINOPOISK_TOKEN, search.kinopoisk.search_movies, search.omdb.search_movies
+        calls = 0
+
+        async def fake_kp(_query):
+            return documents
+
+        async def fake_omdb(_query):
+            nonlocal calls
+            calls += 1
+            return ([{"imdbID": "tt-omdb", "Title": "Редкий", "Year": "2020", "Type": "movie", "Poster": "N/A"}], None, False)
+
+        search.KINOPOISK_TOKEN = "test-token"
+        search.kinopoisk.search_movies = fake_kp
+        search.omdb.search_movies = fake_omdb
+        old_titles, old_enrich, old_expand = search.wikidata.get_titles_by_imdb, search._enrich_items, search._expand
+        search.wikidata.get_titles_by_imdb = lambda *_args: asyncio.sleep(0, result={})
+        search._enrich_items = lambda items: asyncio.sleep(0, result={})
+        search._expand = lambda items: asyncio.sleep(0, result=items)
+        try:
+            result = await search.find_movies("Редкий")
+        finally:
+            search.KINOPOISK_TOKEN, search.kinopoisk.search_movies, search.omdb.search_movies = old_token, old_kp, old_omdb
+            search.wikidata.get_titles_by_imdb, search._enrich_items, search._expand = old_titles, old_enrich, old_expand
+        self.assertEqual(calls, 1)
+        self.assertTrue(result)
 
     async def test_identical_cache_misses_share_one_provider_task(self):
         calls = 0
@@ -181,18 +281,23 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
             "poster": {"url": "https://st.kp.yandex.net/matrix.jpg"},
             "persons": [],
         }
-        old_token, old_search = search.KINOPOISK_TOKEN, search.kinopoisk.search_movies
+        old_token, old_search, old_omdb = search.KINOPOISK_TOKEN, search.kinopoisk.search_movies, search.omdb.search_movies
 
         async def fake_search(_query):
             return [document]
 
+        async def empty_omdb(_query):
+            return [], None, False
+
         search.KINOPOISK_TOKEN = "test-token"
         search.kinopoisk.search_movies = fake_search
+        search.omdb.search_movies = empty_omdb
         try:
             items = await search.find_movies("матрица")
         finally:
             search.KINOPOISK_TOKEN = old_token
             search.kinopoisk.search_movies = old_search
+            search.omdb.search_movies = old_omdb
 
         self.assertEqual(items[0]["ref"], "301")
         self.assertEqual(items[0]["title"], "Матрица")
