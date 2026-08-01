@@ -1,5 +1,7 @@
 import asyncio
+import importlib
 import json
+import logging
 import tempfile
 import unittest
 from pathlib import Path
@@ -634,3 +636,29 @@ class PortraitPayloadClassifierTests(unittest.TestCase):
         self.assertEqual((probe.width, probe.height, probe.byte_count), (330, 440, 20_000))
         self.assertIsNone(probe.reason)
         self.assertIsNone(probe.bytes_per_pixel)
+
+
+class BackfillCliLoggingTests(unittest.TestCase):
+    """Диагностика портретов бесполезна, если её не видно.
+
+    `validate_cast_portraits()` объясняет каждый не-ok вердикт через
+    logger.info. Корневой уровень по умолчанию — WARNING, поэтому у команды,
+    запущенной руками, эти строки пропадали. Настраивать логирование при
+    ИМПОРТЕ при этом нельзя: модуль импортирует приложение, и библиотека не
+    имеет права молча переопределять настройки чужого процесса.
+    """
+
+    def test_importing_the_module_leaves_the_root_logger_alone(self):
+        with patch("logging.basicConfig") as basic_config:
+            importlib.reload(cast_backfill)
+        basic_config.assert_not_called()
+
+    def test_running_the_command_turns_info_logs_on(self):
+        with (
+            patch("logging.basicConfig") as basic_config,
+            patch.object(cast_backfill, "_run", new=AsyncMock(return_value=0)) as run,
+            patch("sys.argv", ["cast_backfill", "--film-id", "26", "--dry-run"]),
+        ):
+            self.assertEqual(cast_backfill.main(), 0)
+        run.assert_awaited_once()
+        self.assertEqual(basic_config.call_args.kwargs["level"], logging.INFO)
