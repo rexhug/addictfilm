@@ -2559,19 +2559,23 @@ mimetypes.add_type("image/webp", ".webp")
 
 
 class VersionedStaticFiles(StaticFiles):
-    """Cache static assets without allowing JS/CSS version skew.
+    """Serve JS and CSS so a deploy always reaches the Telegram WebView.
 
-    JavaScript is immutable once its explicit version changes. CSS is small but
-    defines the structure of freshly rendered screens, so it is revalidated on
-    each Mini App launch. That prevents a Telegram WebView from combining a
-    new app.js with an old immutable stylesheet after a deploy.
+    Раньше app.js отдавался как immutable на год. Ставка была на то, что ?v= в
+    index.html всегда меняют вместе с файлом, — и она не сыграла: app.js менялся,
+    номер версии оставался прежним, и WebView законно продолжал показывать
+    годовалую копию. Ошибка человека здесь стоит слишком дорого: пользователь
+    остаётся на старом фронтенде, пока сам не почистит кэш.
+
+    Поэтому оба файла теперь revalidate: браузер спрашивает сервер и получает
+    304, если ничего не менялось. Это один условный запрос на запуск — цена,
+    несопоставимая с зависшей версией интерфейса. Кэш картинок не затронут:
+    у них URL меняется вместе с содержимым.
     """
 
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
-        if path == "app.js" and response.status_code == 200:
-            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-        elif path == "style.css" and response.status_code == 200:
+        if path in ("app.js", "style.css") and response.status_code == 200:
             response.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
         return response
 
