@@ -1705,21 +1705,16 @@ async def user_analytics(now: datetime | None = None) -> dict:
             """,
             (day_start, week_ago, month_ago, week_ago),
         )).fetchone())
+        # Группируем по голой колонке, без единого параметра в ключе.
+        # COALESCE(acquisition_source, ?) в GROUP BY ломался на Postgres дважды:
+        # сначала GroupingError (драйвер делает из каждого ? свой параметр, и
+        # выражения в SELECT и GROUP BY перестают совпадать), потом
+        # IndeterminateDatatypeError (тип параметра внутри ключа группировки
+        # вывести не из чего). SQLite прощал оба варианта. Подстановка «unknown»
+        # — задача Python, а не SQL.
         sources = [dict(row) for row in await (await db.execute(
-            # NULL — это пользователи, зарегистрированные до появления
-            # атрибуции. Они «unknown», а не «direct»: приписать им прямой
-            # заход значило бы выдумать данные.
-            """
-            -- GROUP BY 1, а не повтор выражения: драйвер Postgres превращает
-            -- каждый ? в СВОЙ параметр ($1, $2), поэтому COALESCE(...) в SELECT
-            -- и в GROUP BY переставали быть одним выражением и запрос падал с
-            -- GroupingError. SQLite это прощал, и локальные тесты молчали.
-            SELECT COALESCE(acquisition_source, ?) AS source, COUNT(*) AS users
-            FROM users
-            GROUP BY 1
-            ORDER BY COUNT(*) DESC, source
-            """,
-            (ACQUISITION_UNKNOWN,),
+            "SELECT acquisition_source AS source, COUNT(*) AS users "
+            "FROM users GROUP BY acquisition_source"
         )).fetchall()]
     return {
         "total_users": int(totals["total"] or 0),
@@ -1729,9 +1724,20 @@ async def user_analytics(now: datetime | None = None) -> dict:
             "30d": int(totals["month"] or 0),
         },
         "active_users_7d": int(totals["active_week"] or 0),
-        "acquisition": [
-            {"source": str(row["source"]), "users": int(row["users"])} for row in sources
-        ],
+        # NULL — пользователи, зарегистрированные до появления атрибуции. Они
+        # «unknown», а не «direct»: приписать им прямой заход значило бы
+        # выдумать данные. Порядок задаём здесь же, чтобы он не зависел от того,
+        # как конкретный движок вернул группы.
+        "acquisition": sorted(
+            (
+                {
+                    "source": str(row["source"] or ACQUISITION_UNKNOWN),
+                    "users": int(row["users"]),
+                }
+                for row in sources
+            ),
+            key=lambda item: (-item["users"], item["source"]),
+        ),
         "timezone": "UTC",
         "generated_at": moment.isoformat(),
     }
