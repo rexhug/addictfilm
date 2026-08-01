@@ -419,3 +419,24 @@ class PostgresContractTests(unittest.IsolatedAsyncioTestCase):
 
         distribution = await db.hero_distribution()
         self.assertEqual(distribution["by_source"]["kinopoisk"]["count"], 1)
+
+    async def test_audience_analytics_groups_sources_on_postgres(self):
+        """Аналитика падала только на Postgres: драйвер делает из каждого ?
+        отдельный параметр, поэтому COALESCE(...) в SELECT и в GROUP BY
+        переставали быть одним выражением. SQLite это прощает, и обычные тесты
+        проходили — а прод отвечал GroupingError."""
+        await db.upsert_user({"id": 1, "first_name": "One"}, start_param="promo-june")
+        await db.upsert_user({"id": 2, "first_name": "Two"}, start_param="inv_token")
+        await db.upsert_user({"id": 3, "first_name": "Three"})
+        async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute("UPDATE users SET acquisition_source = NULL WHERE id = 3")
+            await conn.commit()
+
+        report = await db.user_analytics()
+
+        self.assertEqual(report["total_users"], 3)
+        self.assertEqual(
+            {row["source"]: row["users"] for row in report["acquisition"]},
+            {"campaign": 1, "pair_invite": 1, "unknown": 1},
+        )
+        self.assertEqual(report["timezone"], "UTC")

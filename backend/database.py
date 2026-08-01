@@ -1710,12 +1710,16 @@ async def user_analytics(now: datetime | None = None) -> dict:
             # атрибуции. Они «unknown», а не «direct»: приписать им прямой
             # заход значило бы выдумать данные.
             """
+            -- GROUP BY 1, а не повтор выражения: драйвер Postgres превращает
+            -- каждый ? в СВОЙ параметр ($1, $2), поэтому COALESCE(...) в SELECT
+            -- и в GROUP BY переставали быть одним выражением и запрос падал с
+            -- GroupingError. SQLite это прощал, и локальные тесты молчали.
             SELECT COALESCE(acquisition_source, ?) AS source, COUNT(*) AS users
             FROM users
-            GROUP BY COALESCE(acquisition_source, ?)
+            GROUP BY 1
             ORDER BY COUNT(*) DESC, source
             """,
-            (ACQUISITION_UNKNOWN, ACQUISITION_UNKNOWN),
+            (ACQUISITION_UNKNOWN,),
         )).fetchall()]
     return {
         "total_users": int(totals["total"] or 0),
