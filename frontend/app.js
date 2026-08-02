@@ -5,6 +5,24 @@ const tg = window.Telegram && window.Telegram.WebApp;  // вне Telegram — nu
 if (tg) {
   tg.ready();
   tg.expand();
+
+  function requestTelegramFullscreen() {
+    if (!tg || typeof tg.requestFullscreen !== "function" || tg.isFullscreen) return;
+    const warn = (error) => console.warn("Telegram fullscreen request failed", error);
+    try {
+      tg.onEvent?.("fullscreenFailed", warn);
+      const result = tg.requestFullscreen();
+      result?.catch?.(warn);
+    } catch (error) {
+      warn(error);
+    }
+  }
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(requestTelegramFullscreen);
+  } else {
+    setTimeout(requestTelegramFullscreen, 80);
+  }
+
   try { tg.setHeaderColor("#050505"); tg.setBackgroundColor("#050505"); } catch (e) {}
   // Telegram otherwise treats a fast vertical feed swipe as a gesture to collapse
   // the Mini App. CSS can prevent browser overscroll, but only this native API
