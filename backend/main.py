@@ -107,11 +107,6 @@ _request_metrics = RequestMetrics(_REQUEST_METRICS_MAX_SAMPLES)
 def _performance_snapshot() -> dict:
     return _request_metrics.snapshot()
 
-@app.middleware("http")
-async def log_slow_requests(request: Request, call_next):
-    """Give Fly/Sentry real latency and keep private API responses uncacheable."""
-    return await observe_request(_request_metrics, request, call_next, logger)
-
 # Фоновий щоденний бекап SQLite (Postgres робить бекапи сам — backup_db там no-op).
 _backup_task: asyncio.Task | None = None
 _pair_expiry_task: asyncio.Task | None = None
@@ -130,6 +125,12 @@ _director_profile_enrichment_users: set[int] = set()
 async def database_request_scope(request: Request, call_next):
     async with db_runtime.request_scope(db.DB_PATH, db.DATABASE_URL):
         return await call_next(request)
+
+
+@app.middleware("http")
+async def log_slow_requests(request: Request, call_next):
+    """Give Fly/Sentry real latency and keep private API responses uncacheable."""
+    return await observe_request(_request_metrics, request, call_next, logger)
 
 
 async def _periodic_backup() -> None:
