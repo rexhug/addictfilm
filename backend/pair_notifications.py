@@ -53,7 +53,8 @@ def _fallback_name(language: str) -> str:
 
 def _startapp_url(deep_link: str | None) -> str:
     suffix = (deep_link or "").strip().lstrip("_")
-    return f"https://t.me/{BOT_USERNAME}?startapp={suffix}" if suffix else f"https://t.me/{BOT_USERNAME}"
+    return (f"https://t.me/{BOT_USERNAME}?startapp={suffix}&mode=fullscreen"
+            if suffix else f"https://t.me/{BOT_USERNAME}")
 
 
 def delivery_channels(context: RecipientContext) -> tuple[str, ...]:

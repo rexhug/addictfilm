@@ -1948,12 +1948,12 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "addictfilmbot")
 
 
 def _invite_link(token: str) -> str:
-    return f"https://t.me/{BOT_USERNAME}?startapp=inv_{token}"
+    return f"https://t.me/{BOT_USERNAME}?startapp=inv_{token}&mode=fullscreen"
 
 
 def _movie_link(film_id: int) -> str:
     """Диплинк на конкретный фильм (startapp) — для кнопки «Поделиться»."""
-    return f"https://t.me/{BOT_USERNAME}?startapp=film_{film_id}"
+    return f"https://t.me/{BOT_USERNAME}?startapp=film_{film_id}&mode=fullscreen"
 
 
 def _partner_brief(u: dict | None, viewer_id: int | None = None) -> dict:
