@@ -685,7 +685,7 @@ function lazyLoadPersonPhotos(root = document) {
         _personPhotoObserver.unobserve(entry.target);
         loadPersonPhoto(entry.target);
       });
-    }, { rootMargin: "180px 120px" });
+    }, { rootMargin: "700px 180px" });
   }
   images.forEach(img => _personPhotoObserver.observe(img));
 }
@@ -695,6 +695,27 @@ function revealLoadedPersonPhotos(root = document) {
   root.querySelectorAll?.("img[data-person-photo]").forEach(img => {
     if (img.complete && img.naturalWidth) revealPersonPhoto(img);
   });
+}
+
+function preloadInitialPersonPhotos(root, limit = 4) {
+  const schedule = () => {
+    if (!root?.isConnected) return;
+    const images = [...(root.querySelectorAll?.(".d-cast-rail img[data-person-photo-src]") || [])]
+      .filter(img => img.isConnected && !img.dataset.personPhotoLoaded && !img.dataset.personPhotoLoading)
+      .slice(0, limit);
+    images.forEach(img => {
+      img.loading = "eager";
+      if ("fetchPriority" in img) img.fetchPriority = "low";
+      img.dataset.personPhotoLoading = "1";
+      loadPersonPhoto(img);
+      delete img.dataset.personPhotoLoading;
+    });
+  };
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(schedule, { timeout: 700 });
+  } else {
+    window.setTimeout(schedule, 350);
+  }
 }
 
 // HTML is assembled from API data, so keep recovery behaviour out of inline
@@ -3547,6 +3568,7 @@ function renderDetail(id, m) {
   renderActions(id, m);
   wireMovieReviews(id);
   revealLoadedPersonPhotos(screen);
+  preloadInitialPersonPhotos(screen);
 
   const back = () => closeDetailThen(returnFromDetail);
   document.getElementById("d-back-top").onclick = back;
