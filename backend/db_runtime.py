@@ -59,6 +59,10 @@ class _BorrowedConnection:
         """Open a savepoint on the request owner, when the backend supports it."""
         return await self._connection.begin_nested_write()
 
+    async def release_if_idle(self) -> bool:
+        """Release an idle request connection without ending the request scope."""
+        return await self._connection.release_if_idle()
+
 
 def _statement_is_read_only(sql: str) -> bool:
     """Return whether a statement can run without a write savepoint."""
@@ -211,6 +215,9 @@ class _LazyRequestConnection:
 
     async def release(self) -> None:
         self._closed = True
+        await self._release_owner()
+
+    async def _release_owner(self) -> None:
         owner = self._owner
         if owner is None:
             return
@@ -220,6 +227,25 @@ class _LazyRequestConnection:
             self._pool_connection = None
         else:
             await owner.close()
+
+    async def release_if_idle(self) -> bool:
+        """Return a connection to the pool when no transaction is active.
+
+        This is used immediately before slow provider I/O. A pending write is
+        deliberately left attached to the request so its transaction boundary
+        remains unchanged.
+        """
+        async with self._acquire_lock:
+            owner = self._owner
+            if owner is None:
+                return False
+            if isinstance(owner, PostgresConnection):
+                if owner.has_transaction:
+                    return False
+            elif getattr(owner, "in_transaction", False):
+                return False
+            await self._release_owner()
+            return True
 
     def __getattr__(self, name: str) -> Any:
         async def invoke(*args: Any, **kwargs: Any) -> Any:
@@ -234,6 +260,14 @@ def create_background_task(coro: Any, *, name: str | None = None) -> asyncio.Tas
     context = contextvars.copy_context()
     context.run(_CURRENT_CONNECTION.set, None)
     return context.run(asyncio.create_task, coro, name=name)
+
+
+async def release_request_connection_if_idle() -> bool:
+    """Release the request DB lease before external I/O when it is safe."""
+    connection = current_connection()
+    if isinstance(connection, _BorrowedConnection):
+        return await connection.release_if_idle()
+    return False
 
 
 def uses_postgres(database_url: str) -> bool:

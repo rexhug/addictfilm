@@ -102,14 +102,13 @@ Read-only `SELECT` больше не открывает явную транза�
 Это важно для атомарного accept invite и write-операций при нескольких Fly
 инстансах.
 
-## Known limitation: pool occupancy during upstream calls
+## Request connection lease around upstream calls
 
-После первого обращения к базе request-scoped connection остаётся закреплённым
-за запросом до его завершения. Поэтому endpoints, которые сначала читают базу,
-а затем ждут Kinopoisk, OMDb, Wikidata или image proxy, могут удерживать слот
-пула во время внешнего I/O. Lazy acquisition не занимает слот для запросов,
-которые базу не трогают; разделение внешних вызовов и database transaction
-останется отдельной задачей при дальнейшем росте нагрузки.
+После чтения каталога перед внешним поиском request-scoped connection
+возвращается в пул, если активной транзакции нет. Если запрос уже начал запись,
+lease сохраняется до конца request scope, чтобы не нарушить атомарность. Поэтому
+поиск и первый внешний lookup фильма не удерживают слот пула во время ожидания
+Kinopoisk, OMDb или Wikidata; image proxy по-прежнему вообще не обращается к БД.
 
 ### Миграции
 

@@ -709,6 +709,7 @@ async def api_search(q: str, user: dict = Depends(current_user)):
         # A direct ID missed the catalog, so only this first lookup reaches OMDb/KP.
         if not ratelimit.allow_user(user["id"]):
             raise HTTPException(status_code=429, detail="Слишком много запросов, подождите минуту")
+        await db_runtime.release_request_connection_if_idle()
         d = await search.fetch_details("i", imdb_id)
         if not d:
             return {"items": []}
@@ -749,6 +750,7 @@ async def _resolve_film_id(src: str, ref: str, *, user_id: int | None = None) ->
         # first external lookup consumes the same per-user allowance as search.
         if user_id is not None and not ratelimit.allow_user(user_id):
             raise HTTPException(status_code=429, detail="Слишком много запросов, подождите минуту")
+        await db_runtime.release_request_connection_if_idle()
         details = await search.fetch_details(src, ref)
         if not details or not details.get("imdb_id"):
             raise HTTPException(status_code=502, detail="Не удалось получить данные")
