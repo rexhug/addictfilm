@@ -56,6 +56,105 @@ class _BorrowedConnection:
         """Nested database helpers cannot roll back the request transaction."""
 
 
+class _LazyRequestConnection:
+    """Lazily acquire the request-owned database connection on first use.
+
+    The HTTP middleware binds this object before the handler runs, but cheap
+    endpoints (static files, health checks that do not touch the database, and
+    image proxy requests) never need to occupy a pool slot.  ``row_factory`` is
+    intentionally buffered until acquisition so existing database helpers can
+    keep assigning it before their first query.
+    """
+
+    def __init__(self, sqlite_path: str, database_url: str):
+        self._sqlite_path = sqlite_path
+        self._database_url = database_url
+        self._owner: Any | None = None
+        self._pool_connection: Any | None = None
+        self._row_factory: Any = None
+        self._acquire_lock = asyncio.Lock()
+        self._closed = False
+
+    @property
+    def row_factory(self) -> Any:
+        if self._owner is not None:
+            return self._owner.row_factory
+        return self._row_factory
+
+    @row_factory.setter
+    def row_factory(self, value: Any) -> None:
+        self._row_factory = value
+        if self._owner is not None:
+            self._owner.row_factory = value
+
+    @property
+    def acquired(self) -> bool:
+        return self._owner is not None
+
+    async def _ensure(self) -> Any:
+        if self._closed:
+            raise RuntimeError("request database connection is already closed")
+        if self._owner is not None:
+            return self._owner
+        async with self._acquire_lock:
+            if self._closed:
+                raise RuntimeError("request database connection is already closed")
+            if self._owner is not None:
+                return self._owner
+            if uses_postgres(self._database_url):
+                if _pool is None:
+                    await start(self._database_url)
+                connection = await _pool.acquire()
+                try:
+                    owner = PostgresConnection(connection)
+                    owner.row_factory = self._row_factory
+                except BaseException:
+                    await _pool.release(connection)
+                    raise
+                self._pool_connection = connection
+                self._owner = owner
+                return owner
+
+            connection = await aiosqlite.connect(self._sqlite_path, timeout=5)
+            try:
+                await connection.execute("PRAGMA busy_timeout=5000")
+                await connection.execute("PRAGMA foreign_keys=ON")
+                if self._row_factory is not None:
+                    connection.row_factory = self._row_factory
+            except BaseException:
+                await connection.close()
+                raise
+            self._owner = connection
+            return connection
+
+    async def commit(self) -> None:
+        if self._owner is not None:
+            await self._owner.commit()
+
+    async def rollback(self) -> None:
+        if self._owner is not None:
+            await self._owner.rollback()
+
+    async def release(self) -> None:
+        self._closed = True
+        owner = self._owner
+        if owner is None:
+            return
+        self._owner = None
+        if uses_postgres(self._database_url):
+            await _pool.release(self._pool_connection)
+            self._pool_connection = None
+        else:
+            await owner.close()
+
+    def __getattr__(self, name: str) -> Any:
+        async def invoke(*args: Any, **kwargs: Any) -> Any:
+            owner = await self._ensure()
+            return await getattr(owner, name)(*args, **kwargs)
+
+        return invoke
+
+
 def create_background_task(coro: Any, *, name: str | None = None) -> asyncio.Task:
     """Create a task without inheriting a request-owned DB connection."""
     context = contextvars.copy_context()
@@ -247,49 +346,26 @@ async def connect(sqlite_path: str, database_url: str) -> AsyncIterator[Any]:
 
 @asynccontextmanager
 async def request_scope(sqlite_path: str, database_url: str) -> AsyncIterator[Any]:
-    """Own one connection and transaction for the duration of an HTTP request."""
+    """Own one lazily acquired connection and transaction for an HTTP request."""
     existing = current_connection()
     if existing is not None:
         yield existing
         return
 
-    if uses_postgres(database_url):
-        if _pool is None:
-            await start(database_url)
-        async with _pool.acquire() as connection:
-            owner = PostgresConnection(connection)
-            borrowed = _BorrowedConnection(owner)
-            token = _CURRENT_CONNECTION.set(borrowed)
-            try:
-                yield borrowed
-            except BaseException:
-                await owner.rollback()
-                raise
-            else:
-                try:
-                    await owner.commit()
-                except BaseException:
-                    await owner.rollback()
-                    raise
-            finally:
-                _CURRENT_CONNECTION.reset(token)
-        return
-
-    async with aiosqlite.connect(sqlite_path, timeout=5) as connection:
-        await connection.execute("PRAGMA busy_timeout=5000")
-        await connection.execute("PRAGMA foreign_keys=ON")
-        borrowed = _BorrowedConnection(connection)
-        token = _CURRENT_CONNECTION.set(borrowed)
+    lazy_owner = _LazyRequestConnection(sqlite_path, database_url)
+    borrowed = _BorrowedConnection(lazy_owner)
+    token = _CURRENT_CONNECTION.set(borrowed)
+    try:
+        yield borrowed
+    except BaseException:
+        await lazy_owner.rollback()
+        raise
+    else:
         try:
-            yield borrowed
+            await lazy_owner.commit()
         except BaseException:
-            await connection.rollback()
+            await lazy_owner.rollback()
             raise
-        else:
-            try:
-                await connection.commit()
-            except BaseException:
-                await connection.rollback()
-                raise
-        finally:
-            _CURRENT_CONNECTION.reset(token)
+    finally:
+        _CURRENT_CONNECTION.reset(token)
+        await lazy_owner.release()
