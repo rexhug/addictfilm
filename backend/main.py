@@ -126,6 +126,12 @@ _director_profile_enrichment_tasks: set[asyncio.Task] = set()
 _director_profile_enrichment_users: set[int] = set()
 
 
+@app.middleware("http")
+async def database_request_scope(request: Request, call_next):
+    async with db_runtime.request_scope(db.DB_PATH, db.DATABASE_URL):
+        return await call_next(request)
+
+
 async def _periodic_backup() -> None:
     """Раз на добу робити VACUUM INTO-бекап SQLite. При помилці — лог, не падати."""
     while True:
@@ -176,9 +182,9 @@ async def startup() -> None:
     # SQLite требует прикладного бэкапа; PostgreSQL обслуживается провайдером.
     global _backup_task, _pair_expiry_task
     if not DATABASE_URL and (_backup_task is None or _backup_task.done()):
-        _backup_task = asyncio.create_task(_periodic_backup(), name="sqlite-periodic-backup")
+        _backup_task = db_runtime.create_background_task(_periodic_backup(), name="sqlite-periodic-backup")
     if _pair_expiry_task is None or _pair_expiry_task.done():
-        _pair_expiry_task = asyncio.create_task(_periodic_pair_expiry(), name="pair-invite-expiry")
+        _pair_expiry_task = db_runtime.create_background_task(_periodic_pair_expiry(), name="pair-invite-expiry")
     logger.info("Database initialized (%s)", "Postgres" if DATABASE_URL else "SQLite")
 
 
@@ -449,8 +455,8 @@ def _schedule_visual_enrichment(film_id: int, imdb_id: str) -> None:
     if film_id in _visual_enrichment_film_ids:
         return
     _visual_enrichment_film_ids.add(film_id)
-    task = asyncio.create_task(_enrich_film_visuals(film_id, imdb_id),
-                               name=f"film-visuals-{film_id}")
+    task = db_runtime.create_background_task(_enrich_film_visuals(film_id, imdb_id),
+                                             name=f"film-visuals-{film_id}")
     _visual_enrichment_tasks.add(task)
     task.add_done_callback(_visual_enrichment_tasks.discard)
 
@@ -500,8 +506,10 @@ def _schedule_people_enrichment(film_id: int, imdb_id: str, enrich_actors: bool 
     if film_id in _people_enrichment_film_ids:
         return
     _people_enrichment_film_ids.add(film_id)
-    task = asyncio.create_task(_enrich_film_people(film_id, imdb_id, enrich_actors, enrich_directors),
-                               name=f"film-people-{film_id}")
+    task = db_runtime.create_background_task(
+        _enrich_film_people(film_id, imdb_id, enrich_actors, enrich_directors),
+        name=f"film-people-{film_id}",
+    )
     _people_enrichment_tasks.add(task)
     task.add_done_callback(_people_enrichment_tasks.discard)
 
@@ -883,7 +891,7 @@ def _schedule_profile_director_enrichment(user_id: int) -> None:
     if user_id in _director_profile_enrichment_users:
         return
     _director_profile_enrichment_users.add(user_id)
-    task = asyncio.create_task(_enrich_profile_people_photos(user_id), name=f"profile-people-{user_id}")
+    task = db_runtime.create_background_task(_enrich_profile_people_photos(user_id), name=f"profile-people-{user_id}")
     _director_profile_enrichment_tasks.add(task)
     task.add_done_callback(_director_profile_enrichment_tasks.discard)
 
@@ -2289,7 +2297,7 @@ def _schedule_image_cache_trim() -> None:
         return
     _img_last_trim_scheduled = now
     try:
-        _img_trim_task = asyncio.create_task(
+        _img_trim_task = db_runtime.create_background_task(
             asyncio.to_thread(_trim_image_cache_sync), name="image-cache-trim")
     except RuntimeError:
         # Isolated unit calls can invoke this helper with no running loop.

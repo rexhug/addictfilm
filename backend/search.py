@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 
 import cast as cast_model
 import database as db
+import db_runtime
 import kinopoisk
 import media_type
 import omdb
@@ -461,7 +462,7 @@ async def cached_search(query: str, user_id: int | None = None) -> dict:
 
     task = _INFLIGHT.get(key)
     if task is None:
-        task = asyncio.create_task(find_movies(query))
+        task = db_runtime.create_background_task(find_movies(query), name=f"search-{normalized}")
         _INFLIGHT[key] = task
     try:
         provider_items = await task

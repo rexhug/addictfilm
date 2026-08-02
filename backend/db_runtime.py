@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+import contextvars
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
@@ -20,6 +22,45 @@ except ImportError:  # pragma: no cover - локальные тесты могу
 
 _pool: Any | None = None
 _pool_url: str | None = None
+_CURRENT_CONNECTION: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "db_runtime_current_connection", default=None,
+)
+
+
+def current_connection() -> Any | None:
+    """Return the request-scoped connection, if one is bound."""
+    return _CURRENT_CONNECTION.get()
+
+
+class _BorrowedConnection:
+    """Proxy that shares a request connection without taking ownership."""
+
+    def __init__(self, connection: Any):
+        object.__setattr__(self, "_connection", connection)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+    @property
+    def row_factory(self) -> Any:
+        return self._connection.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value: Any) -> None:
+        self._connection.row_factory = value
+
+    async def commit(self) -> None:
+        """Nested database helpers cannot commit the request transaction."""
+
+    async def rollback(self) -> None:
+        """Nested database helpers cannot roll back the request transaction."""
+
+
+def create_background_task(coro: Any, *, name: str | None = None) -> asyncio.Task:
+    """Create a task without inheriting a request-owned DB connection."""
+    context = contextvars.copy_context()
+    context.run(_CURRENT_CONNECTION.set, None)
+    return context.run(asyncio.create_task, coro, name=name)
 
 
 def uses_postgres(database_url: str) -> bool:
@@ -174,6 +215,11 @@ async def connect(sqlite_path: str, database_url: str) -> AsyncIterator[Any]:
     многошаговые операции (например, приём приглашения в пару) не были атомарны
     между несколькими Fly-машинами.
     """
+    borrowed = current_connection()
+    if borrowed is not None:
+        yield borrowed
+        return
+
     if uses_postgres(database_url):
         if _pool is None:
             await start(database_url)
@@ -197,3 +243,53 @@ async def connect(sqlite_path: str, database_url: str) -> AsyncIterator[Any]:
         await connection.execute("PRAGMA busy_timeout=5000")
         await connection.execute("PRAGMA foreign_keys=ON")
         yield connection
+
+
+@asynccontextmanager
+async def request_scope(sqlite_path: str, database_url: str) -> AsyncIterator[Any]:
+    """Own one connection and transaction for the duration of an HTTP request."""
+    existing = current_connection()
+    if existing is not None:
+        yield existing
+        return
+
+    if uses_postgres(database_url):
+        if _pool is None:
+            await start(database_url)
+        async with _pool.acquire() as connection:
+            owner = PostgresConnection(connection)
+            borrowed = _BorrowedConnection(owner)
+            token = _CURRENT_CONNECTION.set(borrowed)
+            try:
+                yield borrowed
+            except BaseException:
+                await owner.rollback()
+                raise
+            else:
+                try:
+                    await owner.commit()
+                except BaseException:
+                    await owner.rollback()
+                    raise
+            finally:
+                _CURRENT_CONNECTION.reset(token)
+        return
+
+    async with aiosqlite.connect(sqlite_path, timeout=5) as connection:
+        await connection.execute("PRAGMA busy_timeout=5000")
+        await connection.execute("PRAGMA foreign_keys=ON")
+        borrowed = _BorrowedConnection(connection)
+        token = _CURRENT_CONNECTION.set(borrowed)
+        try:
+            yield borrowed
+        except BaseException:
+            await connection.rollback()
+            raise
+        else:
+            try:
+                await connection.commit()
+            except BaseException:
+                await connection.rollback()
+                raise
+        finally:
+            _CURRENT_CONNECTION.reset(token)
