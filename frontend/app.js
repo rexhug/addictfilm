@@ -786,6 +786,10 @@ function posterTile(m, { onClick, badge } = {}) {
 }
 function gridOf(items, toCard) { const g = document.createElement("div"); g.className = "grid"; for (const it of items) g.appendChild(toCard(it)); return g; }
 function openDetail(id, back, preview = null) {
+  // Picker presentation is global body state.  Clear it before entering a
+  // regular detail screen so a fullscreen/quiz viewport can never leak into
+  // the normal document flow.
+  resetPickerPresentation();
   if (back) _returnTo = back;
   captureScreenSnapshot();
   showDetail(id, preview);
@@ -818,6 +822,7 @@ function returnFromDetail() {
   _returnTo = snap.returnTo;
   unwireDetailScroll();
   screen.replaceChildren(snap.frag);
+  resetPickerPresentation();
   // A fullscreen recommendation temporarily yields to the regular detail
   // screen.  Restore its presentation mode together with the preserved DOM
   // snapshot when the user comes back.
@@ -898,6 +903,7 @@ async function showHome() {
   // Invalidate slower async screens (notably Statistics) when a user quickly
   // switches tabs before their requests have finished.
   ++_viewGeneration;
+  resetPickerPresentation();
   unwireDetailScroll();
   window.scrollTo(0, 0);
   const seeAll = (id) => `<button class="see-all" id="${id}">${esc(t("see_all"))}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>`;
@@ -1267,6 +1273,14 @@ function singlePickMode(active) {
   }
 }
 
+// Both picker modes alter global body/tabbar presentation.  They must never
+// survive a navigation to a regular screen, otherwise #screen remains tied to
+// the viewport and the lower half of the page appears empty or clipped.
+function resetPickerPresentation() {
+  pickerMode(false);
+  singlePickMode(false);
+}
+
 function clampUnit(value, fallback) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
@@ -1634,6 +1648,7 @@ async function consumePreparedWishlistPick(prepared, { retryStale = true } = {})
 }
 
 async function showNextWishlistRandom() {
+  const viewGeneration = _viewGeneration;
   const fullscreen = featureEnabled("fullscreen_single_pick");
   const currentCard = setSinglePickRefreshState(true);
   try {
@@ -1643,9 +1658,11 @@ async function showNextWishlistRandom() {
     _preparedWishlistPick = null;
     _wishlistPreparePromise = null;
     const result = await consumePreparedWishlistPick(prepared);
+    if (viewGeneration !== _viewGeneration) return;
     renderWishlistPick(result.item, fullscreen);
     installPreparedWishlistPick(result.next);
   } catch (error) {
+    if (viewGeneration !== _viewGeneration) return;
     const message = error?.status === 404 ? t("pick_wishlist_empty") : (error?.message || t("load_err"));
     if (currentCard?.isConnected) {
       setSinglePickRefreshState(false);
@@ -1661,6 +1678,7 @@ async function showNextWishlistRandom() {
 // выбрал эти фильмы сам. Первый показ коммитится обычным атомарным запросом;
 // следующие карточки сервер выбирает и браузер прогревает заранее.
 async function showWishlistRandom() {
+  const viewGeneration = _viewGeneration;
   resetWishlistPrefetch();
   pickerMode(false);
   _singlePickItem = null;
@@ -1672,11 +1690,13 @@ async function showWishlistRandom() {
   wireBack(showPicker);
   try {
     const { item, next } = await api("/api/wishlist/random", { method: "POST", body: "{}" });
+    if (viewGeneration !== _viewGeneration) return;
     // Свой режим: сервер подтверждает показ по учёту рулетки, а не по
     // истории рекомендаций каталога.
     renderWishlistPick(item, fullscreen);
     installPreparedWishlistPick(next);
   } catch (error) {
+    if (viewGeneration !== _viewGeneration) return;
     const message = error.status === 404 ? t("pick_wishlist_empty") : uiError(error);
     if (fullscreen) {
       screen.innerHTML = singlePickStateHTML(message, { error: true });
@@ -1690,6 +1710,7 @@ async function showWishlistRandom() {
 const STRATEGY_LABELS = { reliable: "strategy_reliable", taste_match: "strategy_taste_match", discovery: "strategy_discovery", available: "strategy_available" };
 
 async function showRandomRecommendation() {
+  const viewGeneration = _viewGeneration;
   pickerMode(false);
   const fullscreen = featureEnabled("fullscreen_single_pick");
   const currentCard = fullscreen
@@ -1712,6 +1733,7 @@ async function showRandomRecommendation() {
   }
   try {
     const { item } = await api("/api/recommendations/random", { method: "POST", body: JSON.stringify({ language: lang, context: "solo" }) });
+    if (viewGeneration !== _viewGeneration) return;
     // Стратегия называется честно: «надёжный выбор» и «находка» — разные обещания.
     const strategy = STRATEGY_LABELS[item.strategy] ? t(STRATEGY_LABELS[item.strategy]) : t("pick_random_title");
     if (fullscreen) {
@@ -1720,6 +1742,7 @@ async function showRandomRecommendation() {
     }
     renderLegacyPick(strategy, item, showRandomRecommendation, "random");
   } catch (error) {
+    if (viewGeneration !== _viewGeneration) return;
     const message = error.status === 404 ? t("pick_empty") : uiError(error);
     if (preserveCurrent) {
       currentCard.classList.remove("is-refreshing");
@@ -1743,16 +1766,22 @@ async function showRandomRecommendation() {
 }
 
 async function startRecommendationQuiz() {
+  const viewGeneration = _viewGeneration;
   pickerMode(true);
   screen.innerHTML = `<main class="picker-quiz"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
   try {
     const data = await api("/api/recommendations/quiz/start", { method: "POST", body: JSON.stringify({ language: lang }) });
+    if (viewGeneration !== _viewGeneration) return;
     rememberQuizEngine(data);
     showQuizQuestion(data);
-  } catch (error) { pickerMode(false); showPicker(); tg?.showAlert?.(uiError(error)); }
+  } catch (error) {
+    if (viewGeneration !== _viewGeneration) return;
+    pickerMode(false); showPicker(); tg?.showAlert?.(uiError(error));
+  }
 }
 
 function showQuizQuestion(data) {
+  const viewGeneration = _viewGeneration;
   rememberQuizEngine(data);
   if (data.state === "complete" || !data.question) { showQuizResults(data.id); return; }
   const question = data.question;
@@ -1762,6 +1791,7 @@ function showQuizQuestion(data) {
     if (!data.progress) { pickerMode(false); showPicker(); return; }
     try {
       const previous = await api(`/api/recommendations/quiz/${encodeURIComponent(data.id)}/back`, { method: "POST", body: JSON.stringify({ language: lang }) });
+      if (viewGeneration !== _viewGeneration) return;
       showQuizQuestion(previous);
     } catch (error) { tg?.showAlert?.(uiError(error)); }
   };
@@ -1771,8 +1801,10 @@ function showQuizQuestion(data) {
     button.classList.add("selected");
     try {
       const next = await api(`/api/recommendations/quiz/${encodeURIComponent(data.id)}/answer`, { method: "POST", body: JSON.stringify({ language: lang, question_id: question.id, answer_id: button.dataset.answer }) });
+      if (viewGeneration !== _viewGeneration) return;
       if (next.state === "complete") showQuizResults(next.id); else showQuizQuestion(next);
     } catch (error) {
+      if (viewGeneration !== _viewGeneration) return;
       screen.querySelectorAll(".picker-option").forEach(option => { option.disabled = false; option.classList.remove("selected"); });
       tg?.showAlert?.(uiError(error));
     }
@@ -1800,9 +1832,11 @@ function quizResultsHTML(items) {
 }
 
 async function showQuizResults(sessionId) {
+  const viewGeneration = _viewGeneration;
   screen.innerHTML = `<main class="picker-quiz picker-results"><div class="picker-loading">${esc(t("pick_loading"))}</div></main>`;
   try {
     const data = await api(`/api/recommendations/quiz/${encodeURIComponent(sessionId)}/results?language=${encodeURIComponent(lang)}`);
+    if (viewGeneration !== _viewGeneration) return;
     rememberQuizEngine(data);
     pickerMode(false);
     let current = data.items || [];
@@ -1843,6 +1877,7 @@ async function showQuizResults(sessionId) {
     wireBack(showPicker);
     document.getElementById("picker-restart")?.addEventListener("click", restartQuiz);
   } catch (error) {
+    if (viewGeneration !== _viewGeneration) return;
     pickerMode(false);
     showPicker();
     tg?.showAlert?.(uiError(error));
@@ -1872,12 +1907,14 @@ async function replaceQuizPick(sessionId, item, apply) {
 }
 
 async function loadCollectionsRail() {
+  const viewGeneration = _viewGeneration;
   const el = document.getElementById("rail-coll");
   try {
     // В режиме админа лента показывает и черновики/архив (со статусом на карточке),
     // чтобы редактировать «на месте». Публичная ручка их по-прежнему не отдаёт.
     const admin = canEditCollections();
     const { items } = await api(admin ? "/api/admin/collections" : "/api/collections");
+    if (viewGeneration !== _viewGeneration) return;
     // Одна подборка живёт ровно в одном формате: крупные уходят в featured-блок,
     // обычные остаются в этой ленте.
     const featured = items.filter(c => c.display_type === "featured");
@@ -1957,9 +1994,11 @@ async function reorderFeatured(items, index, delta) {
 }
 
 async function loadRail(id, path, { onItems = null } = {}) {
+  const viewGeneration = _viewGeneration;
   const el = document.getElementById(id);
   try {
     const { items } = await api(path);
+    if (viewGeneration !== _viewGeneration) return;
     if (onItems) onItems(items);
     if (!el) return;
     if (!items.length) { el.innerHTML = `<div class="rail-empty">${esc(t("rail_empty"))}</div>`; return; }
@@ -1970,9 +2009,11 @@ async function loadRail(id, path, { onItems = null } = {}) {
 
 // Жанры на Главной — компактные текстовые пилюли (полный список — «Смотреть все»).
 async function loadGenrePills() {
+  const viewGeneration = _viewGeneration;
   const el = document.getElementById("gen-chips");
   try {
     const { items } = await api("/api/genres");
+    if (viewGeneration !== _viewGeneration) return;
     if (!el) return;
     if (!items.length) { el.innerHTML = `<div class="rail-empty">${esc(t("genres_empty"))}</div>`; return; }
     el.replaceChildren(...items.map(genrePill));
@@ -2027,6 +2068,7 @@ function genreCard(g) {
   return card;
 }
 async function showGenre(name) {
+  resetPickerPresentation();
   unwireDetailScroll();
   window.scrollTo(0, 0);
   screen.innerHTML = `<div class="sub-head">${backBtn()}<h1>${esc(cap(name))}</h1></div><div id="gg">${skeletonGrid(6)}</div>`;
@@ -2042,6 +2084,7 @@ async function showGenre(name) {
 
 // «Смотреть все» для секции каталога — сетка с догрузкой (тот же /api/browse).
 async function showBrowseAll(sort, title) {
+  resetPickerPresentation();
   unwireDetailScroll();
   window.scrollTo(0, 0);
   screen.innerHTML = `<div class="sub-head">${backBtn()}<h1>${esc(title)}</h1></div><div id="ba">${skeletonGrid(9)}</div>`;
@@ -2151,6 +2194,7 @@ function navigateFromNotification(item) {
   setActiveTab("home"); showHome();
 }
 async function showNotifications() {
+  resetPickerPresentation();
   const viewGeneration = ++_viewGeneration;
   unwireDetailScroll();
   window.scrollTo(0, 0);
@@ -2964,6 +3008,7 @@ async function syncEditorFilms(collectionId) {
 }
 
 async function showCollectionDetail(id) {
+  resetPickerPresentation();
   unwireDetailScroll();
   window.scrollTo(0, 0);
   const canEdit = canEditCollections();
@@ -3244,6 +3289,7 @@ function openSortMenu() {
 }
 
 async function showList(tab) {
+  resetPickerPresentation();
   unwireDetailScroll();
   window.scrollTo(0, 0);
   const title = tab === "want" ? t("list_want") : t("list_watched");
@@ -3256,6 +3302,7 @@ async function showList(tab) {
 }
 
 async function loadList(tab) {
+  const viewGeneration = _viewGeneration;
   const el = document.getElementById("list");
   if (!el) return;
   el.dataset.statusFilter = STATUS_MAP[tab];  // метка для точечного апдейта карточек при возврате
@@ -3264,6 +3311,7 @@ async function loadList(tab) {
   const sortQ = tab === "watched" ? `&sort=${watchedSort()}` : "";
   try {
     const { items, total } = await api(`/api/movies?status=${STATUS_MAP[tab]}&limit=${pageSize}${sortQ}`);
+    if (viewGeneration !== _viewGeneration) return;
     if (!items.length) {
       el.innerHTML = tab === "want" ? emptyState("🔖", t("want_empty_t"), t("want_empty_s"))
         : emptyState("✅", t("watched_empty_t"), t("watched_empty_s"));
@@ -4014,6 +4062,7 @@ function shareMovie(m) {
 
 // ── Поиск ─────────────────────────────────────────────────────────────────────
 function showSearch(mode = null) {
+  resetPickerPresentation();
   // mode: null — обычное добавление в свой список; {type:"collection", id} — тап по
   // результату добавляет фильм в подборку id (используется showCollectionDetail).
   unwireDetailScroll();
@@ -4125,6 +4174,7 @@ function showSearch(mode = null) {
 
 // ── Статистика: личный вкус и совместная история — отдельные режимы ───────────
 async function showStats(initialMode = "me") {
+  resetPickerPresentation();
   const viewGeneration = ++_viewGeneration;
   unwireDetailScroll();
   window.scrollTo(0, 0);
@@ -4367,6 +4417,7 @@ function confirmPairUnlink(onConfirm) {
 }
 
 async function showPersonFilms({ name, role, scope }) {
+  resetPickerPresentation();
   unwireDetailScroll();
   window.scrollTo(0, 0);
   const title = t(scope === "pair" ? "stats_person_films_pair" : "stats_person_films", name);
@@ -4703,6 +4754,7 @@ function route(tab) {
   // Every tab switch invalidates unfinished async work from the previous tab.
   ++_viewGeneration;
   resetNavStack();
+  resetPickerPresentation();
   if (tab === "home") showHome();
   else if (tab === "stats") showStats();
   else if (tab === "pick") showPicker();
