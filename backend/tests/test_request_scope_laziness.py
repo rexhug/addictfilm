@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -109,3 +110,27 @@ class RequestScopeLazinessTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(owner_during_provider), 1)
         self.assertIsNone(owner_during_provider[0])
+
+    async def test_request_connection_serializes_concurrent_driver_calls(self):
+        class FakeOwner:
+            active = 0
+            max_active = 0
+
+            async def execute(self, *_args):
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+                try:
+                    await asyncio.sleep(0.01)
+                finally:
+                    self.active -= 1
+
+        owner = FakeOwner()
+        request_connection = db_runtime._LazyRequestConnection("", "")
+        request_connection._owner = owner
+
+        await asyncio.gather(
+            request_connection.execute("SELECT 1"),
+            request_connection.execute("SELECT 1"),
+        )
+
+        self.assertEqual(owner.max_active, 1)

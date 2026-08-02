@@ -59,6 +59,10 @@ class _BorrowedConnection:
         """Open a savepoint on the request owner, when the backend supports it."""
         return await self._connection.begin_nested_write()
 
+    async def finish_nested(self, savepoint: Any, failed: bool) -> None:
+        """Finish a nested transaction through the request owner's lock."""
+        return await self._connection.finish_nested(savepoint, failed)
+
     async def release_if_idle(self) -> bool:
         """Release an idle request connection without ending the request scope."""
         return await self._connection.release_if_idle()
@@ -111,18 +115,7 @@ class _NestedBorrowedConnection:
             return
         savepoint = self._savepoint
         self._savepoint = None
-        if failed:
-            await savepoint.rollback()
-        else:
-            try:
-                await savepoint.commit()
-            except BaseException:
-                # Do not leave the outer transaction in an aborted state if a
-                # savepoint commit itself fails and the caller handles it.
-                try:
-                    await savepoint.rollback()
-                finally:
-                    raise
+        await self._connection.finish_nested(savepoint, failed)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._connection, name)
@@ -145,6 +138,11 @@ class _LazyRequestConnection:
         self._pool_connection: Any | None = None
         self._row_factory: Any = None
         self._acquire_lock = asyncio.Lock()
+        # asyncpg permits only one in-flight operation per physical connection.
+        # A request can legitimately start independent read helpers with
+        # asyncio.gather(), so serialize the actual driver calls here instead
+        # of exposing an intermittent InterfaceError to the whole endpoint.
+        self._operation_lock = asyncio.Lock()
         self._closed = False
 
     @property
@@ -200,22 +198,41 @@ class _LazyRequestConnection:
             return connection
 
     async def commit(self) -> None:
-        if self._owner is not None:
-            await self._owner.commit()
+        async with self._operation_lock:
+            if self._owner is not None:
+                await self._owner.commit()
 
     async def rollback(self) -> None:
-        if self._owner is not None:
-            await self._owner.rollback()
+        async with self._operation_lock:
+            if self._owner is not None:
+                await self._owner.rollback()
 
     async def begin_nested_write(self) -> Any | None:
-        owner = await self._ensure()
-        if isinstance(owner, PostgresConnection):
-            return await owner.begin_nested()
-        return None
+        async with self._operation_lock:
+            owner = await self._ensure()
+            if isinstance(owner, PostgresConnection):
+                return await owner.begin_nested()
+            return None
+
+    async def finish_nested(self, savepoint: Any, failed: bool) -> None:
+        async with self._operation_lock:
+            if failed:
+                await savepoint.rollback()
+            else:
+                try:
+                    await savepoint.commit()
+                except BaseException:
+                    # Do not leave the outer transaction in an aborted state if
+                    # a savepoint commit fails and the caller handles it.
+                    try:
+                        await savepoint.rollback()
+                    finally:
+                        raise
 
     async def release(self) -> None:
-        self._closed = True
-        await self._release_owner()
+        async with self._operation_lock:
+            self._closed = True
+            await self._release_owner()
 
     async def _release_owner(self) -> None:
         owner = self._owner
@@ -235,7 +252,7 @@ class _LazyRequestConnection:
         deliberately left attached to the request so its transaction boundary
         remains unchanged.
         """
-        async with self._acquire_lock:
+        async with self._operation_lock:
             owner = self._owner
             if owner is None:
                 return False
@@ -249,8 +266,9 @@ class _LazyRequestConnection:
 
     def __getattr__(self, name: str) -> Any:
         async def invoke(*args: Any, **kwargs: Any) -> Any:
-            owner = await self._ensure()
-            return await getattr(owner, name)(*args, **kwargs)
+            async with self._operation_lock:
+                owner = await self._ensure()
+                return await getattr(owner, name)(*args, **kwargs)
 
         return invoke
 
