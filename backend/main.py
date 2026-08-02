@@ -107,11 +107,6 @@ _request_metrics = RequestMetrics(_REQUEST_METRICS_MAX_SAMPLES)
 def _performance_snapshot() -> dict:
     return _request_metrics.snapshot()
 
-@app.middleware("http")
-async def log_slow_requests(request: Request, call_next):
-    """Give Fly/Sentry real latency and keep private API responses uncacheable."""
-    return await observe_request(_request_metrics, request, call_next, logger)
-
 # Фоновий щоденний бекап SQLite (Postgres робить бекапи сам — backup_db там no-op).
 _backup_task: asyncio.Task | None = None
 _pair_expiry_task: asyncio.Task | None = None
@@ -124,6 +119,18 @@ _PROFILE_PORTRAIT_FILM_LIMIT = 40
 _PROFILE_PORTRAIT_BATCH_SIZE = 20
 _director_profile_enrichment_tasks: set[asyncio.Task] = set()
 _director_profile_enrichment_users: set[int] = set()
+
+
+@app.middleware("http")
+async def database_request_scope(request: Request, call_next):
+    async with db_runtime.request_scope(db.DB_PATH, db.DATABASE_URL):
+        return await call_next(request)
+
+
+@app.middleware("http")
+async def log_slow_requests(request: Request, call_next):
+    """Give Fly/Sentry real latency and keep private API responses uncacheable."""
+    return await observe_request(_request_metrics, request, call_next, logger)
 
 
 async def _periodic_backup() -> None:
@@ -176,9 +183,9 @@ async def startup() -> None:
     # SQLite требует прикладного бэкапа; PostgreSQL обслуживается провайдером.
     global _backup_task, _pair_expiry_task
     if not DATABASE_URL and (_backup_task is None or _backup_task.done()):
-        _backup_task = asyncio.create_task(_periodic_backup(), name="sqlite-periodic-backup")
+        _backup_task = db_runtime.create_background_task(_periodic_backup(), name="sqlite-periodic-backup")
     if _pair_expiry_task is None or _pair_expiry_task.done():
-        _pair_expiry_task = asyncio.create_task(_periodic_pair_expiry(), name="pair-invite-expiry")
+        _pair_expiry_task = db_runtime.create_background_task(_periodic_pair_expiry(), name="pair-invite-expiry")
     logger.info("Database initialized (%s)", "Postgres" if DATABASE_URL else "SQLite")
 
 
@@ -449,8 +456,8 @@ def _schedule_visual_enrichment(film_id: int, imdb_id: str) -> None:
     if film_id in _visual_enrichment_film_ids:
         return
     _visual_enrichment_film_ids.add(film_id)
-    task = asyncio.create_task(_enrich_film_visuals(film_id, imdb_id),
-                               name=f"film-visuals-{film_id}")
+    task = db_runtime.create_background_task(_enrich_film_visuals(film_id, imdb_id),
+                                             name=f"film-visuals-{film_id}")
     _visual_enrichment_tasks.add(task)
     task.add_done_callback(_visual_enrichment_tasks.discard)
 
@@ -500,8 +507,10 @@ def _schedule_people_enrichment(film_id: int, imdb_id: str, enrich_actors: bool 
     if film_id in _people_enrichment_film_ids:
         return
     _people_enrichment_film_ids.add(film_id)
-    task = asyncio.create_task(_enrich_film_people(film_id, imdb_id, enrich_actors, enrich_directors),
-                               name=f"film-people-{film_id}")
+    task = db_runtime.create_background_task(
+        _enrich_film_people(film_id, imdb_id, enrich_actors, enrich_directors),
+        name=f"film-people-{film_id}",
+    )
     _people_enrichment_tasks.add(task)
     task.add_done_callback(_people_enrichment_tasks.discard)
 
@@ -700,6 +709,7 @@ async def api_search(q: str, user: dict = Depends(current_user)):
         # A direct ID missed the catalog, so only this first lookup reaches OMDb/KP.
         if not ratelimit.allow_user(user["id"]):
             raise HTTPException(status_code=429, detail="Слишком много запросов, подождите минуту")
+        await db_runtime.release_request_connection_if_idle()
         d = await search.fetch_details("i", imdb_id)
         if not d:
             return {"items": []}
@@ -740,6 +750,7 @@ async def _resolve_film_id(src: str, ref: str, *, user_id: int | None = None) ->
         # first external lookup consumes the same per-user allowance as search.
         if user_id is not None and not ratelimit.allow_user(user_id):
             raise HTTPException(status_code=429, detail="Слишком много запросов, подождите минуту")
+        await db_runtime.release_request_connection_if_idle()
         details = await search.fetch_details(src, ref)
         if not details or not details.get("imdb_id"):
             raise HTTPException(status_code=502, detail="Не удалось получить данные")
@@ -883,7 +894,7 @@ def _schedule_profile_director_enrichment(user_id: int) -> None:
     if user_id in _director_profile_enrichment_users:
         return
     _director_profile_enrichment_users.add(user_id)
-    task = asyncio.create_task(_enrich_profile_people_photos(user_id), name=f"profile-people-{user_id}")
+    task = db_runtime.create_background_task(_enrich_profile_people_photos(user_id), name=f"profile-people-{user_id}")
     _director_profile_enrichment_tasks.add(task)
     task.add_done_callback(_director_profile_enrichment_tasks.discard)
 
@@ -2289,7 +2300,7 @@ def _schedule_image_cache_trim() -> None:
         return
     _img_last_trim_scheduled = now
     try:
-        _img_trim_task = asyncio.create_task(
+        _img_trim_task = db_runtime.create_background_task(
             asyncio.to_thread(_trim_image_cache_sync), name="image-cache-trim")
     except RuntimeError:
         # Isolated unit calls can invoke this helper with no running loop.

@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 
 import aiohttp
 import database as db
+import db_runtime
 from config import BOT_TOKEN
 
 logger = logging.getLogger(__name__)
@@ -185,7 +186,7 @@ async def _deliver(notification_id: int, recipient_id: int, text: dict) -> None:
 
 
 def _schedule(coro) -> None:
-    task = asyncio.create_task(coro, name="pair-telegram-notification")
+    task = db_runtime.create_background_task(coro, name="pair-telegram-notification")
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
 
