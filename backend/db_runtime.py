@@ -55,6 +55,74 @@ class _BorrowedConnection:
     async def rollback(self) -> None:
         """Nested database helpers cannot roll back the request transaction."""
 
+    async def begin_nested_write(self) -> Any | None:
+        """Open a savepoint on the request owner, when the backend supports it."""
+        return await self._connection.begin_nested_write()
+
+
+def _statement_is_read_only(sql: str) -> bool:
+    """Return whether a statement can run without a write savepoint."""
+    query_type = sql.strip().upper().split(None, 1)[0] if sql.strip() else ""
+    return query_type in {"SELECT", "PRAGMA", "SHOW", "EXPLAIN", "VALUES"}
+
+
+class _NestedBorrowedConnection:
+    """Request-borrowed connection isolated by one lazy PostgreSQL savepoint.
+
+    SQLite deliberately bypasses this proxy: its request connection keeps the
+    existing behaviour and emits no SAVEPOINT SQL.  PostgreSQL opens a nested
+    transaction only when this block performs its first write, so read-only
+    helpers do not pay for a savepoint.
+    """
+
+    def __init__(self, connection: _BorrowedConnection):
+        self._connection = connection
+        self._savepoint: Any | None = None
+
+    @property
+    def row_factory(self) -> Any:
+        return self._connection.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value: Any) -> None:
+        self._connection.row_factory = value
+
+    async def _ensure_savepoint(self, sql: str) -> None:
+        if _statement_is_read_only(sql) or self._savepoint is not None:
+            return
+        self._savepoint = await self._connection.begin_nested_write()
+
+    async def execute(self, sql: str, parameters: Sequence[Any] = ()) -> Any:
+        await self._ensure_savepoint(sql)
+        return await self._connection.execute(sql, parameters)
+
+    async def commit(self) -> None:
+        """The context manager owns the savepoint; never commit the request."""
+
+    async def rollback(self) -> None:
+        """The context manager owns the savepoint; never roll back the request."""
+
+    async def finish(self, failed: bool) -> None:
+        if self._savepoint is None:
+            return
+        savepoint = self._savepoint
+        self._savepoint = None
+        if failed:
+            await savepoint.rollback()
+        else:
+            try:
+                await savepoint.commit()
+            except BaseException:
+                # Do not leave the outer transaction in an aborted state if a
+                # savepoint commit itself fails and the caller handles it.
+                try:
+                    await savepoint.rollback()
+                finally:
+                    raise
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
 
 class _LazyRequestConnection:
     """Lazily acquire the request-owned database connection on first use.
@@ -134,6 +202,12 @@ class _LazyRequestConnection:
     async def rollback(self) -> None:
         if self._owner is not None:
             await self._owner.rollback()
+
+    async def begin_nested_write(self) -> Any | None:
+        owner = await self._ensure()
+        if isinstance(owner, PostgresConnection):
+            return await owner.begin_nested()
+        return None
 
     async def release(self) -> None:
         self._closed = True
@@ -255,6 +329,13 @@ class PostgresConnection:
             self._transaction = self._connection.transaction()
             await self._transaction.start()
 
+    async def begin_nested(self) -> Any:
+        """Start one SAVEPOINT inside the request transaction."""
+        await self._ensure_transaction()
+        nested = self._connection.transaction()
+        await nested.start()
+        return nested
+
     @property
     def has_transaction(self) -> bool:
         return self._transaction is not None
@@ -316,7 +397,19 @@ async def connect(sqlite_path: str, database_url: str) -> AsyncIterator[Any]:
     """
     borrowed = current_connection()
     if borrowed is not None:
-        yield borrowed
+        # SQLite keeps its historical borrowed-connection behaviour.  On
+        # PostgreSQL each nested helper gets a lazy SAVEPOINT boundary.
+        if not uses_postgres(database_url):
+            yield borrowed
+            return
+        nested = _NestedBorrowedConnection(borrowed)
+        try:
+            yield nested
+        except BaseException:
+            await nested.finish(failed=True)
+            raise
+        else:
+            await nested.finish(failed=False)
         return
 
     if uses_postgres(database_url):
