@@ -38,9 +38,11 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
+          cache: "pip"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
+          cache: "npm"
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: python -m pip check
       - run: ruff check backend scripts
@@ -48,7 +50,13 @@ jobs:
       - run: node --check frontend/app.js
       - run: npm ci
       - run: npm run lint
-      - run: npm audit --audit-level=high
+      # Advisory, not a gate: dev dependencies never reach the image
+      # (.dockerignore excludes node_modules), so an advisory in someone
+      # else's transitive dev package must not block a production deploy.
+      # pip-audit below stays blocking — those packages do ship.
+      - name: npm audit (advisory only)
+        run: npm audit --audit-level=high
+        continue-on-error: true
       - run: python -m unittest discover -s tests -v
         working-directory: backend
       - run: npx playwright install --with-deps chromium
@@ -68,3 +76,14 @@ jobs:
       - run: flyctl deploy --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      # Without this the job is green the moment flyctl returns, even if the
+      # machine comes up and immediately crashes.
+      - name: Smoke test production
+        run: |
+          for attempt in $(seq 1 24); do
+            code=$(curl -fsS -o /dev/null -w '%{http_code}' https://addict-film.fly.dev/healthz || echo 000)
+            if [ "$code" = "200" ]; then echo "healthy after ${attempt} attempt(s)"; exit 0; fi
+            sleep 5
+          done
+          echo "::error::/healthz never returned 200 within 2 minutes after deploy"
+          exit 1

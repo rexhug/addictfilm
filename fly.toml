@@ -44,10 +44,13 @@ primary_region = 'fra'
     method = 'GET'
     path = '/healthz'
 
+# 512mb, not 256: FastAPI + the asyncpg pool + sentry + gzip sit close to the
+# ceiling, and /api/browse and /api/stats peak above it. auto_stop_machines is
+# 'off', so an OOM-kill is not something the platform quietly rides out.
 [[vm]]
   processes = ['app']
   size = 'shared-cpu-1x'
-  memory = '256mb'
+  memory = '512mb'
 
 # Том нужен только веб-процессу в SQLite-режиме: в облаке база — Postgres, и
 # воркеру монтировать нечего (том Fly нельзя подключить к двум машинам сразу).
