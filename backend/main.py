@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -71,7 +72,22 @@ if SENTRY_DSN:
     sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=SENTRY_TRACES_SAMPLE_RATE,
                     send_default_pii=False)
 
-app = FastAPI(title="Movie Mini App")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """FastAPI 0.139 deprecates the on_event hooks.  Bodies stay below, next to
+    the code they touch; they resolve at call time, so definition order does
+    not matter.
+    """
+    await _startup()
+    try:
+        yield
+    finally:
+        # `finally`, not a bare call: the shutdown hook used to be skipped when
+        # startup raised, leaking the aiohttp sessions and the Postgres pool.
+        await _shutdown()
+
+
+app = FastAPI(title="Movie Mini App", lifespan=lifespan)
 # Fly не стискає ці файли за нас. GZip значно зменшує 95KB JS і 50KB CSS на
 # першому відкритті Mini App; already-compressed image responses не чіпає.
 app.add_middleware(GZipMiddleware, minimum_size=512, compresslevel=5)
@@ -161,8 +177,7 @@ async def _periodic_pair_expiry() -> None:
         except Exception:
             logger.warning("Pair invite expiry sweep failed", exc_info=True)
 
-@app.on_event("startup")
-async def startup() -> None:
+async def _startup() -> None:
     await db_runtime.start(DATABASE_URL)  # пул Postgres; для SQLite — no-op
     await db.init_db()
     # Events and their audience are committed together with the pair state.
@@ -189,8 +204,7 @@ async def startup() -> None:
     logger.info("Database initialized (%s)", "Postgres" if DATABASE_URL else "SQLite")
 
 
-@app.on_event("shutdown")
-async def shutdown() -> None:
+async def _shutdown() -> None:
     global _backup_task, _pair_expiry_task
     if _backup_task is not None:
         _backup_task.cancel()
@@ -243,6 +257,12 @@ async def shutdown() -> None:
         except asyncio.CancelledError:
             pass
         _img_trim_task = None
+
+
+# Legacy names: the shutdown path is covered by test_resource_hygiene, and a
+# refactor is not a reason to rewrite the test that guards it.
+startup = _startup
+shutdown = _shutdown
 
 
 # ── Авторизация: каждый запрос несёт initData в заголовке ────────────────────
