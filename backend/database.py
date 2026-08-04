@@ -367,6 +367,27 @@ async def ping() -> bool:
         return await cur.fetchone() is not None
 
 
+async def backup_db(keep: int = 7) -> str | None:
+    """Консистентный бэкап (VACUUM INTO) рядом с базой; храним последние `keep`.
+    SQLite-only — в Postgres (Neon) бэкапы делает сам провайдер (point-in-time restore)."""
+    if _PG:
+        return None
+    dirname = os.path.dirname(os.path.abspath(DB_PATH))
+    path = os.path.join(dirname, f"movies.backup-{datetime.now(UTC):%Y%m%d}.db")
+    if not os.path.exists(path):
+        try:
+            async with db_session.connect() as db:
+                await db.execute("VACUUM INTO ?", (path,))
+        except Exception:
+            return None
+    for old in sorted(glob.glob(os.path.join(dirname, "movies.backup-*.db")))[:-keep]:
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+    return path
+
+
 # ── Постоянный кэш поиска ─────────────────────────────────────────────────────
 async def search_cache_get(q: str, max_age_sec: int, empty_max_age_sec: int | None = None) -> list | None:
     """Fresh positive results, or a deliberately short-lived cached empty result."""
@@ -421,27 +442,6 @@ async def try_spend_search_budget(day: str, budget: int) -> bool:
         row = await cur.fetchone()
         await db.commit()
         return row is not None
-
-
-async def backup_db(keep: int = 7) -> str | None:
-    """Консистентный бэкап (VACUUM INTO) рядом с базой; храним последние `keep`.
-    SQLite-only — в Postgres (Neon) бэкапы делает сам провайдер (point-in-time restore)."""
-    if _PG:
-        return None
-    dirname = os.path.dirname(os.path.abspath(DB_PATH))
-    path = os.path.join(dirname, f"movies.backup-{datetime.now(UTC):%Y%m%d}.db")
-    if not os.path.exists(path):
-        try:
-            async with db_session.connect() as db:
-                await db.execute("VACUUM INTO ?", (path,))
-        except Exception:
-            return None
-    for old in sorted(glob.glob(os.path.join(dirname, "movies.backup-*.db")))[:-keep]:
-        try:
-            os.remove(old)
-        except OSError:
-            pass
-    return path
 
 
 # ── Изображение для полноэкранного подбора ───────────────────────────────────
@@ -1434,7 +1434,7 @@ async def pick_random_wishlist_film(user_id: int) -> dict | None:
         await db.execute(
             "INSERT INTO wishlist_random_state (user_id, cycle_number, updated_at) "
             "VALUES (?,1,?) ON CONFLICT DO NOTHING", (user_id, now))
-        if _PG:
+        if db_session.uses_postgres():
             state = await (await db.execute(
                 "SELECT cycle_number FROM wishlist_random_state WHERE user_id=? FOR UPDATE",
                 (user_id,))).fetchone()
@@ -1554,7 +1554,7 @@ async def consume_prepared_wishlist_film(
         await db.execute(
             "INSERT INTO wishlist_random_state (user_id, cycle_number, updated_at) "
             "VALUES (?,1,?) ON CONFLICT DO NOTHING", (user_id, now))
-        if _PG:
+        if db_session.uses_postgres():
             state = await (await db.execute(
                 "SELECT cycle_number FROM wishlist_random_state "
                 "WHERE user_id=? FOR UPDATE", (user_id,))).fetchone()
@@ -1924,7 +1924,7 @@ async def recommendation_pick_lock(user_id: int):
     запишет показ. Поэтому в SQLite-режиме нужен обычный внутрипроцессный замок,
     а в Postgres — консультативный, он работает и между машинами Fly.
     """
-    if not _PG:
+    if not db_session.uses_postgres():
         key = int(user_id)
         lock = _pick_locks.setdefault(key, asyncio.Lock())
         _pick_lock_users[key] = _pick_lock_users.get(key, 0) + 1
@@ -2706,7 +2706,7 @@ async def _lock_pair_users(db, *user_ids: int) -> None:
     if not ids:
         return
     marks = ", ".join("?" for _ in ids)
-    if db_runtime.uses_postgres(DATABASE_URL):
+    if db_session.uses_postgres():
         await db.execute(
             f"SELECT id FROM users WHERE id IN ({marks}) ORDER BY id FOR UPDATE", ids)
     else:
