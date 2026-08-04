@@ -56,7 +56,11 @@ from enrichment.cast_backfill import enrich_film_cast
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from observability import RequestMetrics, observe_request
+
+# performance_snapshot is aliased: the route handler is itself called
+# performance_snapshot, and the handler name is part of the public route identity.
+from observability import observe_request, request_metrics
+from observability import performance_snapshot as _snapshot
 from pydantic import BaseModel, Field
 from recommendation import engines
 from recommendation_questions import next_question_id, public_question
@@ -114,12 +118,8 @@ _HTML_CSP = (
 )
 
 
-_REQUEST_METRICS_MAX_SAMPLES = max(50, int(os.getenv("REQUEST_METRICS_MAX_SAMPLES", "500")))
-_request_metrics = RequestMetrics(_REQUEST_METRICS_MAX_SAMPLES)
-
-
-def _performance_snapshot() -> dict:
-    return _request_metrics.snapshot()
+# Back-compat: tests reach into main for the metrics window.
+_request_metrics = request_metrics
 
 # Фоновий щоденний бекап SQLite (Postgres робить бекапи сам — backup_db там no-op).
 _backup_task: asyncio.Task | None = None
@@ -272,6 +272,7 @@ from deps import (
     throttled_mutation,
     throttled_quiz,
 )
+from film_resolver import resolve_film_id
 
 
 @app.get("/healthz", include_in_schema=False)
@@ -704,39 +705,6 @@ async def api_search(q: str, user: dict = Depends(current_user)):
     return {"items": res["items"], "limited": res["limited"]}
 
 
-async def _resolve_film_id(src: str, ref: str, *, user_id: int | None = None) -> int:
-    """Дедуп до внешних API + fetch_details + get_or_create_film — общий путь для
-    /api/add и /api/admin/collections/{id}/films. Для src="i" ref == imdb_id, и если
-    фильм уже в общем каталоге — линкуем сразу, не тратя лимит kinopoisk/OMDb."""
-    ref = ref.strip()
-    if src == "id":
-        # Фильм уже в каталоге (редактор подборки шлёт внутренний ID) — внешние
-        # провайдеры и их лимиты здесь не нужны.
-        if not re.fullmatch(r"\d{1,12}", ref):
-            raise HTTPException(status_code=422, detail="Некорректный идентификатор фильма")
-        if not await db.get_film(int(ref)):
-            raise HTTPException(status_code=404, detail="Фильм не найден")
-        return int(ref)
-    if src == "k" and not re.fullmatch(r"\d{1,12}", ref):
-        raise HTTPException(status_code=422, detail="Некорректный идентификатор фильма")
-    if src == "i" and not re.fullmatch(r"tt\d{5,12}", ref):
-        raise HTTPException(status_code=422, detail="Некорректный IMDb идентификатор")
-
-    film_id = await db.get_film_id_by_source(src, ref)
-    if film_id is None:
-        # A direct /api/add can otherwise be used as an unthrottled movie-ID
-        # scanner.  Existing catalogue films stay instant and free; only the
-        # first external lookup consumes the same per-user allowance as search.
-        if user_id is not None and not ratelimit.allow_user(user_id):
-            raise HTTPException(status_code=429, detail="Слишком много запросов, подождите минуту")
-        await db_runtime.release_request_connection_if_idle()
-        details = await search.fetch_details(src, ref)
-        if not details or not details.get("imdb_id"):
-            raise HTTPException(status_code=502, detail="Не удалось получить данные")
-        film_id = await db.get_or_create_film(**details)  # общий каталог, dedup по imdb_id
-    return film_id
-
-
 class AddBody(BaseModel):
     src: str
     ref: str = Field(max_length=128)
@@ -749,7 +717,7 @@ async def add(body: AddBody, user: dict = Depends(throttled_mutation)):
         raise HTTPException(status_code=422, detail="Неизвестный источник")
     if body.status not in ("want_to_watch", "watched"):
         raise HTTPException(status_code=422, detail="Неизвестный статус")
-    film_id = await _resolve_film_id(body.src, body.ref, user_id=user["id"])
+    film_id = await resolve_film_id(body.src, body.ref, user_id=user["id"])
     watched_at = datetime.now(UTC).isoformat() if body.status == "watched" else None
     added = await db.add_to_list(user["id"], film_id, body.status, watched_at)
     await db.sync_film_to_partner(user["id"], film_id)  # пара: партнёру фильм в «Хочу»
@@ -1759,7 +1727,7 @@ async def admin_resolve_film(body: ResolveFilmBody, user: dict = Depends(current
     свои «Хочу»/«Смотрел» куратор фильмы при этом не набирает."""
     if body.src not in ("k", "i", "id"):
         raise HTTPException(status_code=422, detail="Неизвестный источник")
-    film_id = await _resolve_film_id(body.src, body.ref, user_id=user["id"])
+    film_id = await resolve_film_id(body.src, body.ref, user_id=user["id"])
     film = await db.get_film(film_id)
     return {"id": film_id, "title": film.get("title") if film else None,
             "year": film.get("year") if film else None,
@@ -1795,7 +1763,7 @@ async def collection_add_film(collection_id: int, body: CollectionAddBody,
         raise HTTPException(status_code=422, detail="Неизвестный источник")
     if not await db.get_collection(collection_id):
         raise HTTPException(status_code=404, detail="Подборка не найдена")
-    film_id = await _resolve_film_id(body.src, body.ref)
+    film_id = await resolve_film_id(body.src, body.ref)
     added = await db.add_film_to_collection(collection_id, film_id, user["id"])
     if added:
         await _audit(user, "collection.items_added", collection_id, {"film_id": film_id})
@@ -2056,7 +2024,7 @@ async def partner_stats(user: dict = Depends(current_user)):
 @app.get("/api/admin/performance", dependencies=[Depends(require_admin)])
 async def performance_snapshot():
     """Bounded in-process route timings for production triage (never public)."""
-    return _performance_snapshot()
+    return _snapshot()
 
 
 @app.post("/api/admin/backfill-posters", dependencies=[Depends(require_admin)])
@@ -2563,3 +2531,6 @@ class VersionedStaticFiles(StaticFiles):
 
 
 app.mount("/", VersionedStaticFiles(directory=FRONTEND_DIR), name="static")
+
+# Tests reach into main for the shared resolver; keep the old name working.
+_resolve_film_id = resolve_film_id
