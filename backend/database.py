@@ -54,6 +54,7 @@ from migrations import run_schema_migrations
 # _genres_cache is deliberately NOT re-exported: it is rebound, not mutated,
 # so a copy taken here would freeze at import and only look like live state.
 # Callers reset it through _invalidate_genres_cache(), which is re-exported.
+from repositories.audit import list_audit_log, write_audit  # noqa: F401
 from repositories.catalog import (  # noqa: F401
     _ACQUISITION_PARAM_RE,
     _GENRES_CACHE_TTL_SECONDS,
@@ -3520,23 +3521,3 @@ async def reorder_collections(ordered_ids: list[int], actor_id: int) -> bool:
         return True
 
 
-async def write_audit(actor_id: int, actor_role: str, action: str, entity_type: str,
-                      entity_id: str | int, details: dict | None = None) -> None:
-    """Append-only журнал админских мутаций. Секреты/initData сюда не попадают —
-    вызывающий передаёт только редактируемые поля."""
-    async with db_session.connect() as db:
-        await db.execute(
-            "INSERT INTO admin_audit_log (actor_id, actor_role, action, entity_type, entity_id, "
-            "details, created_at) VALUES (?,?,?,?,?,?,?)",
-            (actor_id, actor_role, action, entity_type, str(entity_id),
-             json.dumps(details, ensure_ascii=False) if details else None, _now()))
-        await db.commit()
-
-
-async def list_audit_log(limit: int = 50) -> list[dict]:
-    async with db_session.connect() as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute(
-            "SELECT actor_id, actor_role, action, entity_type, entity_id, details, created_at "
-            "FROM admin_audit_log ORDER BY created_at DESC LIMIT ?", (limit,))
-        return [dict(r) for r in await cur.fetchall()]
