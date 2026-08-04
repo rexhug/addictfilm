@@ -180,5 +180,62 @@ class AdminRouteTableTests(unittest.TestCase):
                 self.assertEqual(self.client.get(path).status_code, 401)
 
 
+GUARDS = {"require_editor", "require_admin_user", "require_admin"}
+
+
+def _guards_of(route) -> set[str]:
+    """Every dependency name reachable from a route, at any depth.
+
+    Walks the tree rather than the top level: a guard declared as
+    dependencies=[Depends(...)] and one taken as a handler argument end up at
+    different depths, and both must count.
+    """
+    seen, stack = set(), list(route.dependant.dependencies)
+    while stack:
+        dep = stack.pop()
+        if dep.call is not None:
+            seen.add(getattr(dep.call, "__name__", ""))
+        stack.extend(dep.dependencies)
+    return seen
+
+
+class AdminGuardTests(unittest.TestCase):
+    def test_every_admin_route_keeps_an_authorization_guard(self):
+        """The blind spot in comparing OpenAPI: Depends never reaches the schema.
+
+        A route that lost its guard while being moved into the router would
+        produce a byte-identical schema and an admin surface open to anyone.
+        Nothing else in the suite would notice.
+        """
+        from routers.admin import router
+        for route in router.routes:
+            with self.subTest(path=route.path):
+                self.assertTrue(GUARDS & _guards_of(route), f"{route.path} без гейта")
+
+    def test_the_guard_distribution_matches_what_each_surface_needs(self):
+        """Not just "some guard": the wrong one is its own failure. Analytics on
+        require_editor would hand audience numbers to a collections editor.
+        """
+        from routers.admin import router
+        # Counted per route, not per path: /collections carries GET and POST,
+        # and each method is guarded separately.
+        by_guard = {}
+        for route in router.routes:
+            for guard in GUARDS & _guards_of(route):
+                by_guard.setdefault(guard, []).append(route.path)
+        self.assertEqual(set(by_guard["require_admin_user"]), {"/api/admin/analytics"})
+        # Token-gated maintenance: curl and scripts, never the Mini App.
+        self.assertEqual(set(by_guard["require_admin"]), {
+            "/api/admin/performance",
+            "/api/admin/backfill-posters",
+            "/api/admin/backfill-actor-photos",
+            "/api/admin/backfill-director-photos",
+            "/api/admin/upgrade-omdb-posters",
+            "/api/admin/enrich-film-people/{imdb_id}",
+        })
+        self.assertEqual(len(by_guard["require_editor"]), 24)
+        self.assertEqual(sum(len(paths) for paths in by_guard.values()), len(router.routes))
+
+
 if __name__ == "__main__":
     unittest.main()
