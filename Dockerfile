@@ -12,7 +12,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Зависимости кэшируются, пока requirements.txt не менялся.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# --require-hashes: the lock is only a lock if a mismatch stops the build.
+# Without it a compromised or resolved-differently wheel installs silently.
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
