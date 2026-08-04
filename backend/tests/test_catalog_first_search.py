@@ -8,6 +8,7 @@ import database as db
 import db_runtime
 import kinopoisk
 import main
+import migrations
 import search
 from enrichment import cast_backfill
 from fastapi import HTTPException
@@ -376,7 +377,7 @@ class CatalogFirstSearchTests(unittest.IsolatedAsyncioTestCase):
             )
             await conn.commit()
 
-        await db._apply_film_identity_migration()
+        await migrations._apply_film_identity_migration()
 
         async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
             conn.row_factory = db.aiosqlite.Row

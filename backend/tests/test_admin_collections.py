@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 import database as db
+import migrations
 
 
 class _Base(unittest.IsolatedAsyncioTestCase):
@@ -172,7 +173,7 @@ class MigrationBackfillTests(_Base):
             await conn.execute("UPDATE collections SET status='published', version=1 WHERE id=?", (cid,))
             await conn.execute("UPDATE collection_films SET position=0 WHERE collection_id=?", (cid,))
             await conn.commit()
-        await db._apply_editorial_collections_migration()
+        await migrations._apply_editorial_collections_migration()
         self.assertEqual((await db.get_collection(cid))["status"], "published")
         items = await db.get_collection_films(cid, 1)
         self.assertEqual([i["id"] for i in items], [self.film, self.other])

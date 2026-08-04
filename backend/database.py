@@ -16,7 +16,6 @@ import logging
 import os
 import re
 import secrets
-import sqlite3
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -24,9 +23,30 @@ from datetime import UTC, datetime, timedelta
 import aiosqlite
 import cast as cast_model
 import db_runtime
+import db_session
 import hero_media
 import media_type
 from config import DATABASE_URL
+
+# Imported by name, not re-exported by accident: every caller in this module
+# still writes _now(...) and _split_genres(...), and the names stay part of the
+# module surface the tests and the other repositories already rely on.
+from db_helpers import (  # noqa: F401
+    _GENRE_CANON,
+    _GENRE_SHOWCASE,
+    _canon_genre,
+    _catalog_search_text,
+    _genre_query_aliases,
+    _legacy_pair_session_id,
+    _now,
+    _pair_key,
+    _parse_legacy_pair_id,
+    _person_key,
+    _portrait_entries,
+    _portrait_urls,
+    _split_genres,
+    _split_people,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,34 +57,6 @@ _PG = db_runtime.uses_postgres(DATABASE_URL)
 _GENRES_CACHE_TTL_SECONDS = max(30, int(os.getenv("GENRES_CACHE_TTL_SEC", "300")))
 _genres_cache: tuple[float, list[dict]] | None = None
 
-# A migration record is deliberately stored in the database, not in a deploy
-# variable.  It lets an operator answer "which schema is this instance on?"
-# and makes every future data/schema change an explicit, auditable step.
-_SCHEMA_MIGRATION_LEGACY_COLUMNS = "2026-07-25-legacy-columns"
-_SCHEMA_MIGRATION_DIRECTOR_PHOTOS = "2026-07-25-director-photos"
-_SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY = "2026-07-25-person-portrait-retry"
-_SCHEMA_MIGRATION_PERSON_PORTRAIT_COMPLETENESS = "2026-07-25-person-portrait-completeness"
-_SCHEMA_MIGRATION_SEARCH_TEXT_DIRECTORS = "2026-07-26-search-text-directors"
-_SCHEMA_MIGRATION_PAIR_NOTIFICATIONS = "2026-07-26-pair-notifications"
-_SCHEMA_MIGRATION_PAIR_NOTIFICATION_EVENTS = "2026-07-26-pair-notification-event-model"
-_SCHEMA_MIGRATION_PAIR_NOTIFICATION_OUTBOX = "2026-07-26-pair-notification-outbox"
-_SCHEMA_MIGRATION_PAIR_HISTORY = "2026-07-26-pair-history"
-_SCHEMA_MIGRATION_RECOMMENDATIONS = "2026-07-26-recommendations-v1"
-_SCHEMA_MIGRATION_RECOMMENDATION_RESULTS = "2026-07-26-recommendations-v2-results"
-_SCHEMA_MIGRATION_EDITORIAL_COLLECTIONS = "2026-07-27-editorial-collections-v1"
-_SCHEMA_MIGRATION_FEATURED_COLLECTIONS = "2026-07-27-featured-collections-v1"
-_SCHEMA_MIGRATION_MEDIA_TYPE = "2026-07-27-media-type-v1"
-_SCHEMA_MIGRATION_MOVIE_ENRICHMENT = "2026-07-27-movie-enrichment-v1"
-_SCHEMA_MIGRATION_WORKER_HEARTBEATS = "2026-07-27-worker-heartbeats-v1"
-_SCHEMA_MIGRATION_WISHLIST_ROULETTE = "2026-07-27-wishlist-roulette-v1"
-_SCHEMA_MIGRATION_SESSION_VERSIONS = "2026-07-27-session-versions-v1"
-_SCHEMA_MIGRATION_HERO_MEDIA = "2026-07-28-hero-media-v1"
-_SCHEMA_MIGRATION_HERO_PRESENTATION = "2026-07-28-hero-presentation-v1"
-_SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION = "2026-07-28-movie-flow-moderation-v1"
-_SCHEMA_MIGRATION_PUBLIC_REVIEWS = "2026-07-29-public-reviews-v1"
-_SCHEMA_MIGRATION_FILM_IDENTITY = "2026-07-29-film-identity-v1"
-_SCHEMA_MIGRATION_CANONICAL_CAST = "2026-07-29-canonical-cast-v1"
-_SCHEMA_MIGRATION_USER_ACQUISITION = "2026-08-01-user-acquisition-v1"
 
 # Значения films.media_type. Дублируются константами, а не импортом media_type,
 # чтобы не затенять одноимённый аргумент get_or_create_film.
@@ -73,1223 +65,91 @@ _PAIR_INVITE_TTL = timedelta(days=7)
 _DEFAULT_RECOMMENDATION_COOLDOWN = object()
 
 
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
-
-
-# Каталог наполняется из kinopoisk (жанры по-русски) и OMDb (по-английски) — из-за
-# этого в film_genres встречаются дубли одного жанра на двух языках («драма» и
-# «Drama»). Приводим к единому русскому канону: при записи (см. _split_genres) и
-# при чтении (list_genres мёржит, browse_by_genre матчит все алиасы) — без миграции.
-_GENRE_CANON: dict[str, str] = {
-    "drama": "драма", "comedy": "комедия", "thriller": "триллер", "action": "боевик",
-    "crime": "криминал", "mystery": "детектив", "detective": "детектив", "horror": "ужасы",
-    "sci-fi": "фантастика", "science fiction": "фантастика", "fantasy": "фэнтези",
-    "adventure": "приключения", "biography": "биография", "history": "история",
-    "romance": "мелодрама", "melodrama": "мелодрама", "sport": "спорт", "war": "военный",
-    "documentary": "документальный", "family": "семейный", "animation": "мультфильм",
-    "cartoon": "мультфильм", "anime": "мультфильм", "аниме": "мультфильм",
-    "детский": "семейный", "kids": "семейный", "children": "семейный",
-    "western": "приключения", "вестерн": "приключения", "musical": "мюзикл",
-    "music": "мюзикл", "музыка": "мюзикл", "film-noir": "криминал", "фильм-нуар": "криминал",
-    "short": "короткометражка",
-}
-
-# Продуктовая витрина жанров: только осмысленные top-level жанры каталога.
-# Форматы («короткометражка»), ТВ-мусор («реальное ТВ») и редкие хвосты
-# («спорт», «мюзикл») в витрину не попадают — фильмы при этом остаются
-# доступными через поиск и карточки. Сортировка по count делается в list_genres.
-_GENRE_SHOWCASE = frozenset((
-    "драма", "боевик", "комедия", "триллер", "приключения", "фантастика",
-    "криминал", "детектив", "фэнтези", "ужасы", "мультфильм", "мелодрама",
-    "семейный", "биография", "военный", "история", "документальный",
-))
-
-
-def _canon_genre(genre: str | None) -> str:
-    """Единый (русский) канон жанра; неизвестные значения — как есть (обрезанные)."""
-    s = (genre or "").strip()
-    return _GENRE_CANON.get(s.casefold(), s)
-
-
-def _genre_query_aliases(genre: str) -> list[str]:
-    """Все варианты написания жанра (рус+англ, lower) для матча в film_genres."""
-    canon = _canon_genre(genre)
-    aliases = {canon.casefold(), (genre or "").strip().casefold()}
-    aliases.update(en for en, ru in _GENRE_CANON.items() if ru == canon)
-    return [a for a in aliases if a]
-
-
-def _split_genres(value: str | None) -> list[str]:
-    """Genre values for the derived, indexable film_genres table. Храним КАК ЕСТЬ
-    (kinopoisk даёт рус., OMDb — англ.); к единому канону приводим только при
-    чтении (list_genres мёржит, browse_by_genre матчит все алиасы) — без миграции
-    и без риска задвоить счётчики при повторном бэкфилле проекции."""
-    return list(dict.fromkeys(
-        genre.strip() for genre in (value or "").split(",")
-        if genre.strip() and genre.strip() != "N/A"
-    ))
-
-
-def _split_people(value: str | None) -> list[str]:
-    """Return the canonical comma-separated person names stored on a film."""
-    return list(dict.fromkeys(name.strip() for name in (value or "").split(",") if name.strip()))
-
-
-def _person_key(name: str | None) -> str:
-    """Stable, forgiving key for joining names from two catalog providers."""
-    return re.sub(r"\s+", " ", str(name or "").strip()).casefold()
-
-
-def _portrait_urls(entry: object) -> list[str]:
-    """Read a primary portrait and its source fallbacks from one JSON entry."""
-    if not isinstance(entry, dict):
-        return []
-    values = [entry.get("photo_url"), *(entry.get("fallback_photo_urls") or [])]
-    result: list[str] = []
-    for value in values:
-        url = str(value or "").strip()
-        if url.startswith(("https://", "http://")) and url not in result:
-            result.append(url)
-    return result
-
-
-def _portrait_entries(value: str | None) -> list[dict]:
-    """Tolerantly decode the stored people portrait payload."""
-    try:
-        decoded = json.loads(value or "[]")
-    except (TypeError, json.JSONDecodeError):
-        return []
-    return [entry for entry in decoded if isinstance(entry, dict)] if isinstance(decoded, list) else []
-
-
-# PostgreSQL SQLSTATE codes for "the object I am adding is already there".
-# Matching on message text used to break on a driver or locale change; the
-# code is part of the wire protocol and does not.
-_ALREADY_EXISTS_SQLSTATES = frozenset({
-    "42701",   # duplicate_column
-    "42P07",   # duplicate_table
-    "42710",   # duplicate_object
-})
-
-
-def _is_already_exists_error(exc: BaseException) -> bool:
-    sqlstate = getattr(exc, "sqlstate", None) or getattr(exc, "pgcode", None)
-    if sqlstate in _ALREADY_EXISTS_SQLSTATES:
-        return True
-    # SQLite has no SQLSTATE.  Its message set is small, stable and English-only
-    # because the library ships its own strings, so text matching is safe here
-    # and only here.
-    if isinstance(exc, sqlite3.OperationalError):
-        message = str(exc).lower()
-        return "duplicate column" in message or "already exists" in message
-    return False
-
-
-async def _add_column_if_missing(table: str, col_def: str) -> None:
-    """ALTER TABLE ADD COLUMN, idempotently, each attempt in its OWN
-    connection/transaction: under PostgreSQL any error (e.g. the column already
-    exists) aborts the WHOLE transaction — inside a shared init_db() block it
-    would drag down every following CREATE TABLE IF NOT EXISTS.
-    """
-    try:
-        async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-            await db.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
-            await db.commit()
-    except Exception as exc:
-        # Syntax, permission, disk and connectivity errors must NOT be hidden:
-        # they used to leave an instance on a partially upgraded schema silently.
-        if _is_already_exists_error(exc):
-            return
-        logger.exception("Schema migration failed while adding %s.%s", table, col_def)
-        raise
-
-
-async def _schema_migration_applied(version: str) -> bool:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        row = await (await db.execute(
-            "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
-        )).fetchone()
-        return row is not None
-
-
-async def _record_schema_migration(version: str) -> None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        await db.execute(
-            "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?) "
-            "ON CONFLICT(version) DO NOTHING",
-            (version, _now()),
-        )
-        await db.commit()
-
-
-async def _apply_legacy_column_migration() -> None:
-    """Upgrade databases created before the current film/user columns existed."""
-    for table, col_def in (
-        ("films", "backdrop_url TEXT"),
-        ("films", "age_rating TEXT"),
-        ("films", "actors_photos TEXT"),
-        ("films", "kp_id TEXT"),
-        ("films", "search_text TEXT"),
-        ("films", "poster_checked_at TEXT"),
-        ("films", "artwork_checked_at TEXT"),
-        ("films", "actor_photos_checked_at TEXT"),
-        ("users", "role TEXT"),
-        ("users", "photo_url TEXT"),
-    ):
-        await _add_column_if_missing(table, col_def)
-
-
-async def _apply_director_photo_migration() -> None:
-    """Add a separate, cacheable portrait map for directors.
-
-    It deliberately mirrors ``actors_photos`` instead of overloading it: a
-    person can be both an actor and a director, and stats need the role that
-    is shown in the UI to be explicit.
-    """
-    for table, col_def in (
-        ("films", "directors_photos TEXT"),
-        ("films", "director_photos_checked_at TEXT"),
-    ):
-        await _add_column_if_missing(table, col_def)
-
-
-async def _apply_person_portrait_retry_migration() -> None:
-    """Allow one immediate repair pass for portraits blanked by the first rollout.
-
-    The original migration correctly remembered a completed Wikidata lookup,
-    but a transient Commons miss then stayed blank forever.  Resetting only
-    rows with no stored URL is data-safe: existing working portraits are never
-    touched, and the new 14-day retry guard prevents repeated work afterwards.
-    """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        for photos, checked in (
-            ("actors_photos", "actor_photos_checked_at"),
-            ("directors_photos", "director_photos_checked_at"),
-        ):
-            await db.execute(
-                f"UPDATE films SET {checked} = NULL WHERE {photos} IS NULL OR {photos} = '' "
-                f"OR {photos} NOT LIKE '%https://%'"
-            )
-        await db.commit()
-
-
-async def _apply_person_portrait_completeness_migration() -> None:
-    """Retry partially populated portrait payloads once after the source merge.
-
-    A row may contain one valid portrait and several people without one.  The
-    first repair migration intentionally skipped it because it only detected
-    completely blank JSON.  Resetting just these incomplete payloads lets the
-    new merger attach a second source, while the normal 14-day guard keeps the
-    public profile path calm afterwards.
-    """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        for photos, checked in (
-            ("actors_photos", "actor_photos_checked_at"),
-            ("directors_photos", "director_photos_checked_at"),
-        ):
-            await db.execute(
-                f"UPDATE films SET {checked} = NULL WHERE {photos} LIKE '%\"photo_url\": null%' "
-                f"OR {photos} LIKE '%\"photo_url\":null%'"
-            )
-        await db.commit()
-
-
-async def _apply_search_text_directors_migration() -> None:
-    """Перестроить lookup-текст каталога, добавив режиссёров: поиск по режиссёрам
-    начинает работать наравне с актёрами/названиями. search_text — производная
-    колонка, полностью пересобираемая из полей фильма, так что перезапись безопасна."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        rows = await (await db.execute(
-            "SELECT id, title, title_original, actors, directors, imdb_id, kp_id FROM films")).fetchall()
-        for row in rows:
-            await db.execute(
-                "UPDATE films SET search_text = ? WHERE id = ?",
-                (_catalog_search_text(row["title"], row["title_original"], row["actors"],
-                                      row["directors"], row["imdb_id"], row["kp_id"]), row["id"]))
-        await db.commit()
-
-
-async def _apply_pair_notifications_migration() -> None:
-    """Create the durable notification outbox and upgrade pair invitations.
-
-    Notifications are persisted before a best-effort Telegram Bot API send.  The
-    app can therefore always show a reliable in-app inbox even when a user has
-    blocked the bot or Telegram is temporarily unavailable.
-    """
-    await _add_column_if_missing("partner_invites", "expires_at TEXT")
-    notification_id = "SERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS user_notification_settings (
-                user_id BIGINT PRIMARY KEY,
-                language TEXT NOT NULL DEFAULT 'ru',
-                telegram_enabled INTEGER NOT NULL DEFAULT 1,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS pair_invite_recipients (
-                invite_token TEXT NOT NULL,
-                user_id BIGINT NOT NULL,
-                created_at TEXT NOT NULL,
-                PRIMARY KEY (invite_token, user_id),
-                FOREIGN KEY (invite_token) REFERENCES partner_invites(token),
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        """)
-        await db.execute(f"""
-            CREATE TABLE IF NOT EXISTS notifications (
-                id {notification_id},
-                event_type TEXT NOT NULL,
-                recipient_id BIGINT NOT NULL,
-                actor_id BIGINT,
-                entity_id TEXT NOT NULL,
-                payload TEXT NOT NULL DEFAULT '{{}}',
-                deep_link TEXT,
-                read_at TEXT,
-                created_at TEXT NOT NULL,
-                idempotency_key TEXT NOT NULL UNIQUE,
-                FOREIGN KEY (recipient_id) REFERENCES users(id),
-                FOREIGN KEY (actor_id) REFERENCES users(id)
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS notification_deliveries (
-                notification_id INTEGER NOT NULL,
-                channel TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                attempts INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                sent_at TEXT,
-                idempotency_key TEXT NOT NULL UNIQUE,
-                PRIMARY KEY (notification_id, channel),
-                FOREIGN KEY (notification_id) REFERENCES notifications(id)
-            )
-        """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient_id, id DESC)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(recipient_id, read_at, id DESC)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_invite_recipients_user ON pair_invite_recipients(user_id, invite_token)")
-        await db.commit()
-
-
-async def _apply_pair_notification_event_model_migration() -> None:
-    """Add canonical event records and remove old duplicate invite notices."""
-    await _add_column_if_missing("partner_invites", "accepted_by_user_id BIGINT")
-    await _add_column_if_missing("notifications", "event_id TEXT")
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS pair_events (
-                id TEXT PRIMARY KEY,
-                event_type TEXT NOT NULL,
-                invitation_id TEXT,
-                pair_id TEXT,
-                inviter_user_id BIGINT,
-                invitee_user_id BIGINT,
-                actor_user_id BIGINT,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (inviter_user_id) REFERENCES users(id),
-                FOREIGN KEY (invitee_user_id) REFERENCES users(id),
-                FOREIGN KEY (actor_user_id) REFERENCES users(id)
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS pair_event_recipients (
-                event_id TEXT NOT NULL,
-                recipient_user_id BIGINT NOT NULL,
-                partner_user_id BIGINT,
-                dispatched_at TEXT,
-                PRIMARY KEY (event_id, recipient_user_id),
-                FOREIGN KEY (event_id) REFERENCES pair_events(id) ON DELETE CASCADE,
-                FOREIGN KEY (recipient_user_id) REFERENCES users(id),
-                FOREIGN KEY (partner_user_id) REFERENCES users(id)
-            )
-        """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_pair_events_invitation ON pair_events(invitation_id, created_at DESC)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_pair_event_recipients_recipient ON pair_event_recipients(recipient_user_id, event_id)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_notifications_event ON notifications(event_id, recipient_id)")
-        # Before canonical events, merely opening an invite generated a second
-        # notification beside the invite card itself.  It was never a meaningful
-        # completed event, so remove it together with its outbox rows.
-        await db.execute("DELETE FROM notification_deliveries WHERE notification_id IN (SELECT id FROM notifications WHERE event_type = 'pair.invite.created')")
-        await db.execute("DELETE FROM notifications WHERE event_type = 'pair.invite.created'")
-        await db.commit()
-
-
-async def _apply_pair_notification_outbox_migration() -> None:
-    """Allow a restarted process to resume event delivery exactly once."""
-    await _add_column_if_missing("pair_event_recipients", "dispatched_at TEXT")
-
-
-async def _apply_pair_history_migration() -> None:
-    """Persist pair-specific sessions without changing personal film data.
-
-    ``partners`` intentionally remains the small current-state lookup table.
-    This archive records only the intervals for one exact pair of Telegram IDs,
-    so reuniting with the same person restores their history while a new partner
-    always starts with a separate history.
-    """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS pair_sessions (
-                id TEXT PRIMARY KEY,
-                pair_key TEXT NOT NULL,
-                first_user_id BIGINT NOT NULL,
-                second_user_id BIGINT NOT NULL,
-                started_at TEXT NOT NULL,
-                ended_at TEXT,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (first_user_id) REFERENCES users(id),
-                FOREIGN KEY (second_user_id) REFERENCES users(id),
-                CHECK (first_user_id < second_user_id)
-            )
-        """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_pair_sessions_pair ON pair_sessions(pair_key, started_at)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_pair_sessions_active ON pair_sessions(pair_key, ended_at)")
-
-        # The prior schema kept only active links.  Preserve every relationship
-        # that is active at migration time from its original ``since`` value.
-        rows = await (await db.execute(
-            "SELECT user_id, partner_id, since FROM partners WHERE user_id < partner_id"
-        )).fetchall()
-        for first_user_id, second_user_id, started_at in rows:
-            first_user_id, second_user_id = int(first_user_id), int(second_user_id)
-            pair_key = _pair_key(first_user_id, second_user_id)
-            await db.execute(
-                "INSERT INTO pair_sessions (id, pair_key, first_user_id, second_user_id, started_at, ended_at, created_at) "
-                "VALUES (?,?,?,?,?,NULL,?) ON CONFLICT(id) DO NOTHING",
-                (_legacy_pair_session_id(pair_key, started_at), pair_key, first_user_id, second_user_id,
-                 started_at, started_at))
-
-        # Events introduced with the notification outbox contain the exact
-        # beginning of a pair in pair_id.  If such a pair already ended before
-        # this archive ships, retain that recent history too.
-        ended_events = await (await db.execute(
-            "SELECT id, pair_id, created_at FROM pair_events "
-            "WHERE event_type = 'pair.ended' AND pair_id LIKE 'pair:%'"
-        )).fetchall()
-        for event_id, pair_id, ended_at in ended_events:
-            parsed = _parse_legacy_pair_id(pair_id)
-            if not parsed:
-                continue
-            first_user_id, second_user_id, started_at = parsed
-            pair_key = _pair_key(first_user_id, second_user_id)
-            await db.execute(
-                "INSERT INTO pair_sessions (id, pair_key, first_user_id, second_user_id, started_at, ended_at, created_at) "
-                "VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
-                (f"legacy-ended:{event_id}", pair_key, first_user_id, second_user_id,
-                 started_at, ended_at, started_at))
-        await db.commit()
-
-
-async def _apply_recommendations_migration() -> None:
-    """Persistence for deterministic recommendations.
-
-    It is intentionally separate from personal lists: a rejection must not
-    mutate somebody's watch history, while a recommendation session can safely
-    expire or be restarted without losing any personal data.
-    """
-    history_id = "SERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS recommendation_sessions (
-                id TEXT PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                version TEXT NOT NULL,
-                answers TEXT NOT NULL DEFAULT '{}',
-                current_question TEXT,
-                state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'complete', 'expired')),
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_recommendation_sessions_user ON recommendation_sessions(user_id, state, updated_at)")
-        await db.execute(f"""
-            CREATE TABLE IF NOT EXISTS recommendation_history (
-                id {history_id},
-                user_id BIGINT NOT NULL,
-                film_id INTEGER NOT NULL,
-                mode TEXT NOT NULL CHECK (mode IN ('random', 'quiz')),
-                session_id TEXT,
-                role TEXT,
-                score REAL,
-                action TEXT NOT NULL DEFAULT 'shown' CHECK (action IN ('shown', 'opened', 'want', 'watched', 'rejected', 'another')),
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id),
-                FOREIGN KEY (film_id) REFERENCES films(id),
-                FOREIGN KEY (session_id) REFERENCES recommendation_sessions(id)
-            )
-        """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_recommendation_history_user_film ON recommendation_history(user_id, film_id, action, created_at)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_recommendation_history_user_recent ON recommendation_history(user_id, created_at)")
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS film_recommendation_tags (
-                film_id INTEGER NOT NULL,
-                tag TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                source TEXT NOT NULL,
-                version TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (film_id, tag, source, version),
-                FOREIGN KEY (film_id) REFERENCES films(id)
-            )
-        """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_recommendation_tags_tag ON film_recommendation_tags(tag, confidence)")
-        await db.commit()
-
-
-async def _apply_recommendation_results_migration() -> None:
-    """Keep one completed quiz stable when the user reopens its results."""
-    await _add_column_if_missing("recommendation_sessions", "results TEXT")
-
-
-async def _apply_editorial_collections_migration() -> None:
-    """Редакционная модель поверх СУЩЕСТВУЮЩИХ таблиц collections/collection_films.
-
-    Намеренно не заводим параллельные editorial_* таблицы: id подборок уже живут
-    в проде (и в публичных ссылках), а дублирующая модель означала бы две правды
-    и рискованный перенос. Добавляем недостающие поля и бэкфилим так, чтобы
-    ВИДИМОСТЬ КОНТЕНТА НЕ ИЗМЕНИЛАСЬ: всё, что сейчас публично, остаётся
-    published (снять с публикации админ сможет уже руками из интерфейса).
-    """
-    for col in (
-        "status TEXT NOT NULL DEFAULT 'published'",   # draft | published | archived
-        "description TEXT",
-        "cover_url TEXT",
-        "sort_order INTEGER NOT NULL DEFAULT 0",
-        "updated_by BIGINT",
-        "updated_at TEXT",
-        "published_by BIGINT",
-        "published_at TEXT",
-        "version INTEGER NOT NULL DEFAULT 1",
-    ):
-        await _add_column_if_missing("collections", col)
-    for col in ("position INTEGER NOT NULL DEFAULT 0", "added_by BIGINT"):
-        await _add_column_if_missing("collection_films", col)
-
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        # Бэкфил метаданных: существующий контент считается опубликованным.
-        await db.execute(
-            "UPDATE collections SET updated_at = created_at WHERE updated_at IS NULL")
-        await db.execute(
-            "UPDATE collections SET updated_by = created_by WHERE updated_by IS NULL")
-        await db.execute(
-            "UPDATE collections SET published_at = created_at, published_by = created_by "
-            "WHERE status = 'published' AND published_at IS NULL")
-        await db.execute(
-            "UPDATE collection_films SET added_by = ("
-            "  SELECT created_by FROM collections c WHERE c.id = collection_films.collection_id"
-            ") WHERE added_by IS NULL")
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS admin_audit_log (
-                id          {id_col},
-                actor_id    BIGINT NOT NULL,
-                actor_role  TEXT NOT NULL,
-                action      TEXT NOT NULL,
-                entity_type TEXT NOT NULL,
-                entity_id   TEXT NOT NULL,
-                details     TEXT,
-                created_at  TEXT NOT NULL
-            )
-        """.format(id_col="BIGSERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"))
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_entity "
-                         "ON admin_audit_log(entity_type, entity_id, created_at DESC)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_actor "
-                         "ON admin_audit_log(actor_id, created_at DESC)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_collections_public "
-                         "ON collections(status, sort_order)")
-        await db.commit()
-
-    # Порядок внутри подборки: до миграции он был неявным (added_at ASC) —
-    # сохраняем ровно его, иначе у существующих подборок «переедут» фильмы.
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute(
-            "SELECT collection_id, film_id FROM collection_films "
-            "WHERE position = 0 ORDER BY collection_id, added_at ASC, film_id ASC")
-        rows = [dict(r) for r in await cur.fetchall()]
-    positions: dict[int, int] = {}
-    for row in rows:
-        collection_id = row["collection_id"]
-        positions[collection_id] = positions.get(collection_id, 0) + 1
-        async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-            await db.execute(
-                "UPDATE collection_films SET position = ? WHERE collection_id = ? AND film_id = ?",
-                (positions[collection_id], collection_id, row["film_id"]))
-            await db.commit()
-
-
-async def _apply_featured_collections_migration() -> None:
-    """Формат отображения подборки: обычная карточка или крупный блок на главной.
-
-    display_type — ТОЛЬКО про представление: он не влияет ни на права, ни на
-    публикацию (черновик остаётся приватным в любом формате). Существующие
-    подборки получают 'standard', то есть внешний вид продакшена не меняется.
-    backdrop_url отдельный: вертикальная обложка в ландшафтном блоке смотрится
-    плохо, поэтому переиспользовать cover_url вслепую нельзя.
-    """
-    await _add_column_if_missing("collections", "display_type TEXT NOT NULL DEFAULT 'standard'")
-    await _add_column_if_missing("collections", "backdrop_url TEXT")
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        # Значение по умолчанию покрывает существующие строки, но добитие делает
-        # миграцию идемпотентной и чинит возможный NULL от ранних попыток.
-        await db.execute("UPDATE collections SET display_type = 'standard' WHERE display_type IS NULL")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_collections_display "
-                         "ON collections(display_type, status, sort_order)")
-        await db.commit()
-
-
-async def _apply_media_type_migration() -> None:
-    """Тип записи каталога отдельной колонкой: фильм, сериал, эпизод, короткометражка.
-
-    Раньше признак приходил от провайдера и выбрасывался, из-за чего в подбор
-    ФИЛЬМОВ попадали сериалы (22-минутный мультсериал предлагался как фильм).
-    Колонка заполняется провайдером при сохранении и разово добивается скриптом
-    scripts/backfill_media_type.py; NULL означает «нет данных», а не «фильм».
-    """
-    await _add_column_if_missing("films", "media_type TEXT")
-    await _add_column_if_missing("films", "media_type_source TEXT")
-
-
-async def _apply_movie_enrichment_migration() -> None:
-    """Долговечная очередь обогащения и версионированные профили признаков.
-
-    Очередь живёт в БД, а не в BackgroundTasks: веб-процесс может перезапуститься
-    сразу после ответа, и незавершённое обогащение просто исчезло бы. Состояние
-    в таблице переживает и рестарт, и падение воркера.
-
-    Типы намеренно портируемые (TEXT под ISO-время и JSON), как во всей схеме
-    проекта: одна и та же миграция обязана примениться и к SQLite локально, и к
-    Postgres в облаке.
-    """
-    job_id = "BIGSERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        await db.execute(f"""
-            CREATE TABLE IF NOT EXISTS movie_enrichment_jobs (
-                id             {job_id},
-                film_id        INTEGER NOT NULL REFERENCES films(id) ON DELETE CASCADE,
-                job_type       TEXT NOT NULL DEFAULT 'full_enrichment'
-                               CHECK (job_type IN ('full_enrichment','metadata_refresh','feature_rebuild')),
-                status         TEXT NOT NULL DEFAULT 'pending'
-                               CHECK (status IN ('pending','processing','retry','completed','failed','dead_letter')),
-                priority       INTEGER NOT NULL DEFAULT 0,
-                requested_feature_version  TEXT NOT NULL,
-                requested_taxonomy_version TEXT NOT NULL,
-                expected_source_hash TEXT,
-                attempts       INTEGER NOT NULL DEFAULT 0,
-                max_attempts   INTEGER NOT NULL DEFAULT 6,
-                run_after      TEXT NOT NULL,
-                locked_at      TEXT,
-                locked_by      TEXT,
-                last_error_code    TEXT,
-                last_error_message TEXT,
-                created_at     TEXT NOT NULL,
-                updated_at     TEXT NOT NULL,
-                completed_at   TEXT
-            )
-        """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_jobs_claim "
-                         "ON movie_enrichment_jobs(status, run_after, priority DESC, created_at)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_jobs_film "
-                         "ON movie_enrichment_jobs(film_id)")
-        # Частичный уникальный индекс — единственная защита от дублей заданий,
-        # которая работает при нескольких воркерах одновременно.
-        await db.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_enrichment_active_job "
-            "ON movie_enrichment_jobs(film_id, job_type, requested_feature_version, "
-            "requested_taxonomy_version) WHERE status IN ('pending','processing','retry')")
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS movie_recommendation_profiles (
-                film_id        INTEGER PRIMARY KEY REFERENCES films(id) ON DELETE CASCADE,
-                status         TEXT NOT NULL
-                               CHECK (status IN ('pending','ready','low_confidence','failed','stale')),
-                content_type   TEXT NOT NULL
-                               CHECK (content_type IN ('movie','tv','episode','short','unknown')),
-                feature_version   TEXT NOT NULL,
-                taxonomy_version  TEXT NOT NULL,
-                extractor_version TEXT NOT NULL,
-                semantic_model_version TEXT,
-                source_hash    TEXT NOT NULL,
-                genres         TEXT NOT NULL DEFAULT '[]',
-                themes         TEXT NOT NULL DEFAULT '[]',
-                tones          TEXT NOT NULL DEFAULT '[]',
-                audience_flags TEXT NOT NULL DEFAULT '[]',
-                energy REAL NOT NULL CHECK (energy BETWEEN 0 AND 1),
-                pace   REAL NOT NULL CHECK (pace BETWEEN 0 AND 1),
-                tension REAL NOT NULL CHECK (tension BETWEEN 0 AND 1),
-                darkness REAL NOT NULL CHECK (darkness BETWEEN 0 AND 1),
-                humor REAL NOT NULL CHECK (humor BETWEEN 0 AND 1),
-                emotionality REAL NOT NULL CHECK (emotionality BETWEEN 0 AND 1),
-                complexity REAL NOT NULL CHECK (complexity BETWEEN 0 AND 1),
-                realism REAL NOT NULL CHECK (realism BETWEEN 0 AND 1),
-                peak_darkness REAL NOT NULL DEFAULT 0.5 CHECK (peak_darkness BETWEEN 0 AND 1),
-                confidence REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1),
-                validation_level TEXT NOT NULL DEFAULT 'valid',
-                warnings       TEXT NOT NULL DEFAULT '[]',
-                evidence       TEXT NOT NULL DEFAULT '{}',
-                calculated_at  TEXT NOT NULL,
-                updated_at     TEXT NOT NULL
-            )
-        """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_profiles_status "
-                         "ON movie_recommendation_profiles(status, content_type)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_profiles_versions "
-                         "ON movie_recommendation_profiles(feature_version, taxonomy_version)")
-        # Ручная правка живёт отдельно и переживает любой пересчёт: иначе
-        # исправление, сделанное руками, стирается следующим же обогащением.
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS movie_recommendation_profile_overrides (
-                film_id       INTEGER PRIMARY KEY REFERENCES films(id) ON DELETE CASCADE,
-                override_data TEXT NOT NULL,
-                reason        TEXT NOT NULL,
-                created_by    BIGINT NOT NULL,
-                created_at    TEXT NOT NULL,
-                updated_at    TEXT NOT NULL
-            )
-        """)
-        await db.commit()
-
-
-async def _apply_worker_heartbeats_migration() -> None:
-    """Пульс фоновых процессов отдельной миграцией.
-
-    Урок: таблицу нельзя дописать в уже применённую миграцию — журнал её
-    пропустит, и в проде объекта просто не будет. Новый объект = новая версия.
-    """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS worker_heartbeats (
-                name       TEXT PRIMARY KEY,
-                worker_id  TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-        """)
-        await db.commit()
-
-
-async def _apply_wishlist_roulette_migration() -> None:
-    """Состояние рулетки по списку «Хочу посмотреть».
-
-    Прежний выбор был равномерным, но без памяти: один и тот же фильм мог
-    выпадать подряд, а человек воспринимает это как «оно сломалось». Храним
-    номер цикла и показанные в нём фильмы — тогда каждый фильм показывается
-    один раз за круг, а история показов не удаляется ради перезапуска круга.
-    """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS wishlist_random_state (
-                user_id      BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-                cycle_number INTEGER NOT NULL DEFAULT 1,
-                updated_at   TEXT NOT NULL
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS wishlist_random_picks (
-                user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                film_id      INTEGER NOT NULL REFERENCES films(id) ON DELETE CASCADE,
-                cycle_number INTEGER NOT NULL,
-                shown_at     TEXT NOT NULL,
-                PRIMARY KEY (user_id, film_id, cycle_number)
-            )
-        """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_wishlist_picks_cycle "
-                         "ON wishlist_random_picks(user_id, cycle_number)")
-        await db.commit()
-
-
-async def _apply_session_versions_migration() -> None:
-    """Версии движка, политики, таксономии и признаков в самой сессии.
-
-    Без них сессия, начатая до деплоя, доигрывается уже другой семантикой:
-    ответы даны по старой анкете, а замена карточки считается новой. Колонки
-    NULL-совместимые — существующие сессии остаются валидными и просто помечены
-    как «версия неизвестна», то есть доигрываются прежней логикой.
-    """
-    for column in ("engine_version TEXT", "policy_version TEXT",
-                   "taxonomy_version TEXT", "feature_version TEXT"):
-        await _add_column_if_missing("recommendation_sessions", column)
-
-
-async def _apply_hero_media_migration() -> None:
-    """Выбранное сервером изображение для полноэкранного экрана подбора.
-
-    Почему отдельные колонки, а не переиспользование backdrop_url: наличие
-    backdrop_url не доказывает ПРИГОДНОСТЬ. Там встречаются и вертикальные
-    обложки, и 640×360. hero_* хранит именно результат проверки — что выбрано,
-    откуда, с каким счётом и какого размера.
-
-    CHECK намеренно не навешиваем: колонки добавляются в существующую большую
-    таблицу через ALTER, и добавление ограничения на живой Postgres — это
-    отдельная блокирующая операция, ради которой не стоит рисковать стартовой
-    миграцией. Допустимые значения проверяет hero_media.HERO_TYPES/HERO_SOURCES
-    на записи, и это закрыто тестом.
-
-    Все колонки NULL-совместимы: каталог до бекфила обязан работать как раньше.
-    """
-    for col_def in (
-        "hero_url TEXT",
-        "hero_type TEXT",
-        "hero_source TEXT",
-        "hero_quality_score REAL",
-        "hero_width INTEGER",
-        "hero_height INTEGER",
-        "hero_updated_at TEXT",
-        # Отдельно от hero_updated_at: фильм без IMDb-id и без постера не даёт
-        # выбора вовсе, и без отметки о ПОПЫТКЕ он возвращался бы в кандидаты
-        # на каждом круге воркера — то есть внешний обход каталога на каждом
-        # деплое, ровно то, чего быть не должно.
-        "hero_checked_at TEXT",
-    ):
-        await _add_column_if_missing("films", col_def)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_films_hero_checked "
-                         "ON films(hero_checked_at)")
-        await db.commit()
-
-
-async def _apply_hero_presentation_migration() -> None:
-    """Persistent art direction and exact-file poster moderation."""
-    for col_def in (
-        "hero_fit TEXT",
-        "hero_focus_x REAL",
-        "hero_focus_y REAL",
-        "poster_display_state TEXT",
-        "poster_display_url TEXT",
-        "poster_reject_reason TEXT",
-    ):
-        await _add_column_if_missing("films", col_def)
-
-
-async def _apply_movie_flow_moderation_migration() -> None:
-    """Durable curator override for recommendation eligibility."""
-    await _add_column_if_missing("films", "movie_flow_state TEXT")
-    await _add_column_if_missing("films", "movie_flow_reason TEXT")
-
-
-async def _apply_public_reviews_migration() -> None:
-    """Add public-review metadata without exposing historical private notes.
-
-    ``user_films`` remains the source of truth for the current rating/comment.
-    The small identity table supplies a stable numeric cursor and lets reports
-    survive edits without copying review text into a second content table.
-    """
-    await _add_column_if_missing("user_films", "commented_at TEXT")
-    await _add_column_if_missing("user_films", "comment_status TEXT")
-    review_id = "SERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    report_id = "SERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        await db.execute(f"""
-            CREATE TABLE IF NOT EXISTS review_identities (
-                id         {review_id},
-                user_id    BIGINT NOT NULL,
-                film_id    INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                UNIQUE (user_id, film_id),
-                FOREIGN KEY (user_id) REFERENCES users(id),
-                FOREIGN KEY (film_id) REFERENCES films(id)
-            )
-        """)
-        await db.execute(f"""
-            CREATE TABLE IF NOT EXISTS review_reports (
-                id          {report_id},
-                review_id   INTEGER NOT NULL,
-                reporter_id BIGINT NOT NULL,
-                reason      TEXT,
-                created_at  TEXT NOT NULL,
-                UNIQUE (review_id, reporter_id),
-                FOREIGN KEY (review_id) REFERENCES review_identities(id),
-                FOREIGN KEY (reporter_id) REFERENCES users(id)
-            )
-        """)
-        # Historical comments were written when the product promised a private
-        # note. They must never become public merely because a deploy ran.
-        await db.execute(
-            "UPDATE user_films SET comment_status = 'private_legacy' "
-            "WHERE comment IS NOT NULL AND TRIM(comment) <> '' AND comment_status IS NULL"
-        )
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_user_films_public_reviews "
-            "ON user_films(film_id, comment_status, commented_at)"
-        )
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_review_reports_review "
-            "ON review_reports(review_id)"
-        )
-        await db.commit()
-
-
-async def _apply_canonical_cast_migration() -> None:
-    """Additive canonical cast storage; legacy fields remain the rollback path."""
-    await _add_column_if_missing("films", "cast_json TEXT")
-    await _add_column_if_missing("films", "cast_checked_at TEXT")
-
-
-async def _apply_user_acquisition_migration() -> None:
-    """Откуда пришёл пользователь. Обе колонки необязательные и заполняются
-    только у новых регистраций: у зарегистрированных РАНЬШЕ они останутся NULL,
-    и это честный ответ «неизвестно», а не повод дописать им «direct»."""
-    await _add_column_if_missing("users", "acquisition_source TEXT")
-    await _add_column_if_missing("users", "acquisition_param TEXT")
-
-
-def _row_time(row: dict, *fields: str) -> str:
-    """Comparable ISO timestamp for conflict resolution during a film merge."""
-    return max((str(row.get(field) or "") for field in fields), default="")
-
-
-def _merge_user_film_values(current: dict, duplicate: dict) -> dict:
-    """Merge two states of one user's same logical movie without losing history.
-
-    A later explicit rating/comment wins.  Passive list additions never turn a
-    watched movie back into ``want_to_watch`` and the oldest ``added_at`` is
-    retained as the beginning of the user's personal history.
-    """
-    rows = (current, duplicate)
-    rated = [row for row in rows if row.get("rating") is not None]
-    rating_row = max(
-        rated,
-        key=lambda row: _row_time(row, "rated_at", "watched_at", "added_at"),
-        default=current,
-    )
-    commented = [row for row in rows if (row.get("comment") or "").strip()]
-    comment_row = max(
-        commented,
-        key=lambda row: _row_time(row, "commented_at", "rated_at", "added_at"),
-        default=None,
-    )
-    added_values = [str(row.get("added_at")) for row in rows if row.get("added_at")]
-    watched_values = [str(row.get("watched_at")) for row in rows if row.get("watched_at")]
-    rated_values = [str(row.get("rated_at")) for row in rows if row.get("rated_at")]
-    return {
-        "status": "watched" if any(row.get("status") == "watched" for row in rows)
-        else "want_to_watch",
-        "rating": rating_row.get("rating") if rated else None,
-        "comment": comment_row.get("comment") if comment_row else None,
-        "comment_status": comment_row.get("comment_status") if comment_row else None,
-        "added_at": min(added_values) if added_values else None,
-        "watched_at": max(watched_values) if watched_values else None,
-        "rated_at": max(rated_values) if rated_values else None,
-        "commented_at": (
-            _row_time(comment_row, "commented_at") or None
-            if comment_row else None
-        ),
-    }
-
-
-async def _merge_film_duplicate(db, canonical_row: dict, duplicate_row: dict) -> None:
-    """Move every durable reference to ``canonical_row`` and delete a duplicate.
-
-    This function is intentionally conservative: callers only pass rows with
-    the exact same title, year and non-empty poster where one id is a synthetic
-    ``kp_*`` alias and the other is a real IMDb id.
-    """
-    canonical_id = int(canonical_row["id"])
-    duplicate_id = int(duplicate_row["id"])
-
-    # One current state per user/movie.  When both aliases were used, merge the
-    # two rows according to their real activity timestamps.
-    cur = await db.execute("SELECT * FROM user_films WHERE film_id = ?", (duplicate_id,))
-    for duplicate_state_row in await cur.fetchall():
-        duplicate_state = dict(duplicate_state_row)
-        user_id = duplicate_state["user_id"]
-        existing_cur = await db.execute(
-            "SELECT * FROM user_films WHERE user_id = ? AND film_id = ?",
-            (user_id, canonical_id),
-        )
-        existing_row = await existing_cur.fetchone()
-        if existing_row is None:
-            await db.execute(
-                "UPDATE user_films SET film_id = ? WHERE user_id = ? AND film_id = ?",
-                (canonical_id, user_id, duplicate_id),
-            )
-            continue
-        merged = _merge_user_film_values(dict(existing_row), duplicate_state)
-        await db.execute(
-            "UPDATE user_films SET status = ?, rating = ?, comment = ?, added_at = ?, "
-            "watched_at = ?, rated_at = ?, commented_at = ?, comment_status = ? "
-            "WHERE user_id = ? AND film_id = ?",
-            (
-                merged["status"], merged["rating"], merged["comment"], merged["added_at"],
-                merged["watched_at"], merged["rated_at"], merged["commented_at"],
-                merged["comment_status"], user_id, canonical_id,
-            ),
-        )
-        await db.execute(
-            "DELETE FROM user_films WHERE user_id = ? AND film_id = ?",
-            (user_id, duplicate_id),
-        )
-
-    # Stable public-review identities and abuse reports must follow the merged
-    # movie.  Duplicate reports by the same reporter collapse idempotently.
-    cur = await db.execute(
-        "SELECT * FROM review_identities WHERE film_id = ?", (duplicate_id,)
-    )
-    for identity_row in await cur.fetchall():
-        identity = dict(identity_row)
-        existing_cur = await db.execute(
-            "SELECT id FROM review_identities WHERE user_id = ? AND film_id = ?",
-            (identity["user_id"], canonical_id),
-        )
-        existing = await existing_cur.fetchone()
-        if existing is None:
-            await db.execute(
-                "UPDATE review_identities SET film_id = ? WHERE id = ?",
-                (canonical_id, identity["id"]),
-            )
-            continue
-        await db.execute(
-            "INSERT INTO review_reports (review_id, reporter_id, reason, created_at) "
-            "SELECT ?, reporter_id, reason, created_at FROM review_reports WHERE review_id = ? "
-            "ON CONFLICT(review_id, reporter_id) DO NOTHING",
-            (existing["id"], identity["id"]),
-        )
-        await db.execute("DELETE FROM review_reports WHERE review_id = ?", (identity["id"],))
-        await db.execute("DELETE FROM review_identities WHERE id = ?", (identity["id"],))
-
-    # Editorial collections keep their order and authorship.  A pre-existing
-    # canonical entry wins; otherwise the duplicate entry is simply re-keyed.
-    cur = await db.execute(
-        "SELECT * FROM collection_films WHERE film_id = ?", (duplicate_id,)
-    )
-    for collection_row in await cur.fetchall():
-        item = dict(collection_row)
-        existing_cur = await db.execute(
-            "SELECT 1 FROM collection_films WHERE collection_id = ? AND film_id = ?",
-            (item["collection_id"], canonical_id),
-        )
-        if await existing_cur.fetchone():
-            await db.execute(
-                "DELETE FROM collection_films WHERE collection_id = ? AND film_id = ?",
-                (item["collection_id"], duplicate_id),
-            )
-        else:
-            await db.execute(
-                "UPDATE collection_films SET film_id = ? "
-                "WHERE collection_id = ? AND film_id = ?",
-                (canonical_id, item["collection_id"], duplicate_id),
-            )
-
-    # Set-like projections are copied with their natural uniqueness keys.
-    await db.execute(
-        "INSERT INTO film_genres (film_id, genre) "
-        "SELECT ?, genre FROM film_genres WHERE film_id = ? "
-        "ON CONFLICT(film_id, genre) DO NOTHING",
-        (canonical_id, duplicate_id),
-    )
-    await db.execute("DELETE FROM film_genres WHERE film_id = ?", (duplicate_id,))
-    await db.execute(
-        "INSERT INTO film_recommendation_tags "
-        "(film_id, tag, confidence, source, version, updated_at) "
-        "SELECT ?, tag, confidence, source, version, updated_at "
-        "FROM film_recommendation_tags WHERE film_id = ? "
-        "ON CONFLICT(film_id, tag, source, version) DO NOTHING",
-        (canonical_id, duplicate_id),
-    )
-    await db.execute(
-        "DELETE FROM film_recommendation_tags WHERE film_id = ?", (duplicate_id,)
-    )
-
-    # Historical recommendation events are user history, so preserve them.
-    await db.execute(
-        "UPDATE recommendation_history SET film_id = ? WHERE film_id = ?",
-        (canonical_id, duplicate_id),
-    )
-    cur = await db.execute(
-        "SELECT * FROM wishlist_random_picks WHERE film_id = ?", (duplicate_id,)
-    )
-    for pick_row in await cur.fetchall():
-        pick = dict(pick_row)
-        await db.execute(
-            "INSERT INTO wishlist_random_picks "
-            "(user_id, film_id, cycle_number, shown_at) VALUES (?,?,?,?) "
-            "ON CONFLICT(user_id, film_id, cycle_number) DO NOTHING",
-            (pick["user_id"], canonical_id, pick["cycle_number"], pick["shown_at"]),
-        )
-    await db.execute(
-        "DELETE FROM wishlist_random_picks WHERE film_id = ?", (duplicate_id,)
-    )
-
-    # Overrides are human input.  Preserve a duplicate override if the
-    # canonical movie has none; derived profiles/jobs can be safely rebuilt.
-    override_cur = await db.execute(
-        "SELECT 1 FROM movie_recommendation_profile_overrides WHERE film_id = ?",
-        (canonical_id,),
-    )
-    if await override_cur.fetchone():
-        await db.execute(
-            "DELETE FROM movie_recommendation_profile_overrides WHERE film_id = ?",
-            (duplicate_id,),
-        )
-    else:
-        await db.execute(
-            "UPDATE movie_recommendation_profile_overrides SET film_id = ? WHERE film_id = ?",
-            (canonical_id, duplicate_id),
-        )
-    await db.execute("DELETE FROM movie_enrichment_jobs WHERE film_id = ?", (duplicate_id,))
-    await db.execute(
-        "DELETE FROM movie_recommendation_profiles WHERE film_id = ?", (duplicate_id,)
-    )
-
-    # Delete the synthetic row before moving its kp_id; the existing partial
-    # unique index correctly forbids both rows from owning the same kp id.
-    await db.execute("DELETE FROM films WHERE id = ?", (duplicate_id,))
-
-    merged_genres = ", ".join(dict.fromkeys(
-        _split_genres(canonical_row.get("genres"))
-        + _split_genres(duplicate_row.get("genres"))
-    )) or None
-    merged_directors = ", ".join(dict.fromkeys(
-        _split_people(canonical_row.get("directors"))
-        + _split_people(duplicate_row.get("directors"))
-    )) or None
-    merged_actors = ", ".join(dict.fromkeys(
-        _split_people(canonical_row.get("actors"))
-        + _split_people(duplicate_row.get("actors"))
-    )) or None
-    merged_kp_id = canonical_row.get("kp_id") or duplicate_row.get("kp_id")
-    merged_search_text = _catalog_search_text(
-        canonical_row.get("title") or duplicate_row.get("title"),
-        canonical_row.get("title_original") or duplicate_row.get("title_original"),
-        merged_actors, merged_directors, canonical_row.get("imdb_id"), merged_kp_id,
-    )
-    await db.execute(
-        "UPDATE films SET kp_id = ?, genres = ?, directors = ?, actors = ?, search_text = ?, "
-        "title_original = COALESCE(NULLIF(title_original, ''), ?), "
-        "runtime = COALESCE(NULLIF(runtime, ''), ?), "
-        "imdb_rating = COALESCE(NULLIF(imdb_rating, ''), ?), "
-        "kp_rating = COALESCE(NULLIF(kp_rating, ''), ?), "
-        "imdb_votes = COALESCE(NULLIF(imdb_votes, ''), ?), "
-        "plot = COALESCE(NULLIF(plot, ''), ?), "
-        "poster_url = COALESCE(NULLIF(poster_url, ''), ?), "
-        "backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
-        "age_rating = COALESCE(NULLIF(age_rating, ''), ?), "
-        "actors_photos = COALESCE(NULLIF(actors_photos, ''), ?), "
-        "directors_photos = COALESCE(NULLIF(directors_photos, ''), ?), "
-        "media_type = COALESCE(NULLIF(media_type, ''), ?), "
-        "media_type_source = COALESCE(NULLIF(media_type_source, ''), ?) "
-        "WHERE id = ?",
-        (
-            merged_kp_id, merged_genres, merged_directors, merged_actors,
-            merged_search_text, duplicate_row.get("title_original"),
-            duplicate_row.get("runtime"), duplicate_row.get("imdb_rating"),
-            duplicate_row.get("kp_rating"), duplicate_row.get("imdb_votes"),
-            duplicate_row.get("plot"), duplicate_row.get("poster_url"),
-            duplicate_row.get("backdrop_url"), duplicate_row.get("age_rating"),
-            duplicate_row.get("actors_photos"), duplicate_row.get("directors_photos"),
-            duplicate_row.get("media_type"), duplicate_row.get("media_type_source"),
-            canonical_id,
-        ),
-    )
-    await _set_film_genres(db, canonical_id, merged_genres)
-    await _enqueue_enrichment(db, canonical_id, priority=20)
-    logger.warning(
-        "catalog dedupe: merged film_id=%s (%s) into film_id=%s (%s)",
-        duplicate_id, duplicate_row.get("imdb_id"),
-        canonical_id, canonical_row.get("imdb_id"),
-    )
-
-
-async def _apply_film_identity_migration() -> None:
-    """Repair high-confidence IMDb/Kinopoisk aliases and prevent new races."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        # A tiny durable lock registry serializes concurrent catalog inserts
-        # across all Fly machines.  One row per logical catalog identity is a
-        # bounded, auditable cost and works identically in SQLite/Postgres.
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS film_identity_locks (
-                identity_key TEXT PRIMARY KEY,
-                created_at   TEXT NOT NULL
-            )
-        """)
-        groups_cur = await db.execute(
-            "SELECT title, COALESCE(year, '') AS year_key, poster_url "
-            "FROM films WHERE poster_url IS NOT NULL AND TRIM(poster_url) <> '' "
-            "GROUP BY title, COALESCE(year, ''), poster_url HAVING COUNT(*) > 1"
-        )
-        for group_row in await groups_cur.fetchall():
-            group = dict(group_row)
-            films_cur = await db.execute(
-                "SELECT * FROM films WHERE title = ? AND COALESCE(year, '') = ? "
-                "AND poster_url = ? ORDER BY id",
-                (group["title"], group["year_key"], group["poster_url"]),
-            )
-            records = [dict(row) for row in await films_cur.fetchall()]
-            real_imdb = [
-                row for row in records
-                if str(row.get("imdb_id") or "").lower().startswith("tt")
-            ]
-            synthetic = [
-                row for row in records
-                if str(row.get("imdb_id") or "").lower().startswith("kp_")
-            ]
-            # Exact poster/title/year plus exactly one real IMDb record is
-            # intentionally strict; ambiguous remakes are left for an operator.
-            if len(real_imdb) != 1 or not synthetic:
-                continue
-            canonical = real_imdb[0]
-            for duplicate in synthetic:
-                await _merge_film_duplicate(db, canonical, duplicate)
-                canonical["kp_id"] = canonical.get("kp_id") or duplicate.get("kp_id")
-                canonical["genres"] = ", ".join(dict.fromkeys(
-                    _split_genres(canonical.get("genres"))
-                    + _split_genres(duplicate.get("genres"))
-                )) or None
-                canonical["directors"] = ", ".join(dict.fromkeys(
-                    _split_people(canonical.get("directors"))
-                    + _split_people(duplicate.get("directors"))
-                )) or None
-                canonical["actors"] = ", ".join(dict.fromkeys(
-                    _split_people(canonical.get("actors"))
-                    + _split_people(duplicate.get("actors"))
-                )) or None
-        await db.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_films_kp_id "
-            "ON films(kp_id) WHERE kp_id IS NOT NULL"
-        )
-        await db.commit()
-
-
-async def _run_schema_migrations() -> None:
-    """Run ordered, idempotent schema upgrades and journal them on success."""
-    migrations = (
-        (_SCHEMA_MIGRATION_LEGACY_COLUMNS, _apply_legacy_column_migration),
-        (_SCHEMA_MIGRATION_DIRECTOR_PHOTOS, _apply_director_photo_migration),
-        (_SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY, _apply_person_portrait_retry_migration),
-        (_SCHEMA_MIGRATION_PERSON_PORTRAIT_COMPLETENESS, _apply_person_portrait_completeness_migration),
-        (_SCHEMA_MIGRATION_SEARCH_TEXT_DIRECTORS, _apply_search_text_directors_migration),
-        (_SCHEMA_MIGRATION_PAIR_NOTIFICATIONS, _apply_pair_notifications_migration),
-        (_SCHEMA_MIGRATION_PAIR_NOTIFICATION_EVENTS, _apply_pair_notification_event_model_migration),
-        (_SCHEMA_MIGRATION_PAIR_NOTIFICATION_OUTBOX, _apply_pair_notification_outbox_migration),
-        (_SCHEMA_MIGRATION_PAIR_HISTORY, _apply_pair_history_migration),
-        (_SCHEMA_MIGRATION_RECOMMENDATIONS, _apply_recommendations_migration),
-        (_SCHEMA_MIGRATION_RECOMMENDATION_RESULTS, _apply_recommendation_results_migration),
-        (_SCHEMA_MIGRATION_EDITORIAL_COLLECTIONS, _apply_editorial_collections_migration),
-        (_SCHEMA_MIGRATION_FEATURED_COLLECTIONS, _apply_featured_collections_migration),
-        (_SCHEMA_MIGRATION_MEDIA_TYPE, _apply_media_type_migration),
-        (_SCHEMA_MIGRATION_MOVIE_ENRICHMENT, _apply_movie_enrichment_migration),
-        (_SCHEMA_MIGRATION_WORKER_HEARTBEATS, _apply_worker_heartbeats_migration),
-        (_SCHEMA_MIGRATION_WISHLIST_ROULETTE, _apply_wishlist_roulette_migration),
-        (_SCHEMA_MIGRATION_SESSION_VERSIONS, _apply_session_versions_migration),
-        (_SCHEMA_MIGRATION_HERO_MEDIA, _apply_hero_media_migration),
-        (_SCHEMA_MIGRATION_HERO_PRESENTATION, _apply_hero_presentation_migration),
-        (_SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION, _apply_movie_flow_moderation_migration),
-        (_SCHEMA_MIGRATION_PUBLIC_REVIEWS, _apply_public_reviews_migration),
-        (_SCHEMA_MIGRATION_FILM_IDENTITY, _apply_film_identity_migration),
-        (_SCHEMA_MIGRATION_CANONICAL_CAST, _apply_canonical_cast_migration),
-        (_SCHEMA_MIGRATION_USER_ACQUISITION, _apply_user_acquisition_migration),
-    )
-    for version, migration in migrations:
-        if await _schema_migration_applied(version):
-            continue
-        await migration()
-        await _record_schema_migration(version)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # ── Инициализация ────────────────────────────────────────────────────────────
@@ -1313,7 +173,7 @@ async def _schema_migration_lock():
     if not _PG:
         yield          # SQLite: один писатель, дополнительная блокировка не нужна
         return
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as lock_conn:
+    async with db_session.connect() as lock_conn:
         await lock_conn.execute("SELECT pg_advisory_lock(?)", (_SCHEMA_LOCK_KEY,))
         try:
             yield
@@ -1328,7 +188,7 @@ async def init_db() -> None:
 
 
 async def _init_schema() -> None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         # WAL: чтение не блокирует запись — публичный трафик без «database is locked».
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA synchronous=NORMAL")
@@ -1483,7 +343,11 @@ async def _init_schema() -> None:
 
         # Each legacy ALTER runs in an isolated transaction: PostgreSQL marks
         # a transaction failed after an expected duplicate-column error.
-        await _run_schema_migrations()
+        # Local import: migrations needs the catalog write helpers that live
+        # here, so importing it at module level would close the cycle. Same
+        # pattern, and same reason, as _enqueue_enrichment below.
+        from migrations import run_schema_migrations
+        await run_schema_migrations()
 
         # Индексы под горячие запросы: список юзера и community-агрегат по фильму.
         await db.execute("CREATE INDEX IF NOT EXISTS idx_uf_user ON user_films(user_id, status)")
@@ -1547,7 +411,7 @@ async def _init_schema() -> None:
 
 async def ping() -> bool:
     """Лёгкая readiness-проверка доступности активной базы данных."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute("SELECT 1")
         return await cur.fetchone() is not None
 
@@ -1555,7 +419,7 @@ async def ping() -> bool:
 # ── Постоянный кэш поиска ─────────────────────────────────────────────────────
 async def search_cache_get(q: str, max_age_sec: int, empty_max_age_sec: int | None = None) -> list | None:
     """Fresh positive results, or a deliberately short-lived cached empty result."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT results, created_at FROM search_cache WHERE q = ?", (q,))
         row = await cur.fetchone()
@@ -1574,7 +438,7 @@ async def search_cache_get(q: str, max_age_sec: int, empty_max_age_sec: int | No
 
 
 async def search_cache_put(q: str, results: list) -> None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "INSERT INTO search_cache (q, results, created_at) VALUES (?,?,?) "
             "ON CONFLICT(q) DO UPDATE SET results = excluded.results, created_at = excluded.created_at",
@@ -1586,7 +450,7 @@ async def purge_search_cache(max_age_sec: int) -> int:
     """Удалить протухшие записи кэша поиска (иначе таблица растёт без границы).
     Возвращает число удалённых строк."""
     cutoff = (datetime.now(UTC) - timedelta(seconds=max_age_sec)).isoformat()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute("DELETE FROM search_cache WHERE created_at < ?", (cutoff,))
         await db.commit()
         return cur.rowcount
@@ -1596,7 +460,7 @@ async def try_spend_search_budget(day: str, budget: int) -> bool:
     """Атомарный инкремент дневного бюджета внешних вызовов kinopoisk/OMDb — общий
     на все инстансы (важно при 2+ Fly-машинах). True — единица списана, False — бюджет
     на сегодня исчерпан. UPSERT с условием в WHERE — атомарно и без гонок в обоих движках."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "INSERT INTO search_budget (day, spent) VALUES (?, 1) "
             "ON CONFLICT(day) DO UPDATE SET spent = search_budget.spent + 1 "
@@ -1617,7 +481,7 @@ async def backup_db(keep: int = 7) -> str | None:
     path = os.path.join(dirname, f"movies.backup-{datetime.now(UTC):%Y%m%d}.db")
     if not os.path.exists(path):
         try:
-            async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+            async with db_session.connect() as db:
                 await db.execute("VACUUM INTO ?", (path,))
         except Exception:
             return None
@@ -1672,7 +536,7 @@ async def upsert_user(user: dict, start_param: object = None) -> None:
     now = _now()
     last_seen_cutoff = (datetime.now(UTC) - timedelta(minutes=15)).isoformat()
     source, param = normalize_acquisition(start_param)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         # Источник пишется ТОЛЬКО в INSERT: ветка обновления его не трогает.
         # Атрибуция по первому касанию — иначе достаточно один раз открыть
         # приложение по ссылке «Поделиться», чтобы задним числом переписать
@@ -1713,7 +577,7 @@ async def user_analytics(now: datetime | None = None) -> dict:
     day_start = moment.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     week_ago = (moment - timedelta(days=7)).isoformat()
     month_ago = (moment - timedelta(days=30)).isoformat()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         totals = dict(await (await db.execute(
             """
@@ -1764,14 +628,6 @@ async def user_analytics(now: datetime | None = None) -> dict:
     }
 
 
-# ── Каталог фильмов ──────────────────────────────────────────────────────────
-def _catalog_search_text(title: str | None, title_original: str | None,
-                         actors: str | None, directors: str | None,
-                         imdb_id: str, kp_id: str | None) -> str:
-    """Unicode-safe lookup text stored once with a catalog record. Включает
-    актёров и режиссёров — поиск по людям работает без внешних запросов."""
-    values = (title, title_original, actors, directors, imdb_id, kp_id)
-    return " ".join(" ".join(str(value or "").split()).casefold() for value in values).strip()
 
 
 def _prefer_catalog_value(current: str | None, incoming: str | None) -> str | None:
@@ -1813,7 +669,7 @@ def _film_identity_key(imdb_id: str, kp_id: str | None, title: str,
 
 async def _backfill_catalog_search_text() -> None:
     """Give legacy catalog entries the same local-search behaviour as new ones."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT id, title, title_original, actors, directors, imdb_id, kp_id FROM films "
@@ -1828,7 +684,7 @@ async def _backfill_catalog_search_text() -> None:
 
 async def _backfill_film_genres() -> None:
     """Populate the indexable genre projection for legacy catalog rows."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute("SELECT id, genres FROM films")).fetchall()
         for row in rows:
@@ -1900,7 +756,7 @@ async def search_catalog(query: str, limit: int = 8) -> list[dict]:
 
     clauses = ["search_text LIKE ? ESCAPE '\\'" for _ in terms]
     params = [like(term) for term in terms]
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         safe_prefix = terms[0] if re.fullmatch(r"[\w-]+", terms[0], flags=re.UNICODE) else None
         rows = []
@@ -1931,7 +787,7 @@ async def search_catalog(query: str, limit: int = 8) -> list[dict]:
 
 async def get_film_id_by_source(src: str, ref: str) -> int | None:
     """Find a cataloged film by the identifier sent back to the search UI."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         if src == "i":
             cur = await db.execute("SELECT id FROM films WHERE imdb_id = ?", (ref,))
         else:
@@ -1944,7 +800,7 @@ async def get_film_id_by_source(src: str, ref: str) -> int | None:
 
 async def get_catalog_item_by_source(src: str, ref: str) -> dict | None:
     """Exact catalog lookup for a direct IMDb/Kinopoisk search."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         if src == "i":
             cur = await db.execute("SELECT * FROM films WHERE imdb_id = ?", (ref,))
@@ -1996,7 +852,7 @@ async def get_or_create_film(
     # доопределить его, а не считал колонку уже заполненной.
     media_type = media_type if media_type in (_MEDIA_MOVIE, _MEDIA_SERIES, _MEDIA_EPISODE, _MEDIA_SHORT) else None
     search_text = _catalog_search_text(title, title_original, actors, directors, imdb_id, kp_id)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         # INSERT + no-op UPDATE is a portable transaction-scoped mutex.  It
         # prevents two web machines from inserting IMDb and kp aliases of the
@@ -2126,7 +982,7 @@ async def get_or_create_film(
 
 
 async def get_film(film_id: int) -> dict | None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT * FROM films WHERE id = ?", (film_id,))
         row = await cur.fetchone()
@@ -2160,7 +1016,7 @@ async def update_film_cast(
         if normalized else None
     )
     timestamp = checked_at or _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cursor = await db.execute(
             """
             UPDATE films
@@ -2182,7 +1038,7 @@ async def films_for_cast_backfill(
     *, film_id: int | None = None, limit: int = 20,
 ) -> list[dict]:
     """Bounded catalog candidates for the maintenance command."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         if film_id is not None:
             cur = await db.execute("SELECT * FROM films WHERE id = ?", (film_id,))
@@ -2204,7 +1060,7 @@ async def set_film_artwork(imdb_id: str, backdrop_url: str | None,
     """
     if not imdb_id or not backdrop_url:
         return False
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET backdrop_url = ?, age_rating = COALESCE(age_rating, ?) "
             "WHERE imdb_id = ? AND (backdrop_url IS NULL OR backdrop_url = '')",
@@ -2221,7 +1077,7 @@ async def mark_film_artwork_checked(imdb_id: str, backdrop_url: str | None,
     Without this marker, films that simply have no backdrop would hit Kinopoisk
     every time someone opens the detail page.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
             "age_rating = COALESCE(age_rating, ?), artwork_checked_at = ? "
@@ -2242,7 +1098,7 @@ async def mark_film_visuals_checked(
     detail-page visit.
     """
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET poster_url = COALESCE(NULLIF(poster_url, ''), ?), "
             "backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
@@ -2256,7 +1112,7 @@ async def mark_film_visuals_checked(
 async def get_film_id_by_imdb(imdb_id: str) -> int | None:
     """id фильма в каталоге по imdb_id, если уже есть (без вставки). Нужно, чтобы
     /api/add не ходил в внешние API за фильмом, который уже в каталоге."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute("SELECT id FROM films WHERE imdb_id = ?", (imdb_id,))
         row = await cur.fetchone()
         return row[0] if row else None
@@ -2266,7 +1122,7 @@ async def films_missing_poster(limit: int = 200) -> list[dict]:
     """Фильмы каталога без постера (poster_url NULL/пусто) — для бекфила.
     Возвращает [{id, imdb_id, title, title_original, year}] (последние два нужны
     для добора по названию). Свежие сверху (чаще всего нужны первыми)."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, imdb_id, title, title_original, year FROM films "
@@ -2278,7 +1134,7 @@ async def films_missing_poster(limit: int = 200) -> list[dict]:
 async def set_film_poster(imdb_id: str, poster_url: str) -> bool:
     """Проставить постер фильму по imdb_id. Только если его ещё нет (бекфил не
     затирает уже найденное). True = запись обновлена."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET poster_url = ? "
             "WHERE imdb_id = ? AND (poster_url IS NULL OR poster_url = '')",
@@ -2290,7 +1146,7 @@ async def set_film_poster(imdb_id: str, poster_url: str) -> bool:
 async def films_with_omdb_poster(limit: int = 200) -> list[dict]:
     """Фильмы с постером Amazon/OMDb (заметно хуже качеством, чем кинопоиск) —
     кандидаты на апгрейд. Возвращает [{id, imdb_id, title, title_original, year}]."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, imdb_id, title, title_original, year FROM films "
@@ -2303,7 +1159,7 @@ async def upgrade_film_poster(imdb_id: str, poster_url: str) -> bool:
     """Заменить постер фильма на лучший (используется только когда нашли
     kinopoisk-версию взамен OMDb) — в отличие от set_film_poster, ЗАТИРАЕТ
     существующее значение. True = запись обновлена."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET poster_url = ? WHERE imdb_id = ?", (poster_url, imdb_id))
         await db.commit()
@@ -2341,7 +1197,7 @@ async def update_film_hero(film_id: int, *, hero_url: str, hero_type: str, hero_
     if hero_source not in hero_media.HERO_SOURCES:
         raise ValueError(f"Недопустимый hero_source: {hero_source!r}")
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         existing = await (await db.execute(
             "SELECT hero_url FROM films WHERE id = ?", (film_id,))).fetchone()
@@ -2380,7 +1236,7 @@ async def update_film_hero_presentation(
         raise ValueError("hero_focus_x must be between 0 and 1")
     if not 0.0 <= focus_y <= 1.0:
         raise ValueError("hero_focus_y must be between 0 and 1")
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "UPDATE films SET hero_fit = ?, hero_focus_x = ?, hero_focus_y = ? "
@@ -2399,7 +1255,7 @@ async def update_film_poster_display(
     if state not in {"auto", "approved", "rejected"}:
         raise ValueError(f"Invalid poster display state: {state!r}")
     normalized_reason = str(reason or "").strip() or None
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         film = await (await db.execute(
             "SELECT poster_url FROM films WHERE id = ?", (film_id,))).fetchone()
@@ -2432,7 +1288,7 @@ async def update_film_movie_flow(
         stored_state = None
     else:
         stored_state = state
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "UPDATE films SET movie_flow_state = ?, movie_flow_reason = ? WHERE id = ?",
@@ -2454,7 +1310,7 @@ async def mark_film_hero_checked(film_id: int) -> None:
     возвращался бы в кандидаты вечно, и каждый круг воркера снова стучался бы
     во внешний сервис по всему такому хвосту каталога.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute("UPDATE films SET hero_checked_at = ? WHERE id = ?", (_now(), film_id))
         await db.commit()
 
@@ -2473,7 +1329,7 @@ async def list_films_missing_or_stale_hero(*, limit: int = 50,
     recent_fallback = (moment - timedelta(days=HERO_REFRESH_RECENT_FALLBACK_DAYS)).isoformat()
     old_fallback = (moment - timedelta(days=HERO_REFRESH_OLD_FALLBACK_DAYS)).isoformat()
     recent_year = _hero_recent_year_cutoff(moment)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
@@ -2499,7 +1355,7 @@ async def list_films_for_hero_backfill(*, limit: int = 50) -> list[dict]:
     Порядок тот же, что и в обычном отборе: сначала непроверенные, затем свежие
     релизы. limit остаётся потолком внешних запросов и здесь.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT * FROM films "
@@ -2510,7 +1366,7 @@ async def list_films_for_hero_backfill(*, limit: int = 50) -> list[dict]:
 
 async def hero_distribution() -> dict:
     """Сводка для оператора: что реально лежит в каталоге."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT COALESCE(hero_source, 'none') AS source, COUNT(*) AS total, "
@@ -2531,7 +1387,7 @@ async def hero_distribution() -> dict:
 
 async def films_missing_actor_photos(limit: int = 200) -> list[dict]:
     """Фильмы каталога без фото актёров (для бекфила). [{id, imdb_id}]."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, imdb_id FROM films WHERE imdb_id LIKE 'tt%' "
@@ -2542,7 +1398,7 @@ async def films_missing_actor_photos(limit: int = 200) -> list[dict]:
 
 async def set_actor_photos(imdb_id: str, photos_json: str) -> bool:
     """Проставить JSON фото актёров, только если ещё не было. True = обновлено."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET actors_photos = ? "
             "WHERE imdb_id = ? AND (actors_photos IS NULL OR actors_photos = '')",
@@ -2553,7 +1409,7 @@ async def set_actor_photos(imdb_id: str, photos_json: str) -> bool:
 
 async def films_needing_actor_photo_enrichment(limit: int = 200) -> list[dict]:
     """Films not yet checked against the no-quota Wikidata/Commons cast source."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, imdb_id, actors, actors_photos FROM films "
@@ -2566,7 +1422,7 @@ async def films_needing_actor_photo_enrichment(limit: int = 200) -> list[dict]:
 
 async def films_needing_director_photo_enrichment(limit: int = 200) -> list[dict]:
     """Films not yet checked against Wikidata/Commons for director portraits."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, imdb_id, directors, directors_photos FROM films "
@@ -2606,7 +1462,7 @@ async def watched_films_needing_people_photo_enrichment(user_id: int, people_col
         }
         return not people.issubset(covered)
 
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             f"SELECT f.id, f.imdb_id, f.{people_column}, f.{photo_column} "
@@ -2692,7 +1548,7 @@ async def _set_film_people_from_wikidata(film_id: int, people_column: str, photo
         ("directors", "directors_photos", "director_photos_checked_at"),
     }:
         raise ValueError("Unsupported person portrait columns")
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         current = await (await db.execute(
             f"SELECT {people_column}, {photo_column} FROM films WHERE id = ?", (film_id,)
@@ -2719,7 +1575,7 @@ async def set_film_cast_from_wikidata(film_id: int, actors: str, photos_json: st
 
 async def mark_film_actor_photos_checked(film_id: int) -> bool:
     """Remember even an empty result, so a film never triggers repeat lookups."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET actor_photos_checked_at = ? WHERE id = ?",
             (_now(), film_id),
@@ -2737,7 +1593,7 @@ async def set_film_directors_from_wikidata(film_id: int, directors: str, photos_
 
 async def mark_film_director_photos_checked(film_id: int) -> bool:
     """Remember an empty director lookup to avoid repeated external queries."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET director_photos_checked_at = ? WHERE id = ?",
             (_now(), film_id),
@@ -2748,7 +1604,7 @@ async def mark_film_director_photos_checked(film_id: int) -> bool:
 
 async def community_rating(film_id: int) -> dict:
     """Средняя оценка всех пользователей по фильму + количество оценок."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "SELECT AVG(rating) AS avg, COUNT(rating) AS cnt FROM user_films "
             "WHERE film_id = ? AND rating IS NOT NULL", (film_id,))
@@ -2761,7 +1617,7 @@ async def community_rating(film_id: int) -> dict:
 async def add_to_list(user_id: int, film_id: int, status: str = "want_to_watch",
                       watched_at: str | None = None) -> bool:
     """Добавить фильм в свой список. False = уже был у этого пользователя."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             """
             INSERT INTO user_films (user_id, film_id, status, added_at, watched_at)
@@ -2775,7 +1631,7 @@ async def add_to_list(user_id: int, film_id: int, status: str = "want_to_watch",
 
 
 async def get_user_film(user_id: int, film_id: int) -> dict | None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT * FROM user_films WHERE user_id = ? AND film_id = ?", (user_id, film_id))
@@ -2803,7 +1659,7 @@ async def set_rating(user_id: int, film_id: int, rating: int) -> RatingWriteResu
     concurrent first writes may both observe ``NULL``; notification
     idempotency is therefore enforced independently by the inbox insert.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         previous = await (await db.execute(
             "SELECT rating FROM user_films WHERE user_id = ? AND film_id = ?",
@@ -2834,7 +1690,7 @@ async def set_rating(user_id: int, film_id: int, rating: int) -> RatingWriteResu
 async def clear_rating(user_id: int, film_id: int) -> None:
     """Убрать оценку (повторный тап по своей звезде) — статус («Смотрел») не трогаем,
     только сама оценка пропадает. Ничего не создаёт, если записи ещё не было."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "UPDATE user_films SET rating = NULL, rated_at = NULL WHERE user_id = ? AND film_id = ?",
             (user_id, film_id),
@@ -2845,7 +1701,7 @@ async def clear_rating(user_id: int, film_id: int) -> None:
 async def set_status(user_id: int, film_id: int, status: str) -> None:
     """Сменить статус. Фильм появляется в списке, если его не было. Оценка сохраняется."""
     watched_at = _now() if status == "watched" else None
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             """
             INSERT INTO user_films (user_id, film_id, status, added_at, watched_at)
@@ -2868,7 +1724,7 @@ async def set_comment(user_id: int, film_id: int, text: str) -> None:
     Their text therefore remains ``private_legacy``. If the same user already
     has a published review, a cached client may edit it without demoting it.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         now = _now()
         await db.execute(
             """
@@ -2889,7 +1745,7 @@ async def set_comment(user_id: int, film_id: int, text: str) -> None:
 
 
 async def delete_comment(user_id: int, film_id: int) -> None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "UPDATE user_films SET comment = NULL, comment_status = 'deleted', commented_at = ? "
             "WHERE user_id = ? AND film_id = ?",
@@ -2929,7 +1785,7 @@ async def _ensure_review_identity(db, user_id: int, film_id: int) -> int:
 async def set_public_review(user_id: int, film_id: int, rating: int, text: str) -> dict:
     """Publish or edit the one current review for ``(user, film)`` atomically."""
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         review_id = await _ensure_review_identity(db, user_id, film_id)
         await db.execute(
@@ -2962,7 +1818,7 @@ async def set_public_review(user_id: int, film_id: int, rating: int, text: str) 
 
 
 async def delete_public_review(user_id: int, film_id: int) -> bool:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE user_films SET comment = NULL, comment_status = 'deleted', commented_at = ? "
             "WHERE user_id = ? AND film_id = ? AND comment_status IN ('published','private_legacy')",
@@ -2974,7 +1830,7 @@ async def delete_public_review(user_id: int, film_id: int) -> bool:
 
 async def publish_legacy_review(user_id: int, film_id: int) -> dict | None:
     """Publish an old private note only after an explicit user action."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         current = await (await db.execute(
             "SELECT rating, comment FROM user_films WHERE user_id = ? AND film_id = ? "
@@ -3004,7 +1860,7 @@ async def publish_legacy_review(user_id: int, film_id: int) -> dict | None:
 
 async def get_movie_rating_context(user_id: int, film_id: int) -> dict:
     """Current user's review state plus the active reciprocal partner's rating."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         mine = await (await db.execute(
             "SELECT status, rating, comment, commented_at, comment_status "
@@ -3038,7 +1894,7 @@ async def list_movie_reviews(user_id: int, film_id: int, *, limit: int = 10,
     if sort not in {"newest", "highest", "lowest"}:
         raise ValueError("unsupported review sort")
     limit = max(1, min(int(limit), 50))
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         partner_row = await (await db.execute(
             "SELECT p.partner_id FROM partners p JOIN partners reciprocal "
@@ -3120,7 +1976,7 @@ async def list_movie_reviews(user_id: int, film_id: int, *, limit: int = 10,
 
 
 async def report_review(reporter_id: int, film_id: int, review_id: int, reason: str | None) -> bool:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         review = await (await db.execute(
             "SELECT ri.user_id FROM review_identities ri JOIN user_films uf "
@@ -3140,7 +1996,7 @@ async def report_review(reporter_id: int, film_id: int, review_id: int, reason: 
 
 
 async def hide_review(review_id: int) -> dict | None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         row = await (await db.execute(
             "SELECT user_id, film_id FROM review_identities WHERE id = ?", (review_id,)
@@ -3158,7 +2014,7 @@ async def hide_review(review_id: int) -> dict | None:
 
 async def remove_from_list(user_id: int, film_id: int) -> None:
     """Убрать фильм из СВОЕГО списка. В общем каталоге films он остаётся."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "DELETE FROM user_films WHERE user_id = ? AND film_id = ?", (user_id, film_id))
         await db.commit()
@@ -3168,7 +2024,7 @@ async def get_user_films(user_id: int, status: str, limit: int = 50, offset: int
                          sort: str = "date") -> list[dict]:
     """Список фильмов пользователя. status: want_to_watch | watched | top.
     top = просмотренные и оценённые этим юзером, по убыванию его оценки."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         base = """
             SELECT f.*, uf.status AS status, uf.rating AS my_rating,
@@ -3229,7 +2085,7 @@ def _films_for_person(rows, column: str, name: str) -> list[dict]:
 async def get_person_watched_films(user_id: int, role: str, name: str, limit: int = 200) -> list[dict]:
     """Films this user watched that contain the selected actor or director."""
     column = _person_column(role)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT f.*, uf.rating AS my_rating, uf.watched_at AS watched_at FROM user_films uf "
@@ -3250,7 +2106,7 @@ async def get_pair_person_watched_films(user_id: int, partner_id: int, since: st
     it opens only the films from the latest session.
     """
     column = _person_column(role)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         sessions = await _pair_sessions_for(db, user_id, partner_id, since)
         period_sql, period_params = _pair_session_predicate(sessions)
@@ -3266,7 +2122,7 @@ async def get_pair_person_watched_films(user_id: int, partner_id: int, since: st
 
 
 async def count_user_films(user_id: int, status: str) -> int:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         if status == "top":
             cur = await db.execute(
                 "SELECT COUNT(*) FROM user_films WHERE user_id=? AND status='watched' "
@@ -3293,7 +2149,7 @@ async def pick_random_wishlist_film(user_id: int) -> dict | None:
     для аудита.
     """
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         # Строка состояния — точка сериализации. В Postgres блокируем её, чтобы
         # параллельные запросы одного пользователя выстроились в очередь.
@@ -3361,7 +2217,7 @@ async def prepare_random_wishlist_film(user_id: int) -> dict | None:
     anything.  That keeps abandoned tabs and failed image downloads out of the
     durable roulette history.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         state = await (await db.execute(
             "SELECT cycle_number FROM wishlist_random_state WHERE user_id=?",
@@ -3415,7 +2271,7 @@ async def consume_prepared_wishlist_film(
         return None
 
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         await db.execute(
             "INSERT INTO wishlist_random_state (user_id, cycle_number, updated_at) "
@@ -3484,7 +2340,7 @@ async def get_random_want(user_id: int) -> dict | None:
 
 async def wishlist_roulette_state(user_id: int) -> dict:
     """Диагностика круга: сколько показано и сколько осталось."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         state = await (await db.execute(
             "SELECT cycle_number FROM wishlist_random_state WHERE user_id=?", (user_id,))).fetchone()
@@ -3520,7 +2376,7 @@ async def create_recommendation_session(user_id: int, version: str, session_id: 
     policy = versions.get("policy_version")
     taxonomy = versions.get("taxonomy_version")
     feature = versions.get("feature_version")
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "INSERT INTO recommendation_sessions (id, user_id, version, answers, current_question, "
             "state, created_at, updated_at, expires_at, engine_version, policy_version, "
@@ -3536,7 +2392,7 @@ async def create_recommendation_session(user_id: int, version: str, session_id: 
 
 
 async def get_recommendation_session(user_id: int, session_id: str) -> dict | None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT * FROM recommendation_sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
@@ -3562,7 +2418,7 @@ async def get_recommendation_session(user_id: int, session_id: str) -> dict | No
 async def update_recommendation_session(user_id: int, session_id: str, answers: dict,
                                         current_question: str | None, state: str = "active") -> dict | None:
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE recommendation_sessions SET answers=?, current_question=?, state=?, results=NULL, updated_at=? "
             "WHERE id=? AND user_id=?",
@@ -3581,7 +2437,7 @@ async def restart_recommendation_session(user_id: int, session_id: str, current_
     now = _now()
     expires = (datetime.now(UTC) + _RECOMMENDATION_SESSION_TTL).isoformat()
     versions = versions or {}
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE recommendation_sessions SET answers='{}', current_question=?, state='active', "
             "results=NULL, updated_at=?, expires_at=?, version=COALESCE(?, version), "
@@ -3600,7 +2456,7 @@ async def restart_recommendation_session(user_id: int, session_id: str, current_
 
 async def save_recommendation_session_results(user_id: int, session_id: str, items: list[dict]) -> dict | None:
     """Persist public result cards once; re-opening a completed quiz is stable."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE recommendation_sessions SET results=?, updated_at=? WHERE id=? AND user_id=? AND state='complete'",
             (json.dumps(items, ensure_ascii=False, separators=(",", ":")), _now(), session_id, user_id),
@@ -3639,7 +2495,7 @@ async def get_recommendation_candidates(
     ids_clause = ""
     if excluded_ids:
         ids_clause = f" AND f.id NOT IN ({','.join('?' for _ in excluded_ids)})"
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         if partner_id is None:
             personal_shown = shown_clause.format(users_operator="=?")
@@ -3688,7 +2544,7 @@ async def get_recent_recommendation_shows(
     if partner_id is not None:
         users.append(int(partner_id))
     placeholders = ",".join("?" for _ in users)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             f"SELECT film_id, MAX(created_at) AS shown_at "
@@ -3707,7 +2563,7 @@ get_recent_recommendation_history = get_recent_recommendation_shows
 
 async def get_recommendation_preferences(user_id: int) -> dict:
     """Small, explainable signals from personal watch history, not opaque profiling."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT f.genres, f.actors, f.directors, uf.rating FROM user_films uf JOIN films f ON f.id=uf.film_id "
@@ -3742,7 +2598,7 @@ async def save_recommendation_tags(film_id: int, tags: dict[str, float], *, sour
     rows = [(film_id, tag, max(0.0, min(1.0, float(value))), source, version, _now()) for tag, value in tags.items()]
     if not rows:
         return
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         for row in rows:
             await db.execute(
                 "INSERT INTO film_recommendation_tags (film_id, tag, confidence, source, version, updated_at) "
@@ -3754,7 +2610,7 @@ async def save_recommendation_tags(film_id: int, tags: dict[str, float], *, sour
 async def record_recommendation_history(user_id: int, film_id: int, mode: str, *, session_id: str | None = None,
                                         role: str | None = None, score: float | None = None,
                                         action: str = "shown") -> None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "INSERT INTO recommendation_history (user_id, film_id, mode, session_id, role, score, action, created_at) "
             "VALUES (?,?,?,?,?,?,?,?)",
@@ -3807,7 +2663,7 @@ async def recommendation_pick_lock(user_id: int):
                 _pick_lock_users.pop(key, None)
                 _pick_locks.pop(key, None)
         return
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as lock_conn:
+    async with db_session.connect() as lock_conn:
         await lock_conn.execute("SELECT pg_advisory_lock(?, ?)",
                                 (_RANDOM_PICK_LOCK_NAMESPACE, int(user_id) % (2 ** 31)))
         try:
@@ -3827,7 +2683,7 @@ RECOMMENDATION_HISTORY_RETENTION_DAYS = 90
 async def prune_recommendation_history(days: int = RECOMMENDATION_HISTORY_RETENTION_DAYS) -> int:
     """Единственная таблица, которая росла линейно от активности и не чистилась."""
     cutoff = (datetime.now(UTC) - timedelta(days=max(1, int(days)))).isoformat()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "DELETE FROM recommendation_history WHERE action <> 'rejected' AND created_at < ?",
             (cutoff,))
@@ -3838,7 +2694,7 @@ async def prune_recommendation_history(days: int = RECOMMENDATION_HISTORY_RETENT
 async def get_recommendation_shown(user_id: int, film_id: int, mode: str) -> dict | None:
     """Последняя запись показа: сервер помнит, с какой ролью и счётом он сам
     показал фильм. Значения из клиента для аналитики не годятся."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         row = await (await db.execute(
             "SELECT role, score FROM recommendation_history WHERE user_id=? AND film_id=? "
@@ -3853,7 +2709,7 @@ async def was_wishlist_pick_shown(user_id: int, film_id: int) -> bool:
     Своя таблица, а не recommendation_history: рулетка не рекомендация каталога,
     и смешивать их источники правды нельзя.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         row = await (await db.execute(
             "SELECT 1 FROM wishlist_random_picks WHERE user_id=? AND film_id=? LIMIT 1",
             (user_id, film_id))).fetchone()
@@ -3863,7 +2719,7 @@ async def was_wishlist_pick_shown(user_id: int, film_id: int) -> bool:
 async def get_unrated_watched(user_id: int, since_days: int = 30, limit: int = 10) -> list[dict]:
     """Просмотренные за N дней, не оценённые пользователем (для напоминаний ботом)."""
     cutoff = (datetime.now(UTC) - timedelta(days=since_days)).isoformat()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
@@ -3935,7 +2791,7 @@ def _rank_people(counts: dict[str, int], prominence: dict[str, tuple[int, int]])
 async def get_user_stats(user_id: int) -> dict:
     """Личная статистика пользователя: счётчики, экранное время, средняя оценка,
     топ жанров/актёров/режиссёров (ничьи честно), итоги года."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
 
         watched = (await (await db.execute(
@@ -4028,7 +2884,7 @@ async def get_year_stats(user_id: int, year: int) -> dict:
     """Личные итоги года. Ничьи — честно: список лучших, «актёр года» только при
     единоличном лидерстве (урок: случайный «первый из пяти» — это ложь)."""
     like = f"{year}-%"
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
@@ -4123,7 +2979,7 @@ _BROWSE_AGGREGATE_COLS = """
 
 async def browse_popular(user_id: int, limit: int = 30, offset: int = 0) -> list[dict]:
     """Популярное: по числу пользователей, добавивших фильм."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             _BROWSE_AGGREGATES + f"""
@@ -4141,7 +2997,7 @@ async def browse_top(user_id: int, limit: int = 30, offset: int = 0,
                      min_votes: int | None = None) -> list[dict]:
     """Топ спильноты: по средней оценке всех пользователей (min_votes — честный порог)."""
     mv = MIN_COMMUNITY_VOTES if min_votes is None else min_votes
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             _BROWSE_AGGREGATES + """
@@ -4162,7 +3018,7 @@ async def browse_by_genre(user_id: int, genre: str, limit: int = 30, offset: int
     (напр. «драма» и «Drama»), чтобы русский канон собирал оба источника."""
     aliases = _genre_query_aliases(genre)
     placeholders = ",".join("?" for _ in aliases)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             _BROWSE_AGGREGATES + f"""
@@ -4183,7 +3039,7 @@ async def list_genres() -> list[dict]:
     now = datetime.now(UTC).timestamp()
     if _genres_cache and _genres_cache[0] > now:
         return [dict(item) for item in _genres_cache[1]]
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT genre AS name, COUNT(*) AS count FROM film_genres GROUP BY genre"
@@ -4203,7 +3059,7 @@ async def list_genres() -> list[dict]:
 
 # ── Пара (Фаза E): приглашения, пары, совместная статистика ───────────────────
 async def get_user(user_id: int) -> dict | None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT id, first_name, username, photo_url FROM users WHERE id = ?", (user_id,))
         row = await cur.fetchone()
@@ -4212,7 +3068,7 @@ async def get_user(user_id: int) -> dict | None:
 
 # ── Центр уведомлений и пользовательские настройки ───────────────────────────
 async def get_notification_settings(user_id: int) -> dict:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         row = await (await db.execute(
             "SELECT language, telegram_enabled FROM user_notification_settings WHERE user_id = ?", (user_id,))).fetchone()
@@ -4227,7 +3083,7 @@ async def update_notification_settings(user_id: int, *, language: str | None = N
     current = await get_notification_settings(user_id)
     next_language = language if language in ("ru", "en") else current["language"]
     next_telegram = current["telegram_enabled"] if telegram_enabled is None else bool(telegram_enabled)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "INSERT INTO user_notification_settings (user_id, language, telegram_enabled, updated_at) VALUES (?,?,?,?) "
             "ON CONFLICT(user_id) DO UPDATE SET language = excluded.language, "
@@ -4241,7 +3097,7 @@ async def create_notification(*, event_type: str, recipient_id: int, actor_id: i
                               entity_id: str, payload: dict, deep_link: str | None,
                               idempotency_key: str, event_id: str | None = None) -> tuple[int, bool]:
     """Persist one inbox entry exactly once; returns ``(id, created)``."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "INSERT INTO notifications (event_id, event_type, recipient_id, actor_id, entity_id, payload, deep_link, created_at, idempotency_key) "
             "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",
@@ -4263,7 +3119,7 @@ async def get_partner_rating_notification_context(actor_id: int, film_id: int) -
     Only the symmetric current relationship is considered. Historic
     ``pair_sessions`` intentionally do not participate in activity delivery.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         row = await (await db.execute(
             """
@@ -4312,7 +3168,7 @@ async def create_notification_for_current_partner(
     """Insert an inbox row only while the exact pair session is still active."""
     encoded_payload = json.dumps(payload, ensure_ascii=False)
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             """
             INSERT INTO notifications (
@@ -4356,7 +3212,7 @@ async def create_notification_for_current_partner(
 async def create_notification_delivery(notification_id: int, *, channel: str,
                                        idempotency_key: str) -> bool:
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "INSERT INTO notification_deliveries (notification_id, channel, status, created_at, updated_at, idempotency_key) "
             "VALUES (?,?,'pending',?,?,?) ON CONFLICT(idempotency_key) DO NOTHING RETURNING notification_id",
@@ -4368,7 +3224,7 @@ async def create_notification_delivery(notification_id: int, *, channel: str,
 
 async def finish_notification_delivery(notification_id: int, *, channel: str, sent: bool,
                                        error: str | None = None) -> None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "UPDATE notification_deliveries SET status = ?, attempts = attempts + 1, last_error = ?, "
             "updated_at = ?, sent_at = CASE WHEN ? THEN ? ELSE sent_at END "
@@ -4396,7 +3252,7 @@ async def claim_notification_delivery(notification_id: int, *, channel: str,
     :func:`abandon_stale_notification_deliveries`.
     """
     params: list = [_now(), notification_id, channel]
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE notification_deliveries SET status = 'sending', updated_at = ? "
             "WHERE notification_id = ? AND channel = ? "
@@ -4415,7 +3271,7 @@ async def list_recoverable_notification_deliveries(*, stale_before: str, limit: 
     created in earlier releases.
     """
     limit = max(1, min(int(limit), 500))
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT d.notification_id, d.status, d.last_error, n.recipient_id, n.payload, n.deep_link "
@@ -4433,7 +3289,7 @@ async def abandon_stale_notification_deliveries(*, stale_before: str) -> int:
     Telegram and persisting the result. Keeping it visible for diagnostics but
     not retrying it gives the user an at-most-once bot notification guarantee.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE notification_deliveries SET status='abandoned', "
             "last_error=COALESCE(last_error, ?), updated_at=? "
@@ -4492,7 +3348,7 @@ async def list_notifications(
         where += " AND n.id < ?"
         params.append(int(before_id))
     params.append(limit + 1)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT n.id, n.event_type, n.recipient_id, n.actor_id, n.entity_id, n.payload, n.deep_link, "
@@ -4531,7 +3387,7 @@ async def list_notifications(
 
 
 async def mark_notification_read(user_id: int, notification_id: int) -> bool:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE notifications SET read_at = COALESCE(read_at, ?) WHERE id = ? AND recipient_id = ?",
             (_now(), notification_id, user_id))
@@ -4540,7 +3396,7 @@ async def mark_notification_read(user_id: int, notification_id: int) -> bool:
 
 
 async def mark_all_notifications_read(user_id: int) -> int:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE notifications SET read_at = ? WHERE recipient_id = ? AND read_at IS NULL", (_now(), user_id))
         await db.commit()
@@ -4548,7 +3404,7 @@ async def mark_all_notifications_read(user_id: int) -> int:
 
 
 async def get_partner(user_id: int) -> int | None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute("SELECT partner_id FROM partners WHERE user_id = ?", (user_id,))
         row = await cur.fetchone()
         return row[0] if row else None
@@ -4556,7 +3412,7 @@ async def get_partner(user_id: int) -> int | None:
 
 async def get_pending_invite(from_user: int) -> str | None:
     """Токен своего активного (неиспользованного) приглашения, если есть."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "SELECT token FROM partner_invites WHERE from_user = ? AND status = 'pending' "
             "AND (expires_at IS NULL OR expires_at > ?) "
@@ -4572,7 +3428,7 @@ async def get_invite_sender(token: str) -> dict | None:
     this small preview lets that same recipient see who invited them before
     deciding.  It intentionally does not expose any relationship data.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT u.id, u.first_name, u.username, u.photo_url "
@@ -4609,30 +3465,10 @@ def _pair_id(first_user_id: int, second_user_id: int, since: str) -> str:
     return f"pair:{low}:{high}:{since}"
 
 
-def _pair_key(first_user_id: int, second_user_id: int) -> str:
-    """Stable identity of one exact two-person pair, independent of sessions."""
-    low, high = sorted((int(first_user_id), int(second_user_id)))
-    return f"pair:{low}:{high}"
 
 
-def _legacy_pair_session_id(pair_key: str, started_at: str) -> str:
-    return f"session:{pair_key}:{started_at}"
 
 
-def _parse_legacy_pair_id(pair_id: str | None) -> tuple[int, int, str] | None:
-    """Read the old ``pair:<low>:<high>:<since>`` event identity safely."""
-    if not pair_id or not pair_id.startswith("pair:"):
-        return None
-    parts = pair_id.split(":", 3)
-    if len(parts) != 4:
-        return None
-    try:
-        first_user_id, second_user_id = int(parts[1]), int(parts[2])
-    except ValueError:
-        return None
-    if first_user_id >= second_user_id or not parts[3]:
-        return None
-    return first_user_id, second_user_id, parts[3]
 
 
 def _new_pair_session(first_user_id: int, second_user_id: int, started_at: str) -> dict:
@@ -4681,7 +3517,7 @@ async def _insert_pair_event(db, event: dict, *, recipients: list[tuple[int, int
 
 async def get_pair_event_recipients(event_id: str) -> list[dict]:
     """Return the immutable, transactionally stored audience of a pair event."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT recipient_user_id, partner_user_id FROM pair_event_recipients "
@@ -4694,7 +3530,7 @@ async def get_pair_event_recipients(event_id: str) -> list[dict]:
 
 async def mark_pair_event_recipient_dispatched(event_id: str, recipient_user_id: int) -> None:
     """A durable outbox acknowledgement after inbox/bot work has been queued."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "UPDATE pair_event_recipients SET dispatched_at = ? "
             "WHERE event_id = ? AND recipient_user_id = ? AND dispatched_at IS NULL",
@@ -4705,7 +3541,7 @@ async def mark_pair_event_recipient_dispatched(event_id: str, recipient_user_id:
 async def list_pending_pair_events(limit: int = 100) -> list[dict]:
     """Read the durable notification outbox without scanning already dispatched events."""
     limit = max(1, min(int(limit), 500))
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT DISTINCT pe.id, pe.event_type, pe.invitation_id, pe.pair_id, pe.inviter_user_id, "
@@ -4722,7 +3558,7 @@ async def create_invite(from_user: int, *, with_state: bool = False) -> str | di
     взяття того самого lock, що й ``accept_invite``: інакше accept між окремими
     ``get_partner`` та INSERT міг залишити чинне запрошення у вже створеній парі.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await _lock_pair_users(db, from_user)
         cur = await db.execute("SELECT 1 FROM partners WHERE user_id = ?", (from_user,))
         if await cur.fetchone():
@@ -4776,7 +3612,7 @@ async def accept_invite(token: str, accepting_user: int) -> dict:
     KEY), вставка молча не пройдёт и мы это увидим по пустому RETURNING.
     """
     try:
-        async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        async with db_session.connect() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 "SELECT from_user FROM partner_invites WHERE token = ? AND status = 'pending' "
@@ -4839,7 +3675,7 @@ async def register_invite_recipient(token: str, user_id: int) -> bool:
     an allow-list: it only lets cancellation/expiry reach people who actually
     saw the invitation and gives the app an honest recipient for its inbox.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "SELECT from_user FROM partner_invites WHERE token = ? AND status = 'pending' "
             "AND (expires_at IS NULL OR expires_at > ?)", (token, _now()))
@@ -4857,7 +3693,7 @@ async def register_invite_recipient(token: str, user_id: int) -> bool:
 
 
 async def get_invite_recipients(token: str) -> list[int]:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "SELECT user_id FROM pair_invite_recipients WHERE invite_token = ? ORDER BY user_id", (token,))
         return [int(row[0]) for row in await cur.fetchall()]
@@ -4865,7 +3701,7 @@ async def get_invite_recipients(token: str) -> list[int]:
 
 async def decline_invite(token: str, declining_user: int) -> dict:
     """Decline an invitation without deleting its audit trail."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT from_user FROM partner_invites WHERE token = ? AND status = 'pending' "
@@ -4895,7 +3731,7 @@ async def expire_pending_invites() -> list[dict]:
     """Atomically expire old invitations and return their known participants."""
     now = _now()
     expired: list[dict] = []
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT token, from_user FROM partner_invites WHERE status = 'pending' "
@@ -4925,7 +3761,7 @@ async def unpair(user_id: int) -> dict:
     Поиск партнёра и удаление выполняются в одной транзакции. Поэтому
     запоздалый запрос не может удалить новую пару бывшего партнёра.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute("SELECT partner_id, since FROM partners WHERE user_id = ?", (user_id,))
         row = await cur.fetchone()
         if row:
@@ -4979,7 +3815,7 @@ async def unpair(user_id: int) -> dict:
 
 async def get_pair(user_id: int) -> dict | None:
     """Партнёр + момент создания пары (since) — граница «пар-периода»."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT partner_id, since FROM partners WHERE user_id = ?", (user_id,))
         row = await cur.fetchone()
@@ -4992,7 +3828,7 @@ async def sync_film_to_partner(user_id: int, film_id: int) -> None:
     # Один INSERT ... SELECT замість get_partner() + add_to_list() у різних
     # транзакціях: фільм потрапляє тільки до партнера, який існує саме в момент
     # запису, а не до вже колишнього партнера після concurrent unpair.
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "INSERT INTO user_films (user_id, film_id, status, added_at) "
             "SELECT partner_id, ?, 'want_to_watch', ? FROM partners WHERE user_id = ? "
@@ -5054,7 +3890,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
     user's personal list is never modified or reset by this calculation.
     """
     year_now = datetime.now(UTC).year
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         sessions = await _pair_sessions_for(db, user_id, partner_id, since)
         period_sql, period_params = _pair_session_predicate(sessions)
@@ -5182,7 +4018,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
 # ── Подборки (кураторские коллекции) ───────────────────────────────────────────
 async def get_user_role(user_id: int) -> str | None:
     """Роль из БД (назначается вручную админом) — отдельно от ADMIN_USER_IDS (main.py)."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute("SELECT role FROM users WHERE id = ?", (user_id,))
         row = await cur.fetchone()
         return row[0] if row else None
@@ -5207,7 +4043,7 @@ async def list_collections(statuses: tuple[str, ...] = ("published",)) -> list[d
     """Подборки с обложкой и счётчиком. Публичный вызов передаёт только
     ('published',) — черновики и архив не должны утекать в общий каталог."""
     placeholders = ",".join("?" for _ in statuses)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(f"""
             SELECT {_COLLECTION_COLS},
@@ -5246,7 +4082,7 @@ async def create_collection(title: str, created_by: int, description: str | None
     """
     now = _now()
     film_ids = list(ordered_film_ids or [])
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         if film_ids:
             placeholders = ",".join("?" for _ in film_ids)
@@ -5271,7 +4107,7 @@ async def create_collection(title: str, created_by: int, description: str | None
 
 
 async def delete_collection(collection_id: int) -> None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute("DELETE FROM collection_films WHERE collection_id = ?", (collection_id,))
         await db.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
         await db.commit()
@@ -5284,7 +4120,7 @@ async def get_collection(collection_id: int, statuses: tuple[str, ...] | None = 
     if statuses is not None:
         clause = f" AND c.status IN ({','.join('?' for _ in statuses)})"
         params.extend(statuses)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(f"""
             SELECT {_COLLECTION_COLS},
@@ -5317,7 +4153,7 @@ async def update_collection(collection_id: int, expected_version: int, actor_id:
         return await get_collection(collection_id)
     assignments = ", ".join(f"{k} = ?" for k in allowed)
     params = [*allowed.values(), actor_id, _now(), collection_id, expected_version]
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             f"UPDATE collections SET {assignments}, updated_by = ?, updated_at = ?, "
@@ -5338,7 +4174,7 @@ async def set_collection_status(collection_id: int, new_status: str, expected_ve
     if new_status == "published":
         params.extend([actor_id, _now()])
     params.extend([collection_id, expected_version])
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             f"UPDATE collections SET status = ?, updated_by = ?, updated_at = ?{publish_set}, "
@@ -5350,7 +4186,7 @@ async def set_collection_status(collection_id: int, new_status: str, expected_ve
 
 async def add_film_to_collection(collection_id: int, film_id: int, added_by: int | None = None) -> bool:
     """True — фильм реально добавлен (не был в подборке раньше). Позиция — в конец."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT COALESCE(MAX(position), 0) + 1 AS next FROM collection_films "
@@ -5367,7 +4203,7 @@ async def add_film_to_collection(collection_id: int, film_id: int, added_by: int
 
 async def remove_film_from_collection(collection_id: int, film_id: int) -> None:
     """Удаляем и сразу схлопываем «дырку» в позициях — порядок остаётся плотным."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT position FROM collection_films WHERE collection_id = ? AND film_id = ?",
@@ -5388,7 +4224,7 @@ async def reorder_collection_items(collection_id: int, ordered_film_ids: list[in
                                    expected_version: int, actor_id: int) -> dict | None:
     """Полная перестановка одной транзакцией. Набор ID обязан точно совпадать с
     текущим составом — иначе это рассинхрон клиента, а не переупорядочивание."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT version FROM collections WHERE id = ?", (collection_id,))
         row = await cur.fetchone()
@@ -5419,7 +4255,7 @@ async def reorder_collection_items(collection_id: int, ordered_film_ids: list[in
 async def get_collection_films(collection_id: int, user_id: int) -> list[dict]:
     """Фильмы подборки в кураторском порядке — тот же формат, что browse_*
     (community-рейтинг + мой статус), чтобы фронтенд переиспользовал posterTile()."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             f"""
@@ -5435,7 +4271,7 @@ async def get_collection_films(collection_id: int, user_id: int) -> list[dict]:
 async def reorder_collections(ordered_ids: list[int], actor_id: int) -> bool:
     """Порядок подборок на главной (sort_order). Одна транзакция: либо
     переставились все, либо ни одна — частичный порядок недопустим."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         placeholders = ",".join("?" for _ in ordered_ids)
         cur = await db.execute(
@@ -5456,7 +4292,7 @@ async def write_audit(actor_id: int, actor_role: str, action: str, entity_type: 
                       entity_id: str | int, details: dict | None = None) -> None:
     """Append-only журнал админских мутаций. Секреты/initData сюда не попадают —
     вызывающий передаёт только редактируемые поля."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "INSERT INTO admin_audit_log (actor_id, actor_role, action, entity_type, entity_id, "
             "details, created_at) VALUES (?,?,?,?,?,?,?)",
@@ -5466,7 +4302,7 @@ async def write_audit(actor_id: int, actor_role: str, action: str, entity_type: 
 
 
 async def list_audit_log(limit: int = 50) -> list[dict]:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT actor_id, actor_role, action, entity_type, entity_id, details, created_at "
