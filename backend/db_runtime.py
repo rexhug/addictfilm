@@ -323,12 +323,107 @@ async def close() -> None:
     _pool_url = None
 
 
+# `?` is ambiguous: it is both the SQLite placeholder and a PostgreSQL jsonb
+# operator. The project only uses it as a placeholder, so an operator in the
+# SQL is a bug that must surface loudly rather than silently shift parameter
+# numbering.
+_JSONB_QUESTION_OPS = ("?|", "?&", "??")
+
+
 def _postgres_sql(sql: str) -> str:
-    """Заменяет SQLite-плейсхолдеры на позиционные параметры PostgreSQL."""
-    parts = sql.split("?")
-    if len(parts) == 1:
-        return sql
-    return "".join(part if index == 0 else f"${index}{part}" for index, part in enumerate(parts))
+    """Rewrite SQLite `?` placeholders as PostgreSQL `$n`, respecting SQL lexis.
+
+    A naive ``sql.split("?")`` renumbers every placeholder that follows a
+    question mark inside a string literal (``LIKE '%?%'``), a quoted
+    identifier, or a comment.  Nothing raises: asyncpg simply binds the wrong
+    value to the wrong slot.  This scanner skips those regions instead.
+    """
+    out: list[str] = []
+    index = 0
+    i = 0
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+
+        if ch == "'":  # string literal, '' escapes a quote
+            j = i + 1
+            while j < n:
+                if sql[j] == "'":
+                    if j + 1 < n and sql[j + 1] == "'":
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            out.append(sql[i:j])
+            i = j
+            continue
+
+        if ch == '"':  # quoted identifier, "" escapes a quote
+            j = i + 1
+            while j < n:
+                if sql[j] == '"':
+                    if j + 1 < n and sql[j + 1] == '"':
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            out.append(sql[i:j])
+            i = j
+            continue
+
+        if ch == "$":  # PostgreSQL dollar-quoted body: $$...$$ or $tag$...$tag$
+            end_tag = sql.find("$", i + 1)
+            if end_tag != -1:
+                tag = sql[i:end_tag + 1]
+                body = tag[1:-1]
+                if body == "" or body.replace("_", "a").isalnum():
+                    close = sql.find(tag, end_tag + 1)
+                    if close != -1:
+                        out.append(sql[i:close + len(tag)])
+                        i = close + len(tag)
+                        continue
+
+        if sql.startswith("--", i):  # line comment
+            j = sql.find("\n", i)
+            j = n if j == -1 else j
+            out.append(sql[i:j])
+            i = j
+            continue
+
+        if sql.startswith("/*", i):  # block comment; PostgreSQL allows nesting
+            depth = 1
+            j = i + 2
+            while j < n and depth:
+                if sql.startswith("/*", j):
+                    depth += 1
+                    j += 2
+                elif sql.startswith("*/", j):
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
+            out.append(sql[i:j])
+            i = j
+            continue
+
+        if ch == "?":
+            for op in _JSONB_QUESTION_OPS:
+                if sql.startswith(op, i):
+                    raise ValueError(
+                        f"jsonb operator {op!r} collides with `?` placeholders; "
+                        "use jsonb_exists / jsonb_exists_any / jsonb_exists_all"
+                    )
+            index += 1
+            out.append(f"${index}")
+            i += 1
+            continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
 
 
 def _rowcount(status: str) -> int:
