@@ -3,6 +3,13 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Unbuffered: Fly collects logs from stdout, and buffering hides the last lines
+# of a crash — exactly the ones that explain it.
+# No .pyc: the image runs read-only as appuser, so bytecode has nowhere to go.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
 # Зависимости кэшируются, пока requirements.txt не менялся.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

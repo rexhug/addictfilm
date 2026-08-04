@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -146,3 +147,26 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
         async with db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
             cur = await conn.execute("SELECT status FROM partner_invites WHERE token = 'old'")
             self.assertEqual((await cur.fetchone())[0], "superseded")
+
+
+class AlreadyExistsDetectionTests(unittest.TestCase):
+    """A migration must distinguish "already applied" from "actually broken".
+
+    The old check read the driver's message text, so a PostgreSQL server with a
+    non-English locale — or a reworded asyncpg string — would turn a harmless
+    re-run into a failed boot.
+    """
+
+    def test_detects_postgres_duplicate_column_by_sqlstate(self):
+        exc = Exception("будь-який текст будь-якою мовою")
+        exc.sqlstate = "42701"
+        self.assertTrue(db._is_already_exists_error(exc))
+
+    def test_detects_sqlite_duplicate_column_by_message(self):
+        self.assertTrue(db._is_already_exists_error(
+            sqlite3.OperationalError("duplicate column name: hero_url")))
+
+    def test_does_not_swallow_permission_error(self):
+        exc = Exception("permission denied for table films")
+        exc.sqlstate = "42501"
+        self.assertFalse(db._is_already_exists_error(exc))

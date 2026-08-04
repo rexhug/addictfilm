@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import secrets
+import sqlite3
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -162,23 +163,43 @@ def _portrait_entries(value: str | None) -> list[dict]:
     return [entry for entry in decoded if isinstance(entry, dict)] if isinstance(decoded, list) else []
 
 
+# PostgreSQL SQLSTATE codes for "the object I am adding is already there".
+# Matching on message text used to break on a driver or locale change; the
+# code is part of the wire protocol and does not.
+_ALREADY_EXISTS_SQLSTATES = frozenset({
+    "42701",   # duplicate_column
+    "42P07",   # duplicate_table
+    "42710",   # duplicate_object
+})
+
+
+def _is_already_exists_error(exc: BaseException) -> bool:
+    sqlstate = getattr(exc, "sqlstate", None) or getattr(exc, "pgcode", None)
+    if sqlstate in _ALREADY_EXISTS_SQLSTATES:
+        return True
+    # SQLite has no SQLSTATE.  Its message set is small, stable and English-only
+    # because the library ships its own strings, so text matching is safe here
+    # and only here.
+    if isinstance(exc, sqlite3.OperationalError):
+        message = str(exc).lower()
+        return "duplicate column" in message or "already exists" in message
+    return False
+
+
 async def _add_column_if_missing(table: str, col_def: str) -> None:
-    """ALTER TABLE ADD COLUMN, идемпотентно. Каждая попытка — В СВОЁМ соединении/
-    транзакции: под Postgres любая ошибка (например «колонка уже есть») переводит
-    ВСЮ транзакцию в aborted-состояние — если бы это было внутри общего блока
-    init_db(), она утянула бы за собой все последующие CREATE TABLE IF NOT EXISTS."""
+    """ALTER TABLE ADD COLUMN, idempotently, each attempt in its OWN
+    connection/transaction: under PostgreSQL any error (e.g. the column already
+    exists) aborts the WHOLE transaction — inside a shared init_db() block it
+    would drag down every following CREATE TABLE IF NOT EXISTS.
+    """
     try:
         async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
             await db.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
             await db.commit()
     except Exception as exc:
-        # Fresh databases call this only after the base tables are created.  On
-        # existing databases the only harmless failure is "already exists".
-        # Do not hide syntax, permission, disk, or connectivity errors: those
-        # used to leave an instance on a partially upgraded schema unnoticed.
-        message = str(exc).lower()
-        duplicate_markers = ("duplicate column", "already exists", "duplicate key")
-        if any(marker in message for marker in duplicate_markers):
+        # Syntax, permission, disk and connectivity errors must NOT be hidden:
+        # they used to leave an instance on a partially upgraded schema silently.
+        if _is_already_exists_error(exc):
             return
         logger.exception("Schema migration failed while adding %s.%s", table, col_def)
         raise

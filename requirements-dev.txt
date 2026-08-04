@@ -1,3 +1,6 @@
 # Tooling is intentionally separate from runtime dependencies: Fly images stay
 # small, while local development and CI still use the same checks.
 ruff==0.12.5
+# starlette TestClient needs httpx; without it the ASGI stack cannot be
+# exercised at all and every test has to call handlers directly.
+httpx==0.28.1
