@@ -102,7 +102,6 @@ def _portrait_entries(value: str | None) -> list[dict]:
     return [entry for entry in decoded if isinstance(entry, dict)] if isinstance(decoded, list) else []
 
 
-# ── Каталог фильмов ──────────────────────────────────────────────────────────
 def _catalog_search_text(title: str | None, title_original: str | None,
                          actors: str | None, directors: str | None,
                          imdb_id: str, kp_id: str | None) -> str:

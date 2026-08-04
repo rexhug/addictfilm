@@ -31,16 +31,21 @@ class BlankLineHygieneTests(unittest.TestCase):
 class SectionMarkerTests(unittest.TestCase):
     """The `# ── ... ─` markers are the only navigation in the large modules.
 
-    One was silently removed together with the migrations block; losing another
-    would make the next split start blind.
+    Asserted across the package, not per file: a marker legitimately moves when
+    its section is extracted into a repository. What must not happen is that it
+    disappears entirely — that is how the last split started blind — or that it
+    ends up in two places, which means a section was copied rather than moved.
     """
 
-    def test_the_query_layer_keeps_its_section_markers(self):
-        text = (BACKEND / "database.py").read_text(encoding="utf-8")
+    def test_every_section_marker_survives_exactly_once(self):
+        sources = [p for p in BACKEND.rglob("*.py") if "__pycache__" not in p.parts]
         for marker in ("Инициализация", "Каталог фильмов", "Список пользователя",
                        "Подбор", "Центр уведомлений"):
             with self.subTest(marker=marker):
-                self.assertIn(marker, text)
+                homes = [p.relative_to(BACKEND).as_posix() for p in sources
+                         if any(l.startswith("# ── ") and marker in l
+                                for l in p.read_text(encoding="utf-8").splitlines())]
+                self.assertEqual(len(homes), 1, f"{marker}: {homes}")
 
 
 if __name__ == "__main__":
