@@ -10,7 +10,6 @@ import sqlite3
 
 import aiosqlite
 import db_session
-from database import _enqueue_enrichment, _set_film_genres
 from db_helpers import (
     _catalog_search_text,
     _legacy_pair_session_id,
@@ -20,6 +19,7 @@ from db_helpers import (
     _split_genres,
     _split_people,
 )
+from repositories.catalog import _enqueue_enrichment, _set_film_genres
 
 logger = logging.getLogger(__name__)
 

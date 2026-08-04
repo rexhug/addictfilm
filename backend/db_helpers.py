@@ -10,6 +10,9 @@ import json
 import re
 from datetime import UTC, datetime
 
+# Media kinds are a value vocabulary shared by the catalogue and the pickers.
+_MEDIA_MOVIE, _MEDIA_SERIES, _MEDIA_EPISODE, _MEDIA_SHORT = "movie", "series", "episode", "short"
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
