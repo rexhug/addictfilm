@@ -6,6 +6,7 @@ from pathlib import Path
 import aiosqlite
 import database as db
 import db_runtime
+import migrations as schema_migrations
 
 
 class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
@@ -55,31 +56,31 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue({"commented_at", "comment_status"}.issubset(
             {row[1] for row in user_films}))
         self.assertEqual([row[0] for row in migrations], [
-            db._SCHEMA_MIGRATION_DIRECTOR_PHOTOS,
-            db._SCHEMA_MIGRATION_LEGACY_COLUMNS,
-            db._SCHEMA_MIGRATION_PERSON_PORTRAIT_COMPLETENESS,
-            db._SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY,
-            db._SCHEMA_MIGRATION_PAIR_HISTORY,
-            db._SCHEMA_MIGRATION_PAIR_NOTIFICATION_EVENTS,
-            db._SCHEMA_MIGRATION_PAIR_NOTIFICATION_OUTBOX,
-            db._SCHEMA_MIGRATION_PAIR_NOTIFICATIONS,
-            db._SCHEMA_MIGRATION_RECOMMENDATIONS,
-            db._SCHEMA_MIGRATION_RECOMMENDATION_RESULTS,
-            db._SCHEMA_MIGRATION_SEARCH_TEXT_DIRECTORS,
-            db._SCHEMA_MIGRATION_EDITORIAL_COLLECTIONS,
-            db._SCHEMA_MIGRATION_FEATURED_COLLECTIONS,
-            db._SCHEMA_MIGRATION_MEDIA_TYPE,
-            db._SCHEMA_MIGRATION_MOVIE_ENRICHMENT,
-            db._SCHEMA_MIGRATION_SESSION_VERSIONS,
-            db._SCHEMA_MIGRATION_WISHLIST_ROULETTE,
-            db._SCHEMA_MIGRATION_WORKER_HEARTBEATS,
-            db._SCHEMA_MIGRATION_HERO_MEDIA,
-            db._SCHEMA_MIGRATION_HERO_PRESENTATION,
-            db._SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION,
-            db._SCHEMA_MIGRATION_CANONICAL_CAST,
-            db._SCHEMA_MIGRATION_FILM_IDENTITY,
-            db._SCHEMA_MIGRATION_PUBLIC_REVIEWS,
-            db._SCHEMA_MIGRATION_USER_ACQUISITION,
+            schema_migrations._SCHEMA_MIGRATION_DIRECTOR_PHOTOS,
+            schema_migrations._SCHEMA_MIGRATION_LEGACY_COLUMNS,
+            schema_migrations._SCHEMA_MIGRATION_PERSON_PORTRAIT_COMPLETENESS,
+            schema_migrations._SCHEMA_MIGRATION_PERSON_PORTRAIT_RETRY,
+            schema_migrations._SCHEMA_MIGRATION_PAIR_HISTORY,
+            schema_migrations._SCHEMA_MIGRATION_PAIR_NOTIFICATION_EVENTS,
+            schema_migrations._SCHEMA_MIGRATION_PAIR_NOTIFICATION_OUTBOX,
+            schema_migrations._SCHEMA_MIGRATION_PAIR_NOTIFICATIONS,
+            schema_migrations._SCHEMA_MIGRATION_RECOMMENDATIONS,
+            schema_migrations._SCHEMA_MIGRATION_RECOMMENDATION_RESULTS,
+            schema_migrations._SCHEMA_MIGRATION_SEARCH_TEXT_DIRECTORS,
+            schema_migrations._SCHEMA_MIGRATION_EDITORIAL_COLLECTIONS,
+            schema_migrations._SCHEMA_MIGRATION_FEATURED_COLLECTIONS,
+            schema_migrations._SCHEMA_MIGRATION_MEDIA_TYPE,
+            schema_migrations._SCHEMA_MIGRATION_MOVIE_ENRICHMENT,
+            schema_migrations._SCHEMA_MIGRATION_SESSION_VERSIONS,
+            schema_migrations._SCHEMA_MIGRATION_WISHLIST_ROULETTE,
+            schema_migrations._SCHEMA_MIGRATION_WORKER_HEARTBEATS,
+            schema_migrations._SCHEMA_MIGRATION_HERO_MEDIA,
+            schema_migrations._SCHEMA_MIGRATION_HERO_PRESENTATION,
+            schema_migrations._SCHEMA_MIGRATION_MOVIE_FLOW_MODERATION,
+            schema_migrations._SCHEMA_MIGRATION_CANONICAL_CAST,
+            schema_migrations._SCHEMA_MIGRATION_FILM_IDENTITY,
+            schema_migrations._SCHEMA_MIGRATION_PUBLIC_REVIEWS,
+            schema_migrations._SCHEMA_MIGRATION_USER_ACQUISITION,
         ])
 
     async def test_foreign_keys_reject_orphaned_user_film_rows(self):
@@ -160,13 +161,13 @@ class AlreadyExistsDetectionTests(unittest.TestCase):
     def test_detects_postgres_duplicate_column_by_sqlstate(self):
         exc = Exception("будь-який текст будь-якою мовою")
         exc.sqlstate = "42701"
-        self.assertTrue(db._is_already_exists_error(exc))
+        self.assertTrue(schema_migrations._is_already_exists_error(exc))
 
     def test_detects_sqlite_duplicate_column_by_message(self):
-        self.assertTrue(db._is_already_exists_error(
+        self.assertTrue(schema_migrations._is_already_exists_error(
             sqlite3.OperationalError("duplicate column name: hero_url")))
 
     def test_does_not_swallow_permission_error(self):
         exc = Exception("permission denied for table films")
         exc.sqlstate = "42501"
-        self.assertFalse(db._is_already_exists_error(exc))
+        self.assertFalse(schema_migrations._is_already_exists_error(exc))

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import database as db
 import db_runtime
+import migrations
 import ratelimit
 
 
@@ -60,7 +61,7 @@ class PublicReviewTests(unittest.IsolatedAsyncioTestCase):
             )
             await conn.commit()
 
-        await db._apply_public_reviews_migration()
+        await migrations._apply_public_reviews_migration()
 
         context = await db.get_movie_rating_context(1, self.film_id)
         self.assertEqual(context["mine"]["comment_status"], "private_legacy")

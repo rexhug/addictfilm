@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import database as db
 import main
+import migrations
 import routers.admin as admin_router_module
 from fastapi import HTTPException
 
@@ -51,7 +52,7 @@ class MigrationDefaultTests(_Base):
 
     async def test_migration_is_idempotent(self):
         cid = await self._collection(featured=True)
-        await db._apply_featured_collections_migration()
+        await migrations._apply_featured_collections_migration()
         # Повторный прогон не сбрасывает уже выбранный формат.
         self.assertEqual((await db.get_collection(cid))["display_type"], "featured")
 
