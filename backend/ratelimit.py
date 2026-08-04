@@ -42,12 +42,62 @@ REVIEW_WRITE_MAX: int = int(os.getenv("REVIEW_WRITE_MAX", "12"))
 REVIEW_WRITE_WINDOW: int = int(os.getenv("REVIEW_WRITE_WINDOW", "60"))
 _MAX_TRACKED_KEYS: int = max(1_000, int(os.getenv("RATE_LIMIT_MAX_TRACKED_KEYS", "20_000")))
 
-_hits: dict[int, deque] = defaultdict(deque)
-_calls: int = 0  # счётчик обращений для периодической уборки _hits
-_image_hits: dict[str, deque] = defaultdict(deque)
-_image_calls: int = 0
-_review_hits: dict[int, deque] = defaultdict(deque)
-_review_calls: int = 0
+class _SlidingWindow:
+    """One sliding-window counter.  Extracted because the same loop existed in
+    three copies and a fourth was about to appear: a fix applied to one of them
+    silently missed the others.
+
+    The instance owns only the state.  Limits are passed in on every call and
+    stay module-level constants, so an operator (or a test) can retune them at
+    runtime without rebuilding the counter.
+    """
+
+    def __init__(self, max_tracked: int = _MAX_TRACKED_KEYS):
+        self._max_tracked = max_tracked
+        self._hits: dict[object, deque] = defaultdict(deque)
+        self._calls = 0
+
+    def _sweep(self, now: float, window: float) -> None:
+        for key in list(self._hits):
+            dq = self._hits[key]
+            while dq and now - dq[0] > window:
+                dq.popleft()
+            if not dq:
+                del self._hits[key]
+
+    def allow(self, key: object, max_hits: int, window: float) -> bool:
+        now = time.monotonic()
+        self._calls += 1
+        # Public traffic must not be able to grow this dict without bound.
+        if self._calls % 500 == 0 or len(self._hits) >= self._max_tracked:
+            self._sweep(now, window)
+        dq = self._hits[key]
+        while dq and now - dq[0] > window:
+            dq.popleft()
+        if len(dq) >= max_hits:
+            return False
+        dq.append(now)
+        return True
+
+    def reset(self) -> None:
+        self._hits.clear()
+        self._calls = 0
+
+
+# List and rating writes get their own budget: normal usage bursts here (batch
+# adding a franchise) and must not eat into the search quota.
+MUTATION_MAX: int = int(os.getenv("MUTATION_MAX", "60"))
+MUTATION_WINDOW: int = int(os.getenv("MUTATION_WINDOW", "60"))
+# Quiz endpoints INSERT a session row per call, so they are the cheapest way for
+# one account to write to Postgres in a loop.
+QUIZ_MAX: int = int(os.getenv("QUIZ_MAX", "40"))
+QUIZ_WINDOW: int = int(os.getenv("QUIZ_WINDOW", "60"))
+
+_search_window = _SlidingWindow()
+_image_window = _SlidingWindow()
+_review_window = _SlidingWindow()
+_mutation_window = _SlidingWindow()
+_quiz_window = _SlidingWindow()
 
 
 def _today() -> str:
@@ -60,30 +110,9 @@ async def try_spend_search() -> bool:
     return await db.try_spend_search_budget(_today(), DAILY_SEARCH_BUDGET)
 
 
-def _sweep(now: float) -> None:
-    """Убрать записи неактивных пользователей (иначе _hits растёт на публике)."""
-    for uid in list(_hits):
-        dq = _hits[uid]
-        while dq and now - dq[0] > USER_WINDOW:
-            dq.popleft()
-        if not dq:
-            del _hits[uid]
-
-
 def allow_user(user_id: int) -> bool:
-    """Скользящее окно: False, если пользователь превысил USER_MAX за USER_WINDOW сек."""
-    global _calls
-    now = time.monotonic()
-    _calls += 1
-    if _calls % 500 == 0 or len(_hits) >= _MAX_TRACKED_KEYS:  # не даём публичному трафику раздувать память
-        _sweep(now)
-    dq = _hits[user_id]
-    while dq and now - dq[0] > USER_WINDOW:
-        dq.popleft()
-    if len(dq) >= USER_MAX:
-        return False
-    dq.append(now)
-    return True
+    """Search throttle: one account cannot burn the shared Kinopoisk quota."""
+    return _search_window.allow(user_id, USER_MAX, USER_WINDOW)
 
 
 def allow_image_proxy(client_key: str) -> bool:
@@ -94,52 +123,30 @@ def allow_image_proxy(client_key: str) -> bool:
     this in-memory is enough to cap one instance; the fetch semaphore provides
     the process-wide backstop when multiple clients are involved.
     """
-    global _image_calls
-    now = time.monotonic()
-    _image_calls += 1
-    if _image_calls % 500 == 0 or len(_image_hits) >= _MAX_TRACKED_KEYS:
-        for key in list(_image_hits):
-            dq = _image_hits[key]
-            while dq and now - dq[0] > IMAGE_PROXY_WINDOW:
-                dq.popleft()
-            if not dq:
-                del _image_hits[key]
-    dq = _image_hits[client_key]
-    while dq and now - dq[0] > IMAGE_PROXY_WINDOW:
-        dq.popleft()
-    if len(dq) >= IMAGE_PROXY_MAX:
-        return False
-    dq.append(now)
-    return True
+    return _image_window.allow(client_key, IMAGE_PROXY_MAX, IMAGE_PROXY_WINDOW)
 
 
 def allow_review_write(user_id: int) -> bool:
     """Separate review-mutation guard; review traffic never consumes search quota."""
-    global _review_calls
-    now = time.monotonic()
-    _review_calls += 1
-    if _review_calls % 500 == 0 or len(_review_hits) >= _MAX_TRACKED_KEYS:
-        for uid in list(_review_hits):
-            dq = _review_hits[uid]
-            while dq and now - dq[0] > REVIEW_WRITE_WINDOW:
-                dq.popleft()
-            if not dq:
-                del _review_hits[uid]
-    dq = _review_hits[user_id]
-    while dq and now - dq[0] > REVIEW_WRITE_WINDOW:
-        dq.popleft()
-    if len(dq) >= REVIEW_WRITE_MAX:
-        return False
-    dq.append(now)
-    return True
+    return _review_window.allow(user_id, REVIEW_WRITE_MAX, REVIEW_WRITE_WINDOW)
+
+
+def allow_mutation(user_id: int) -> bool:
+    """List and rating writes.  A separate budget from search: normal usage
+    bursts here (batch-adding a franchise) without touching the search quota.
+    """
+    return _mutation_window.allow(user_id, MUTATION_MAX, MUTATION_WINDOW)
+
+
+def allow_quiz(user_id: int) -> bool:
+    """Quiz endpoints INSERT a session row per call, so they are the cheapest
+    way for one account to write to Postgres in a loop.
+    """
+    return _quiz_window.allow(user_id, QUIZ_MAX, QUIZ_WINDOW)
 
 
 def _reset_for_tests() -> None:
-    """Только для тестов: обнулить in-memory состояние (per-user throttle)."""
-    global _calls, _image_calls, _review_calls
-    _calls = 0
-    _hits.clear()
-    _image_calls = 0
-    _image_hits.clear()
-    _review_calls = 0
-    _review_hits.clear()
+    """Tests only: drop the in-memory throttle state."""
+    for window in (_search_window, _image_window, _review_window,
+                   _mutation_window, _quiz_window):
+        window.reset()

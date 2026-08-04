@@ -307,6 +307,22 @@ async def _effective_role(user_id: int) -> str | None:
     return await db.get_user_role(user_id)
 
 
+async def throttled_mutation(user: dict = Depends(current_user)) -> dict:
+    """429 instead of an unbounded write path.  Applied at the boundary, not
+    inside handlers, so a new write endpoint is guarded by adding one Depends.
+    """
+    if not ratelimit.allow_mutation(user["id"]):
+        raise HTTPException(status_code=429, detail="Слишком часто, попробуйте через минуту")
+    return user
+
+
+async def throttled_quiz(user: dict = Depends(current_user)) -> dict:
+    """Quiz calls INSERT a session row each, so they get their own budget."""
+    if not ratelimit.allow_quiz(user["id"]):
+        raise HTTPException(status_code=429, detail="Слишком часто, попробуйте через минуту")
+    return user
+
+
 async def require_editor(user: dict = Depends(current_user)) -> dict:
     """Гейт для in-app админки подборок — по самому Telegram-юзеру (не по токену,
     как require_admin ниже — тот для curl/скриптов обслуживания)."""
@@ -540,7 +556,7 @@ class RateBody(BaseModel):
 
 
 @app.post("/api/movie/{film_id}/rate")
-async def rate(film_id: int, body: RateBody, user: dict = Depends(current_user)):
+async def rate(film_id: int, body: RateBody, user: dict = Depends(throttled_mutation)):
     if not await db.get_film(film_id):
         raise HTTPException(status_code=404, detail="Фильм не найден")
     result = await db.set_rating(
@@ -579,7 +595,7 @@ class StatusBody(BaseModel):
 
 
 @app.post("/api/movie/{film_id}/status")
-async def set_status(film_id: int, body: StatusBody, user: dict = Depends(current_user)):
+async def set_status(film_id: int, body: StatusBody, user: dict = Depends(throttled_mutation)):
     if body.status not in ("want_to_watch", "watched"):
         raise HTTPException(status_code=422, detail="Неизвестный статус")
     if not await db.get_film(film_id):
@@ -707,7 +723,7 @@ async def admin_hide_review(review_id: int, user: dict = Depends(require_editor)
 
 
 @app.delete("/api/movie/{film_id}")
-async def delete(film_id: int, user: dict = Depends(current_user)):
+async def delete(film_id: int, user: dict = Depends(throttled_mutation)):
     await db.remove_from_list(user["id"], film_id)  # из своего списка; в каталоге остаётся
     await _invalidate_stats_for(user["id"])
     return {"ok": True}
@@ -785,7 +801,7 @@ class AddBody(BaseModel):
 
 
 @app.post("/api/add")
-async def add(body: AddBody, user: dict = Depends(current_user)):
+async def add(body: AddBody, user: dict = Depends(throttled_mutation)):
     if body.src not in ("k", "i"):
         raise HTTPException(status_code=422, detail="Неизвестный источник")
     if body.status not in ("want_to_watch", "watched"):
@@ -920,7 +936,7 @@ def _schedule_profile_director_enrichment(user_id: int) -> None:
 
 
 @app.post("/api/wishlist/random")
-async def wishlist_random(user: dict = Depends(current_user)):
+async def wishlist_random(user: dict = Depends(throttled_quiz)):
     """Рулетка по СВОЕМУ списку «Хочу посмотреть».
 
     POST, а не GET: выбор меняет состояние круга (фильм помечается показанным),
@@ -1022,7 +1038,7 @@ def _wishlist_prepared_envelope(user_id: int, prepared: dict | None) -> dict | N
 
 
 @app.post("/api/wishlist/random/prepare")
-async def wishlist_random_prepare(user: dict = Depends(current_user)):
+async def wishlist_random_prepare(user: dict = Depends(throttled_quiz)):
     """Read-only prefetch: select a card without recording a show."""
     prepared = await db.prepare_random_wishlist_film(user["id"])
     if prepared is None:
@@ -1032,7 +1048,7 @@ async def wishlist_random_prepare(user: dict = Depends(current_user)):
 
 @app.post("/api/wishlist/random/consume")
 async def wishlist_random_consume(
-        body: WishlistPreparedConsumeBody, user: dict = Depends(current_user)):
+        body: WishlistPreparedConsumeBody, user: dict = Depends(throttled_quiz)):
     """Validate a prepared card and atomically record the real show."""
     payload = _verify_wishlist_prepared(body.token, user["id"])
     item = await db.consume_prepared_wishlist_film(
@@ -1133,7 +1149,7 @@ async def _quiz_payload(session: dict, language: str, user_id: int) -> dict:
 
 
 @app.post("/api/recommendations/random")
-async def recommendation_random(body: RandomRecommendationBody, user: dict = Depends(current_user)):
+async def recommendation_random(body: RandomRecommendationBody, user: dict = Depends(throttled_quiz)):
     language = _recommendation_language(body.language)
     if body.context not in {"solo", "pair"}:
         raise HTTPException(status_code=422, detail="Неизвестный контекст просмотра")
@@ -1197,7 +1213,7 @@ def _session_versions_match(session: dict) -> bool:
 
 
 @app.post("/api/recommendations/quiz/start")
-async def recommendation_quiz_start(body: RecommendationStartBody, user: dict = Depends(current_user)):
+async def recommendation_quiz_start(body: RecommendationStartBody, user: dict = Depends(throttled_quiz)):
     language = _recommendation_language(body.language)
     engine = await _engine_for_new_session(user["id"])
     session = await db.create_recommendation_session(
@@ -1218,7 +1234,7 @@ async def recommendation_quiz_get(session_id: str, language: str = "ru", user: d
 
 @app.post("/api/recommendations/quiz/{session_id}/answer")
 async def recommendation_quiz_answer(session_id: str, body: RecommendationAnswerBody,
-                                     user: dict = Depends(current_user)):
+                                     user: dict = Depends(throttled_quiz)):
     from recommendation_questions import option_for
     language = _recommendation_language(body.language)
     session = await db.get_recommendation_session(user["id"], session_id)
@@ -1246,7 +1262,7 @@ async def recommendation_quiz_answer(session_id: str, body: RecommendationAnswer
 
 
 @app.post("/api/recommendations/quiz/{session_id}/back")
-async def recommendation_quiz_back(session_id: str, body: RecommendationStartBody, user: dict = Depends(current_user)):
+async def recommendation_quiz_back(session_id: str, body: RecommendationStartBody, user: dict = Depends(throttled_quiz)):
     session = await db.get_recommendation_session(user["id"], session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Опрос не найден")
@@ -1259,7 +1275,7 @@ async def recommendation_quiz_back(session_id: str, body: RecommendationStartBod
 
 
 @app.post("/api/recommendations/quiz/{session_id}/restart")
-async def recommendation_quiz_restart(session_id: str, body: RecommendationStartBody, user: dict = Depends(current_user)):
+async def recommendation_quiz_restart(session_id: str, body: RecommendationStartBody, user: dict = Depends(throttled_quiz)):
     # Перезапуск — новый проход: берём версию, доступную СЕЙЧАС.
     engine = await _engine_for_new_session(user["id"])
     session = await db.restart_recommendation_session(user["id"], session_id, "q1",
@@ -1304,7 +1320,7 @@ async def recommendation_quiz_results(session_id: str, language: str = "ru", use
 
 @app.post("/api/recommendations/quiz/{session_id}/replace")
 async def recommendation_quiz_replace(session_id: str, body: RecommendationReplaceBody,
-                                      user: dict = Depends(current_user)):
+                                      user: dict = Depends(throttled_quiz)):
     """Заменить один отклонённый вариант, не трогая остальные.
 
     Раньше «не предлагать» выбрасывало человека на стартовый экран подбора: он
@@ -2015,7 +2031,7 @@ async def partner(user: dict = Depends(current_user)):
 
 
 @app.post("/api/partner/invite")
-async def partner_invite(user: dict = Depends(current_user)):
+async def partner_invite(user: dict = Depends(throttled_mutation)):
     if await db.get_partner(user["id"]) is not None:
         raise HTTPException(status_code=409, detail="Пара уже есть")
     invite = await db.create_invite(user["id"], with_state=True)
