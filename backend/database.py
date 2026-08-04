@@ -54,6 +54,7 @@ from migrations import run_schema_migrations
 # _genres_cache is deliberately NOT re-exported: it is rebound, not mutated,
 # so a copy taken here would freeze at import and only look like live state.
 # Callers reset it through _invalidate_genres_cache(), which is re-exported.
+from repositories.audit import list_audit_log, write_audit  # noqa: F401
 from repositories.catalog import (  # noqa: F401
     _ACQUISITION_PARAM_RE,
     _GENRES_CACHE_TTL_SECONDS,
@@ -80,6 +81,8 @@ from repositories.catalog import (  # noqa: F401
     get_film_id_by_imdb,
     get_film_id_by_source,
     get_or_create_film,
+    get_user,
+    get_user_role,
     list_genres,
     mark_film_artwork_checked,
     mark_film_visuals_checked,
@@ -367,6 +370,27 @@ async def ping() -> bool:
         return await cur.fetchone() is not None
 
 
+async def backup_db(keep: int = 7) -> str | None:
+    """Консистентный бэкап (VACUUM INTO) рядом с базой; храним последние `keep`.
+    SQLite-only — в Postgres (Neon) бэкапы делает сам провайдер (point-in-time restore)."""
+    if _PG:
+        return None
+    dirname = os.path.dirname(os.path.abspath(DB_PATH))
+    path = os.path.join(dirname, f"movies.backup-{datetime.now(UTC):%Y%m%d}.db")
+    if not os.path.exists(path):
+        try:
+            async with db_session.connect() as db:
+                await db.execute("VACUUM INTO ?", (path,))
+        except Exception:
+            return None
+    for old in sorted(glob.glob(os.path.join(dirname, "movies.backup-*.db")))[:-keep]:
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+    return path
+
+
 # ── Постоянный кэш поиска ─────────────────────────────────────────────────────
 async def search_cache_get(q: str, max_age_sec: int, empty_max_age_sec: int | None = None) -> list | None:
     """Fresh positive results, or a deliberately short-lived cached empty result."""
@@ -421,27 +445,6 @@ async def try_spend_search_budget(day: str, budget: int) -> bool:
         row = await cur.fetchone()
         await db.commit()
         return row is not None
-
-
-async def backup_db(keep: int = 7) -> str | None:
-    """Консистентный бэкап (VACUUM INTO) рядом с базой; храним последние `keep`.
-    SQLite-only — в Postgres (Neon) бэкапы делает сам провайдер (point-in-time restore)."""
-    if _PG:
-        return None
-    dirname = os.path.dirname(os.path.abspath(DB_PATH))
-    path = os.path.join(dirname, f"movies.backup-{datetime.now(UTC):%Y%m%d}.db")
-    if not os.path.exists(path):
-        try:
-            async with db_session.connect() as db:
-                await db.execute("VACUUM INTO ?", (path,))
-        except Exception:
-            return None
-    for old in sorted(glob.glob(os.path.join(dirname, "movies.backup-*.db")))[:-keep]:
-        try:
-            os.remove(old)
-        except OSError:
-            pass
-    return path
 
 
 # ── Изображение для полноэкранного подбора ───────────────────────────────────
@@ -880,6 +883,7 @@ async def mark_film_director_photos_checked(film_id: int) -> bool:
         return cur.rowcount > 0
 
 
+# ── Список пользователя (user_films) ─────────────────────────────────────────
 async def community_rating(film_id: int) -> dict:
     """Средняя оценка всех пользователей по фильму + количество оценок."""
     async with db_session.connect() as db:
@@ -891,7 +895,6 @@ async def community_rating(film_id: int) -> dict:
         return {"avg": round(avg, 1) if avg is not None else None, "count": cnt}
 
 
-# ── Список пользователя (user_films) ─────────────────────────────────────────
 async def add_to_list(user_id: int, film_id: int, status: str = "want_to_watch",
                       watched_at: str | None = None) -> bool:
     """Добавить фильм в свой список. False = уже был у этого пользователя."""
@@ -1434,7 +1437,7 @@ async def pick_random_wishlist_film(user_id: int) -> dict | None:
         await db.execute(
             "INSERT INTO wishlist_random_state (user_id, cycle_number, updated_at) "
             "VALUES (?,1,?) ON CONFLICT DO NOTHING", (user_id, now))
-        if _PG:
+        if db_session.uses_postgres():
             state = await (await db.execute(
                 "SELECT cycle_number FROM wishlist_random_state WHERE user_id=? FOR UPDATE",
                 (user_id,))).fetchone()
@@ -1554,7 +1557,7 @@ async def consume_prepared_wishlist_film(
         await db.execute(
             "INSERT INTO wishlist_random_state (user_id, cycle_number, updated_at) "
             "VALUES (?,1,?) ON CONFLICT DO NOTHING", (user_id, now))
-        if _PG:
+        if db_session.uses_postgres():
             state = await (await db.execute(
                 "SELECT cycle_number FROM wishlist_random_state "
                 "WHERE user_id=? FOR UPDATE", (user_id,))).fetchone()
@@ -1924,7 +1927,7 @@ async def recommendation_pick_lock(user_id: int):
     запишет показ. Поэтому в SQLite-режиме нужен обычный внутрипроцессный замок,
     а в Postgres — консультативный, он работает и между машинами Fly.
     """
-    if not _PG:
+    if not db_session.uses_postgres():
         key = int(user_id)
         lock = _pick_locks.setdefault(key, asyncio.Lock())
         _pick_lock_users[key] = _pick_lock_users.get(key, 0) + 1
@@ -2010,6 +2013,139 @@ async def get_unrated_watched(user_id: int, since_days: int = 30, limit: int = 1
 
 
 # ── Персональная статистика (без пар) ────────────────────────────────────────
+async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
+    """Statistics for all historical sessions of one exact pair.
+
+    ``since`` remains as a legacy fallback for direct callers during upgrades,
+    but active production pairs read every saved session for these two IDs.  A
+    user's personal list is never modified or reset by this calculation.
+    """
+    year_now = datetime.now(UTC).year
+    async with db_session.connect() as db:
+        db.row_factory = aiosqlite.Row
+        sessions = await _pair_sessions_for(db, user_id, partner_id, since)
+        period_sql, period_params = _pair_session_predicate(sessions)
+        rows = await (await db.execute(
+            f"""
+            SELECT f.id AS film_id, f.genres, f.actors, f.actors_photos, f.directors, f.directors_photos, f.runtime, f.title, f.title_original, f.poster_url,
+                   a.status AS sa, a.rating AS ra, a.watched_at AS wa,
+                   b.status AS sb, b.rating AS rb, b.watched_at AS wb
+            FROM user_films a
+            JOIN user_films b ON a.film_id = b.film_id
+            JOIN films f ON f.id = a.film_id
+            WHERE a.user_id = ? AND b.user_id = ? AND ({period_sql})
+            """, (user_id, partner_id, *period_params))).fetchall()
+
+    both_watched = [r for r in rows if r["sa"] == "watched" and r["sb"] == "watched"]
+    watched = len(both_watched)
+    want = len(rows) - watched
+
+    pooled = [r["ra"] for r in rows if r["ra"] is not None] + [r["rb"] for r in rows if r["rb"] is not None]
+    avg_rating = round(sum(pooled) / len(pooled), 1) if pooled else None
+    dist = {i: 0 for i in range(1, 11)}
+    for v in pooled:
+        dist[v] = dist.get(v, 0) + 1
+    rating_dist = [dist[i] for i in range(1, 11)]
+
+    genre_counts, actor_counts, director_counts = {}, {}, {}
+    actor_photo_sources = _person_photo_sources(both_watched, "actors_photos")
+    director_photo_sources = _person_photo_sources(both_watched, "directors_photos")
+    actor_prominence = _person_credit_prominence(both_watched, "actors")
+    director_prominence = _person_credit_prominence(both_watched, "directors")
+    total_min = 0
+    year_min, year_genre, year_actor = 0, {}, {}
+    year_ratings, year_count = [], 0
+    for r in both_watched:
+        m = re.search(r"\d+", r["runtime"] or "")
+        rt = int(m.group(0)) if m else 0
+        total_min += rt
+        for g in (r["genres"] or "").split(","):
+            g = _canon_genre(g)
+            if g and g != "N/A":
+                genre_counts[g] = genre_counts.get(g, 0) + 1
+        for a in (r["actors"] or "").split(","):
+            a = a.strip()
+            if a:
+                actor_counts[a] = actor_counts.get(a, 0) + 1
+        for d in (r["directors"] or "").split(","):
+            d = d.strip()
+            if d:
+                director_counts[d] = director_counts.get(d, 0) + 1
+        if (r["wa"] or "").startswith(str(year_now)) or (r["wb"] or "").startswith(str(year_now)):
+            year_count += 1
+            year_min += rt
+            for g in (r["genres"] or "").split(","):
+                g = _canon_genre(g)
+                if g and g != "N/A":
+                    year_genre[g] = year_genre.get(g, 0) + 1
+            for a in (r["actors"] or "").split(","):
+                a = a.strip()
+                if a:
+                    year_actor[a] = year_actor.get(a, 0) + 1
+            for rv in (r["ra"], r["rb"]):
+                if rv is not None:
+                    year_ratings.append(rv)
+
+    total_refs = sum(genre_counts.values())
+    top_genres_pct = [
+        # See get_user_stats: the count makes the percentage interpretable in
+        # the pair profile while preserving the original tuple prefix.
+        (g, round(c / total_refs * 100), c)
+        for g, c in sorted(genre_counts.items(), key=lambda x: -x[1])[:5]
+    ] if total_refs else []
+    top_actors = [(n, c, *(actor_photo_sources.get(n) or [None]))
+                  for n, c in _rank_people(actor_counts, actor_prominence)]
+    top_directors = [(n, c, *(director_photo_sources.get(n) or [None]))
+                     for n, c in _rank_people(director_counts, director_prominence)]
+
+    # Совместимость по фильмам пар-периода, которые оценили ОБА.
+    rated = [{"film_id": r["film_id"], "a": r["ra"], "b": r["rb"], "title": r["title"], "title_original": r["title_original"], "poster_url": r["poster_url"]}
+             for r in rows if r["ra"] is not None and r["rb"] is not None]
+    agreement = matches = None
+    controversial = best = None
+    common_favorites = []
+    disagreements = []
+    if rated:
+        diffs = [abs(item["a"] - item["b"]) for item in rated]
+        agreement = round(100 - (sum(diffs) / len(rated)) / 9 * 100)
+        matches = sum(1 for item in rated if item["a"] == item["b"])
+        ranked_favorites = sorted(rated, key=lambda item: (item["a"] + item["b"], item["a"], item["b"]), reverse=True)
+        # These rails are swipeable, not paginated.  A bounded 10/5 payload
+        # keeps the profile immediate even for a couple with a large history.
+        common_favorites = [{"film_id": item["film_id"], "title": item["title"], "title_original": item["title_original"], "poster_url": item["poster_url"],
+                             "avg": round((item["a"] + item["b"]) / 2, 1)} for item in ranked_favorites[:10]]
+        ranked_disagreements = [item for item in sorted(rated, key=lambda item: abs(item["a"] - item["b"]), reverse=True)
+                                if item["a"] != item["b"]]
+        disagreements = [{"film_id": item["film_id"], "title": item["title"], "title_original": item["title_original"], "poster_url": item["poster_url"],
+                          "a": item["a"], "b": item["b"], "diff": abs(item["a"] - item["b"])}
+                         for item in ranked_disagreements[:5]]
+        top_dispute = disagreements[0] if disagreements else None
+        controversial = top_dispute
+        top_favorite = common_favorites[0] if common_favorites else None
+        best = top_favorite
+
+    ranked = sorted(year_actor.items(), key=lambda x: -x[1])
+    year_top_actor = ranked[0] if ranked and ranked[0][1] >= 2 and (len(ranked) == 1 or ranked[0][1] > ranked[1][1]) else None
+    year = {
+        "year": year_now, "count": year_count, "total_runtime_min": year_min,
+        "top_genre": max(year_genre.items(), key=lambda x: x[1])[0] if year_genre else None,
+        "top_actor": year_top_actor,
+        "avg_rating": round(sum(year_ratings) / len(year_ratings), 1) if year_ratings else None,
+        "best_avg": None, "best_titles": [],
+    }
+
+    return {
+        "watched": watched, "want": want,
+        "avg_rating": avg_rating, "rating_count": len(pooled), "rating_dist": rating_dist,
+        "total_runtime_min": total_min,
+        "top_genres_pct": top_genres_pct, "top_actors": top_actors, "top_directors": top_directors,
+        "year": year,
+        "agreement": agreement, "rated_together": len(rated),
+        "matches": matches, "controversial": controversial, "best": best,
+        "common_favorites": common_favorites, "disagreements": disagreements,
+    }
+
+
 def _person_photo_sources(rows, column: str) -> dict[str, list[str]]:
     """Collect ordered portrait candidates per exact person name.
 
@@ -2309,15 +2445,6 @@ async def browse_by_genre(user_id: int, genre: str, limit: int = 30, offset: int
             LIMIT ? OFFSET ?
             """, (user_id, *aliases, limit, offset))
         return [_browse_dict(r) for r in await cur.fetchall()]
-
-
-# ── Пара (Фаза E): приглашения, пары, совместная статистика ───────────────────
-async def get_user(user_id: int) -> dict | None:
-    async with db_session.connect() as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT id, first_name, username, photo_url FROM users WHERE id = ?", (user_id,))
-        row = await cur.fetchone()
-        return dict(row) if row else None
 
 
 # ── Центр уведомлений и пользовательские настройки ───────────────────────────
@@ -2706,7 +2833,7 @@ async def _lock_pair_users(db, *user_ids: int) -> None:
     if not ids:
         return
     marks = ", ".join("?" for _ in ids)
-    if db_runtime.uses_postgres(DATABASE_URL):
+    if db_session.uses_postgres():
         await db.execute(
             f"SELECT id FROM users WHERE id IN ({marks}) ORDER BY id FOR UPDATE", ids)
     else:
@@ -3130,148 +3257,6 @@ def _pair_session_predicate(sessions: list[tuple[str, str | None]]) -> tuple[str
     return " OR ".join(clauses), params
 
 
-async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
-    """Statistics for all historical sessions of one exact pair.
-
-    ``since`` remains as a legacy fallback for direct callers during upgrades,
-    but active production pairs read every saved session for these two IDs.  A
-    user's personal list is never modified or reset by this calculation.
-    """
-    year_now = datetime.now(UTC).year
-    async with db_session.connect() as db:
-        db.row_factory = aiosqlite.Row
-        sessions = await _pair_sessions_for(db, user_id, partner_id, since)
-        period_sql, period_params = _pair_session_predicate(sessions)
-        rows = await (await db.execute(
-            f"""
-            SELECT f.id AS film_id, f.genres, f.actors, f.actors_photos, f.directors, f.directors_photos, f.runtime, f.title, f.title_original, f.poster_url,
-                   a.status AS sa, a.rating AS ra, a.watched_at AS wa,
-                   b.status AS sb, b.rating AS rb, b.watched_at AS wb
-            FROM user_films a
-            JOIN user_films b ON a.film_id = b.film_id
-            JOIN films f ON f.id = a.film_id
-            WHERE a.user_id = ? AND b.user_id = ? AND ({period_sql})
-            """, (user_id, partner_id, *period_params))).fetchall()
-
-    both_watched = [r for r in rows if r["sa"] == "watched" and r["sb"] == "watched"]
-    watched = len(both_watched)
-    want = len(rows) - watched
-
-    pooled = [r["ra"] for r in rows if r["ra"] is not None] + [r["rb"] for r in rows if r["rb"] is not None]
-    avg_rating = round(sum(pooled) / len(pooled), 1) if pooled else None
-    dist = {i: 0 for i in range(1, 11)}
-    for v in pooled:
-        dist[v] = dist.get(v, 0) + 1
-    rating_dist = [dist[i] for i in range(1, 11)]
-
-    genre_counts, actor_counts, director_counts = {}, {}, {}
-    actor_photo_sources = _person_photo_sources(both_watched, "actors_photos")
-    director_photo_sources = _person_photo_sources(both_watched, "directors_photos")
-    actor_prominence = _person_credit_prominence(both_watched, "actors")
-    director_prominence = _person_credit_prominence(both_watched, "directors")
-    total_min = 0
-    year_min, year_genre, year_actor = 0, {}, {}
-    year_ratings, year_count = [], 0
-    for r in both_watched:
-        m = re.search(r"\d+", r["runtime"] or "")
-        rt = int(m.group(0)) if m else 0
-        total_min += rt
-        for g in (r["genres"] or "").split(","):
-            g = _canon_genre(g)
-            if g and g != "N/A":
-                genre_counts[g] = genre_counts.get(g, 0) + 1
-        for a in (r["actors"] or "").split(","):
-            a = a.strip()
-            if a:
-                actor_counts[a] = actor_counts.get(a, 0) + 1
-        for d in (r["directors"] or "").split(","):
-            d = d.strip()
-            if d:
-                director_counts[d] = director_counts.get(d, 0) + 1
-        if (r["wa"] or "").startswith(str(year_now)) or (r["wb"] or "").startswith(str(year_now)):
-            year_count += 1
-            year_min += rt
-            for g in (r["genres"] or "").split(","):
-                g = _canon_genre(g)
-                if g and g != "N/A":
-                    year_genre[g] = year_genre.get(g, 0) + 1
-            for a in (r["actors"] or "").split(","):
-                a = a.strip()
-                if a:
-                    year_actor[a] = year_actor.get(a, 0) + 1
-            for rv in (r["ra"], r["rb"]):
-                if rv is not None:
-                    year_ratings.append(rv)
-
-    total_refs = sum(genre_counts.values())
-    top_genres_pct = [
-        # See get_user_stats: the count makes the percentage interpretable in
-        # the pair profile while preserving the original tuple prefix.
-        (g, round(c / total_refs * 100), c)
-        for g, c in sorted(genre_counts.items(), key=lambda x: -x[1])[:5]
-    ] if total_refs else []
-    top_actors = [(n, c, *(actor_photo_sources.get(n) or [None]))
-                  for n, c in _rank_people(actor_counts, actor_prominence)]
-    top_directors = [(n, c, *(director_photo_sources.get(n) or [None]))
-                     for n, c in _rank_people(director_counts, director_prominence)]
-
-    # Совместимость по фильмам пар-периода, которые оценили ОБА.
-    rated = [{"film_id": r["film_id"], "a": r["ra"], "b": r["rb"], "title": r["title"], "title_original": r["title_original"], "poster_url": r["poster_url"]}
-             for r in rows if r["ra"] is not None and r["rb"] is not None]
-    agreement = matches = None
-    controversial = best = None
-    common_favorites = []
-    disagreements = []
-    if rated:
-        diffs = [abs(item["a"] - item["b"]) for item in rated]
-        agreement = round(100 - (sum(diffs) / len(rated)) / 9 * 100)
-        matches = sum(1 for item in rated if item["a"] == item["b"])
-        ranked_favorites = sorted(rated, key=lambda item: (item["a"] + item["b"], item["a"], item["b"]), reverse=True)
-        # These rails are swipeable, not paginated.  A bounded 10/5 payload
-        # keeps the profile immediate even for a couple with a large history.
-        common_favorites = [{"film_id": item["film_id"], "title": item["title"], "title_original": item["title_original"], "poster_url": item["poster_url"],
-                             "avg": round((item["a"] + item["b"]) / 2, 1)} for item in ranked_favorites[:10]]
-        ranked_disagreements = [item for item in sorted(rated, key=lambda item: abs(item["a"] - item["b"]), reverse=True)
-                                if item["a"] != item["b"]]
-        disagreements = [{"film_id": item["film_id"], "title": item["title"], "title_original": item["title_original"], "poster_url": item["poster_url"],
-                          "a": item["a"], "b": item["b"], "diff": abs(item["a"] - item["b"])}
-                         for item in ranked_disagreements[:5]]
-        top_dispute = disagreements[0] if disagreements else None
-        controversial = top_dispute
-        top_favorite = common_favorites[0] if common_favorites else None
-        best = top_favorite
-
-    ranked = sorted(year_actor.items(), key=lambda x: -x[1])
-    year_top_actor = ranked[0] if ranked and ranked[0][1] >= 2 and (len(ranked) == 1 or ranked[0][1] > ranked[1][1]) else None
-    year = {
-        "year": year_now, "count": year_count, "total_runtime_min": year_min,
-        "top_genre": max(year_genre.items(), key=lambda x: x[1])[0] if year_genre else None,
-        "top_actor": year_top_actor,
-        "avg_rating": round(sum(year_ratings) / len(year_ratings), 1) if year_ratings else None,
-        "best_avg": None, "best_titles": [],
-    }
-
-    return {
-        "watched": watched, "want": want,
-        "avg_rating": avg_rating, "rating_count": len(pooled), "rating_dist": rating_dist,
-        "total_runtime_min": total_min,
-        "top_genres_pct": top_genres_pct, "top_actors": top_actors, "top_directors": top_directors,
-        "year": year,
-        "agreement": agreement, "rated_together": len(rated),
-        "matches": matches, "controversial": controversial, "best": best,
-        "common_favorites": common_favorites, "disagreements": disagreements,
-    }
-
-
-# ── Подборки (кураторские коллекции) ───────────────────────────────────────────
-async def get_user_role(user_id: int) -> str | None:
-    """Роль из БД (назначается вручную админом) — отдельно от ADMIN_USER_IDS (main.py)."""
-    async with db_session.connect() as db:
-        cur = await db.execute("SELECT role FROM users WHERE id = ?", (user_id,))
-        row = await cur.fetchone()
-        return row[0] if row else None
-
-
 # ── Редакционные подборки: статусы, порядок, оптимистичная блокировка ─────────
 # Публичный слой видит ТОЛЬКО published; draft/archived доступны через админские
 # функции. Один канонический status вместо противоречивых булевых флагов.
@@ -3536,23 +3521,3 @@ async def reorder_collections(ordered_ids: list[int], actor_id: int) -> bool:
         return True
 
 
-async def write_audit(actor_id: int, actor_role: str, action: str, entity_type: str,
-                      entity_id: str | int, details: dict | None = None) -> None:
-    """Append-only журнал админских мутаций. Секреты/initData сюда не попадают —
-    вызывающий передаёт только редактируемые поля."""
-    async with db_session.connect() as db:
-        await db.execute(
-            "INSERT INTO admin_audit_log (actor_id, actor_role, action, entity_type, entity_id, "
-            "details, created_at) VALUES (?,?,?,?,?,?,?)",
-            (actor_id, actor_role, action, entity_type, str(entity_id),
-             json.dumps(details, ensure_ascii=False) if details else None, _now()))
-        await db.commit()
-
-
-async def list_audit_log(limit: int = 50) -> list[dict]:
-    async with db_session.connect() as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute(
-            "SELECT actor_id, actor_role, action, entity_type, entity_id, details, created_at "
-            "FROM admin_audit_log ORDER BY created_at DESC LIMIT ?", (limit,))
-        return [dict(r) for r in await cur.fetchall()]

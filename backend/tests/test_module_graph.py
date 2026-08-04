@@ -15,6 +15,7 @@ ENTRY_POINTS = (
     "migrations",
     "db_session",
     "db_helpers",
+    "repositories.audit",
     "repositories.catalog",
 )
 

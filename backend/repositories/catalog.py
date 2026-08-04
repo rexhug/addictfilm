@@ -78,6 +78,22 @@ def normalize_acquisition(start_param: object) -> tuple[str, str | None]:
 
 
 # ── Пользователи ─────────────────────────────────────────────────────────────
+async def get_user(user_id: int) -> dict | None:
+    async with db_session.connect() as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT id, first_name, username, photo_url FROM users WHERE id = ?", (user_id,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def get_user_role(user_id: int) -> str | None:
+    """Роль из БД (назначается вручную админом) — отдельно от ADMIN_USER_IDS (main.py)."""
+    async with db_session.connect() as db:
+        cur = await db.execute("SELECT role FROM users WHERE id = ?", (user_id,))
+        row = await cur.fetchone()
+        return row[0] if row else None
+
+
 async def upsert_user(user: dict, start_param: object = None) -> None:
     """Регистрация/обновление любого пользователя Telegram без write-amplification.
 

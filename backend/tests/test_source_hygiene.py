@@ -29,7 +29,11 @@ class BlankLineHygieneTests(unittest.TestCase):
 
 
 class SectionMarkerTests(unittest.TestCase):
-    """The `# ── ... ─` markers are the only navigation in the large modules."""
+    """The `# ── ... ─` markers are the only navigation in the large modules.
+
+    Two assertions, not one: checking occurrences without checking content is
+    half an invariant. A marker can be unique and still point at nothing.
+    """
 
     def _sources(self):
         return [p for p in sorted(BACKEND.rglob("*.py")) if "__pycache__" not in p.parts]
