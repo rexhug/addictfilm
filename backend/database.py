@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 import aiosqlite
 import cast as cast_model
 import db_runtime
+import db_session
 import hero_media
 import media_type
 from config import DATABASE_URL
@@ -193,7 +194,7 @@ async def _add_column_if_missing(table: str, col_def: str) -> None:
     would drag down every following CREATE TABLE IF NOT EXISTS.
     """
     try:
-        async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        async with db_session.connect() as db:
             await db.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
             await db.commit()
     except Exception as exc:
@@ -206,7 +207,7 @@ async def _add_column_if_missing(table: str, col_def: str) -> None:
 
 
 async def _schema_migration_applied(version: str) -> bool:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         row = await (await db.execute(
             "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
         )).fetchone()
@@ -214,7 +215,7 @@ async def _schema_migration_applied(version: str) -> bool:
 
 
 async def _record_schema_migration(version: str) -> None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?) "
             "ON CONFLICT(version) DO NOTHING",
@@ -262,7 +263,7 @@ async def _apply_person_portrait_retry_migration() -> None:
     rows with no stored URL is data-safe: existing working portraits are never
     touched, and the new 14-day retry guard prevents repeated work afterwards.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         for photos, checked in (
             ("actors_photos", "actor_photos_checked_at"),
             ("directors_photos", "director_photos_checked_at"),
@@ -283,7 +284,7 @@ async def _apply_person_portrait_completeness_migration() -> None:
     new merger attach a second source, while the normal 14-day guard keeps the
     public profile path calm afterwards.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         for photos, checked in (
             ("actors_photos", "actor_photos_checked_at"),
             ("directors_photos", "director_photos_checked_at"),
@@ -299,7 +300,7 @@ async def _apply_search_text_directors_migration() -> None:
     """Перестроить lookup-текст каталога, добавив режиссёров: поиск по режиссёрам
     начинает работать наравне с актёрами/названиями. search_text — производная
     колонка, полностью пересобираемая из полей фильма, так что перезапись безопасна."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT id, title, title_original, actors, directors, imdb_id, kp_id FROM films")).fetchall()
@@ -320,7 +321,7 @@ async def _apply_pair_notifications_migration() -> None:
     """
     await _add_column_if_missing("partner_invites", "expires_at TEXT")
     notification_id = "SERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS user_notification_settings (
                 user_id BIGINT PRIMARY KEY,
@@ -381,7 +382,7 @@ async def _apply_pair_notification_event_model_migration() -> None:
     """Add canonical event records and remove old duplicate invite notices."""
     await _add_column_if_missing("partner_invites", "accepted_by_user_id BIGINT")
     await _add_column_if_missing("notifications", "event_id TEXT")
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS pair_events (
                 id TEXT PRIMARY KEY,
@@ -433,7 +434,7 @@ async def _apply_pair_history_migration() -> None:
     so reuniting with the same person restores their history while a new partner
     always starts with a separate history.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS pair_sessions (
                 id TEXT PRIMARY KEY,
@@ -494,7 +495,7 @@ async def _apply_recommendations_migration() -> None:
     expire or be restarted without losing any personal data.
     """
     history_id = "SERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS recommendation_sessions (
                 id TEXT PRIMARY KEY,
@@ -573,7 +574,7 @@ async def _apply_editorial_collections_migration() -> None:
     for col in ("position INTEGER NOT NULL DEFAULT 0", "added_by BIGINT"):
         await _add_column_if_missing("collection_films", col)
 
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         # Бэкфил метаданных: существующий контент считается опубликованным.
         await db.execute(
             "UPDATE collections SET updated_at = created_at WHERE updated_at IS NULL")
@@ -608,7 +609,7 @@ async def _apply_editorial_collections_migration() -> None:
 
     # Порядок внутри подборки: до миграции он был неявным (added_at ASC) —
     # сохраняем ровно его, иначе у существующих подборок «переедут» фильмы.
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT collection_id, film_id FROM collection_films "
@@ -618,7 +619,7 @@ async def _apply_editorial_collections_migration() -> None:
     for row in rows:
         collection_id = row["collection_id"]
         positions[collection_id] = positions.get(collection_id, 0) + 1
-        async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        async with db_session.connect() as db:
             await db.execute(
                 "UPDATE collection_films SET position = ? WHERE collection_id = ? AND film_id = ?",
                 (positions[collection_id], collection_id, row["film_id"]))
@@ -636,7 +637,7 @@ async def _apply_featured_collections_migration() -> None:
     """
     await _add_column_if_missing("collections", "display_type TEXT NOT NULL DEFAULT 'standard'")
     await _add_column_if_missing("collections", "backdrop_url TEXT")
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         # Значение по умолчанию покрывает существующие строки, но добитие делает
         # миграцию идемпотентной и чинит возможный NULL от ранних попыток.
         await db.execute("UPDATE collections SET display_type = 'standard' WHERE display_type IS NULL")
@@ -669,7 +670,7 @@ async def _apply_movie_enrichment_migration() -> None:
     Postgres в облаке.
     """
     job_id = "BIGSERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(f"""
             CREATE TABLE IF NOT EXISTS movie_enrichment_jobs (
                 id             {job_id},
@@ -762,7 +763,7 @@ async def _apply_worker_heartbeats_migration() -> None:
     Урок: таблицу нельзя дописать в уже применённую миграцию — журнал её
     пропустит, и в проде объекта просто не будет. Новый объект = новая версия.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS worker_heartbeats (
                 name       TEXT PRIMARY KEY,
@@ -781,7 +782,7 @@ async def _apply_wishlist_roulette_migration() -> None:
     номер цикла и показанные в нём фильмы — тогда каждый фильм показывается
     один раз за круг, а история показов не удаляется ради перезапуска круга.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS wishlist_random_state (
                 user_id      BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -847,7 +848,7 @@ async def _apply_hero_media_migration() -> None:
         "hero_checked_at TEXT",
     ):
         await _add_column_if_missing("films", col_def)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_films_hero_checked "
                          "ON films(hero_checked_at)")
         await db.commit()
@@ -883,7 +884,7 @@ async def _apply_public_reviews_migration() -> None:
     await _add_column_if_missing("user_films", "comment_status TEXT")
     review_id = "SERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
     report_id = "SERIAL PRIMARY KEY" if _PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(f"""
             CREATE TABLE IF NOT EXISTS review_identities (
                 id         {review_id},
@@ -1197,7 +1198,7 @@ async def _merge_film_duplicate(db, canonical_row: dict, duplicate_row: dict) ->
 
 async def _apply_film_identity_migration() -> None:
     """Repair high-confidence IMDb/Kinopoisk aliases and prevent new races."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         # A tiny durable lock registry serializes concurrent catalog inserts
         # across all Fly machines.  One row per logical catalog identity is a
@@ -1313,7 +1314,7 @@ async def _schema_migration_lock():
     if not _PG:
         yield          # SQLite: один писатель, дополнительная блокировка не нужна
         return
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as lock_conn:
+    async with db_session.connect() as lock_conn:
         await lock_conn.execute("SELECT pg_advisory_lock(?)", (_SCHEMA_LOCK_KEY,))
         try:
             yield
@@ -1328,7 +1329,7 @@ async def init_db() -> None:
 
 
 async def _init_schema() -> None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         # WAL: чтение не блокирует запись — публичный трафик без «database is locked».
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA synchronous=NORMAL")
@@ -1547,7 +1548,7 @@ async def _init_schema() -> None:
 
 async def ping() -> bool:
     """Лёгкая readiness-проверка доступности активной базы данных."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute("SELECT 1")
         return await cur.fetchone() is not None
 
@@ -1555,7 +1556,7 @@ async def ping() -> bool:
 # ── Постоянный кэш поиска ─────────────────────────────────────────────────────
 async def search_cache_get(q: str, max_age_sec: int, empty_max_age_sec: int | None = None) -> list | None:
     """Fresh positive results, or a deliberately short-lived cached empty result."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT results, created_at FROM search_cache WHERE q = ?", (q,))
         row = await cur.fetchone()
@@ -1574,7 +1575,7 @@ async def search_cache_get(q: str, max_age_sec: int, empty_max_age_sec: int | No
 
 
 async def search_cache_put(q: str, results: list) -> None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "INSERT INTO search_cache (q, results, created_at) VALUES (?,?,?) "
             "ON CONFLICT(q) DO UPDATE SET results = excluded.results, created_at = excluded.created_at",
@@ -1586,7 +1587,7 @@ async def purge_search_cache(max_age_sec: int) -> int:
     """Удалить протухшие записи кэша поиска (иначе таблица растёт без границы).
     Возвращает число удалённых строк."""
     cutoff = (datetime.now(UTC) - timedelta(seconds=max_age_sec)).isoformat()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute("DELETE FROM search_cache WHERE created_at < ?", (cutoff,))
         await db.commit()
         return cur.rowcount
@@ -1596,7 +1597,7 @@ async def try_spend_search_budget(day: str, budget: int) -> bool:
     """Атомарный инкремент дневного бюджета внешних вызовов kinopoisk/OMDb — общий
     на все инстансы (важно при 2+ Fly-машинах). True — единица списана, False — бюджет
     на сегодня исчерпан. UPSERT с условием в WHERE — атомарно и без гонок в обоих движках."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "INSERT INTO search_budget (day, spent) VALUES (?, 1) "
             "ON CONFLICT(day) DO UPDATE SET spent = search_budget.spent + 1 "
@@ -1617,7 +1618,7 @@ async def backup_db(keep: int = 7) -> str | None:
     path = os.path.join(dirname, f"movies.backup-{datetime.now(UTC):%Y%m%d}.db")
     if not os.path.exists(path):
         try:
-            async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+            async with db_session.connect() as db:
                 await db.execute("VACUUM INTO ?", (path,))
         except Exception:
             return None
@@ -1672,7 +1673,7 @@ async def upsert_user(user: dict, start_param: object = None) -> None:
     now = _now()
     last_seen_cutoff = (datetime.now(UTC) - timedelta(minutes=15)).isoformat()
     source, param = normalize_acquisition(start_param)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         # Источник пишется ТОЛЬКО в INSERT: ветка обновления его не трогает.
         # Атрибуция по первому касанию — иначе достаточно один раз открыть
         # приложение по ссылке «Поделиться», чтобы задним числом переписать
@@ -1713,7 +1714,7 @@ async def user_analytics(now: datetime | None = None) -> dict:
     day_start = moment.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     week_ago = (moment - timedelta(days=7)).isoformat()
     month_ago = (moment - timedelta(days=30)).isoformat()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         totals = dict(await (await db.execute(
             """
@@ -1813,7 +1814,7 @@ def _film_identity_key(imdb_id: str, kp_id: str | None, title: str,
 
 async def _backfill_catalog_search_text() -> None:
     """Give legacy catalog entries the same local-search behaviour as new ones."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT id, title, title_original, actors, directors, imdb_id, kp_id FROM films "
@@ -1828,7 +1829,7 @@ async def _backfill_catalog_search_text() -> None:
 
 async def _backfill_film_genres() -> None:
     """Populate the indexable genre projection for legacy catalog rows."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute("SELECT id, genres FROM films")).fetchall()
         for row in rows:
@@ -1900,7 +1901,7 @@ async def search_catalog(query: str, limit: int = 8) -> list[dict]:
 
     clauses = ["search_text LIKE ? ESCAPE '\\'" for _ in terms]
     params = [like(term) for term in terms]
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         safe_prefix = terms[0] if re.fullmatch(r"[\w-]+", terms[0], flags=re.UNICODE) else None
         rows = []
@@ -1931,7 +1932,7 @@ async def search_catalog(query: str, limit: int = 8) -> list[dict]:
 
 async def get_film_id_by_source(src: str, ref: str) -> int | None:
     """Find a cataloged film by the identifier sent back to the search UI."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         if src == "i":
             cur = await db.execute("SELECT id FROM films WHERE imdb_id = ?", (ref,))
         else:
@@ -1944,7 +1945,7 @@ async def get_film_id_by_source(src: str, ref: str) -> int | None:
 
 async def get_catalog_item_by_source(src: str, ref: str) -> dict | None:
     """Exact catalog lookup for a direct IMDb/Kinopoisk search."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         if src == "i":
             cur = await db.execute("SELECT * FROM films WHERE imdb_id = ?", (ref,))
@@ -1996,7 +1997,7 @@ async def get_or_create_film(
     # доопределить его, а не считал колонку уже заполненной.
     media_type = media_type if media_type in (_MEDIA_MOVIE, _MEDIA_SERIES, _MEDIA_EPISODE, _MEDIA_SHORT) else None
     search_text = _catalog_search_text(title, title_original, actors, directors, imdb_id, kp_id)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         # INSERT + no-op UPDATE is a portable transaction-scoped mutex.  It
         # prevents two web machines from inserting IMDb and kp aliases of the
@@ -2126,7 +2127,7 @@ async def get_or_create_film(
 
 
 async def get_film(film_id: int) -> dict | None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT * FROM films WHERE id = ?", (film_id,))
         row = await cur.fetchone()
@@ -2160,7 +2161,7 @@ async def update_film_cast(
         if normalized else None
     )
     timestamp = checked_at or _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cursor = await db.execute(
             """
             UPDATE films
@@ -2182,7 +2183,7 @@ async def films_for_cast_backfill(
     *, film_id: int | None = None, limit: int = 20,
 ) -> list[dict]:
     """Bounded catalog candidates for the maintenance command."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         if film_id is not None:
             cur = await db.execute("SELECT * FROM films WHERE id = ?", (film_id,))
@@ -2204,7 +2205,7 @@ async def set_film_artwork(imdb_id: str, backdrop_url: str | None,
     """
     if not imdb_id or not backdrop_url:
         return False
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET backdrop_url = ?, age_rating = COALESCE(age_rating, ?) "
             "WHERE imdb_id = ? AND (backdrop_url IS NULL OR backdrop_url = '')",
@@ -2221,7 +2222,7 @@ async def mark_film_artwork_checked(imdb_id: str, backdrop_url: str | None,
     Without this marker, films that simply have no backdrop would hit Kinopoisk
     every time someone opens the detail page.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
             "age_rating = COALESCE(age_rating, ?), artwork_checked_at = ? "
@@ -2242,7 +2243,7 @@ async def mark_film_visuals_checked(
     detail-page visit.
     """
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET poster_url = COALESCE(NULLIF(poster_url, ''), ?), "
             "backdrop_url = COALESCE(NULLIF(backdrop_url, ''), ?), "
@@ -2256,7 +2257,7 @@ async def mark_film_visuals_checked(
 async def get_film_id_by_imdb(imdb_id: str) -> int | None:
     """id фильма в каталоге по imdb_id, если уже есть (без вставки). Нужно, чтобы
     /api/add не ходил в внешние API за фильмом, который уже в каталоге."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute("SELECT id FROM films WHERE imdb_id = ?", (imdb_id,))
         row = await cur.fetchone()
         return row[0] if row else None
@@ -2266,7 +2267,7 @@ async def films_missing_poster(limit: int = 200) -> list[dict]:
     """Фильмы каталога без постера (poster_url NULL/пусто) — для бекфила.
     Возвращает [{id, imdb_id, title, title_original, year}] (последние два нужны
     для добора по названию). Свежие сверху (чаще всего нужны первыми)."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, imdb_id, title, title_original, year FROM films "
@@ -2278,7 +2279,7 @@ async def films_missing_poster(limit: int = 200) -> list[dict]:
 async def set_film_poster(imdb_id: str, poster_url: str) -> bool:
     """Проставить постер фильму по imdb_id. Только если его ещё нет (бекфил не
     затирает уже найденное). True = запись обновлена."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET poster_url = ? "
             "WHERE imdb_id = ? AND (poster_url IS NULL OR poster_url = '')",
@@ -2290,7 +2291,7 @@ async def set_film_poster(imdb_id: str, poster_url: str) -> bool:
 async def films_with_omdb_poster(limit: int = 200) -> list[dict]:
     """Фильмы с постером Amazon/OMDb (заметно хуже качеством, чем кинопоиск) —
     кандидаты на апгрейд. Возвращает [{id, imdb_id, title, title_original, year}]."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, imdb_id, title, title_original, year FROM films "
@@ -2303,7 +2304,7 @@ async def upgrade_film_poster(imdb_id: str, poster_url: str) -> bool:
     """Заменить постер фильма на лучший (используется только когда нашли
     kinopoisk-версию взамен OMDb) — в отличие от set_film_poster, ЗАТИРАЕТ
     существующее значение. True = запись обновлена."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET poster_url = ? WHERE imdb_id = ?", (poster_url, imdb_id))
         await db.commit()
@@ -2341,7 +2342,7 @@ async def update_film_hero(film_id: int, *, hero_url: str, hero_type: str, hero_
     if hero_source not in hero_media.HERO_SOURCES:
         raise ValueError(f"Недопустимый hero_source: {hero_source!r}")
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         existing = await (await db.execute(
             "SELECT hero_url FROM films WHERE id = ?", (film_id,))).fetchone()
@@ -2380,7 +2381,7 @@ async def update_film_hero_presentation(
         raise ValueError("hero_focus_x must be between 0 and 1")
     if not 0.0 <= focus_y <= 1.0:
         raise ValueError("hero_focus_y must be between 0 and 1")
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "UPDATE films SET hero_fit = ?, hero_focus_x = ?, hero_focus_y = ? "
@@ -2399,7 +2400,7 @@ async def update_film_poster_display(
     if state not in {"auto", "approved", "rejected"}:
         raise ValueError(f"Invalid poster display state: {state!r}")
     normalized_reason = str(reason or "").strip() or None
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         film = await (await db.execute(
             "SELECT poster_url FROM films WHERE id = ?", (film_id,))).fetchone()
@@ -2432,7 +2433,7 @@ async def update_film_movie_flow(
         stored_state = None
     else:
         stored_state = state
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "UPDATE films SET movie_flow_state = ?, movie_flow_reason = ? WHERE id = ?",
@@ -2454,7 +2455,7 @@ async def mark_film_hero_checked(film_id: int) -> None:
     возвращался бы в кандидаты вечно, и каждый круг воркера снова стучался бы
     во внешний сервис по всему такому хвосту каталога.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute("UPDATE films SET hero_checked_at = ? WHERE id = ?", (_now(), film_id))
         await db.commit()
 
@@ -2473,7 +2474,7 @@ async def list_films_missing_or_stale_hero(*, limit: int = 50,
     recent_fallback = (moment - timedelta(days=HERO_REFRESH_RECENT_FALLBACK_DAYS)).isoformat()
     old_fallback = (moment - timedelta(days=HERO_REFRESH_OLD_FALLBACK_DAYS)).isoformat()
     recent_year = _hero_recent_year_cutoff(moment)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
@@ -2499,7 +2500,7 @@ async def list_films_for_hero_backfill(*, limit: int = 50) -> list[dict]:
     Порядок тот же, что и в обычном отборе: сначала непроверенные, затем свежие
     релизы. limit остаётся потолком внешних запросов и здесь.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT * FROM films "
@@ -2510,7 +2511,7 @@ async def list_films_for_hero_backfill(*, limit: int = 50) -> list[dict]:
 
 async def hero_distribution() -> dict:
     """Сводка для оператора: что реально лежит в каталоге."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT COALESCE(hero_source, 'none') AS source, COUNT(*) AS total, "
@@ -2531,7 +2532,7 @@ async def hero_distribution() -> dict:
 
 async def films_missing_actor_photos(limit: int = 200) -> list[dict]:
     """Фильмы каталога без фото актёров (для бекфила). [{id, imdb_id}]."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, imdb_id FROM films WHERE imdb_id LIKE 'tt%' "
@@ -2542,7 +2543,7 @@ async def films_missing_actor_photos(limit: int = 200) -> list[dict]:
 
 async def set_actor_photos(imdb_id: str, photos_json: str) -> bool:
     """Проставить JSON фото актёров, только если ещё не было. True = обновлено."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET actors_photos = ? "
             "WHERE imdb_id = ? AND (actors_photos IS NULL OR actors_photos = '')",
@@ -2553,7 +2554,7 @@ async def set_actor_photos(imdb_id: str, photos_json: str) -> bool:
 
 async def films_needing_actor_photo_enrichment(limit: int = 200) -> list[dict]:
     """Films not yet checked against the no-quota Wikidata/Commons cast source."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, imdb_id, actors, actors_photos FROM films "
@@ -2566,7 +2567,7 @@ async def films_needing_actor_photo_enrichment(limit: int = 200) -> list[dict]:
 
 async def films_needing_director_photo_enrichment(limit: int = 200) -> list[dict]:
     """Films not yet checked against Wikidata/Commons for director portraits."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, imdb_id, directors, directors_photos FROM films "
@@ -2606,7 +2607,7 @@ async def watched_films_needing_people_photo_enrichment(user_id: int, people_col
         }
         return not people.issubset(covered)
 
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             f"SELECT f.id, f.imdb_id, f.{people_column}, f.{photo_column} "
@@ -2692,7 +2693,7 @@ async def _set_film_people_from_wikidata(film_id: int, people_column: str, photo
         ("directors", "directors_photos", "director_photos_checked_at"),
     }:
         raise ValueError("Unsupported person portrait columns")
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         current = await (await db.execute(
             f"SELECT {people_column}, {photo_column} FROM films WHERE id = ?", (film_id,)
@@ -2719,7 +2720,7 @@ async def set_film_cast_from_wikidata(film_id: int, actors: str, photos_json: st
 
 async def mark_film_actor_photos_checked(film_id: int) -> bool:
     """Remember even an empty result, so a film never triggers repeat lookups."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET actor_photos_checked_at = ? WHERE id = ?",
             (_now(), film_id),
@@ -2737,7 +2738,7 @@ async def set_film_directors_from_wikidata(film_id: int, directors: str, photos_
 
 async def mark_film_director_photos_checked(film_id: int) -> bool:
     """Remember an empty director lookup to avoid repeated external queries."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE films SET director_photos_checked_at = ? WHERE id = ?",
             (_now(), film_id),
@@ -2748,7 +2749,7 @@ async def mark_film_director_photos_checked(film_id: int) -> bool:
 
 async def community_rating(film_id: int) -> dict:
     """Средняя оценка всех пользователей по фильму + количество оценок."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "SELECT AVG(rating) AS avg, COUNT(rating) AS cnt FROM user_films "
             "WHERE film_id = ? AND rating IS NOT NULL", (film_id,))
@@ -2761,7 +2762,7 @@ async def community_rating(film_id: int) -> dict:
 async def add_to_list(user_id: int, film_id: int, status: str = "want_to_watch",
                       watched_at: str | None = None) -> bool:
     """Добавить фильм в свой список. False = уже был у этого пользователя."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             """
             INSERT INTO user_films (user_id, film_id, status, added_at, watched_at)
@@ -2775,7 +2776,7 @@ async def add_to_list(user_id: int, film_id: int, status: str = "want_to_watch",
 
 
 async def get_user_film(user_id: int, film_id: int) -> dict | None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT * FROM user_films WHERE user_id = ? AND film_id = ?", (user_id, film_id))
@@ -2803,7 +2804,7 @@ async def set_rating(user_id: int, film_id: int, rating: int) -> RatingWriteResu
     concurrent first writes may both observe ``NULL``; notification
     idempotency is therefore enforced independently by the inbox insert.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         previous = await (await db.execute(
             "SELECT rating FROM user_films WHERE user_id = ? AND film_id = ?",
@@ -2834,7 +2835,7 @@ async def set_rating(user_id: int, film_id: int, rating: int) -> RatingWriteResu
 async def clear_rating(user_id: int, film_id: int) -> None:
     """Убрать оценку (повторный тап по своей звезде) — статус («Смотрел») не трогаем,
     только сама оценка пропадает. Ничего не создаёт, если записи ещё не было."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "UPDATE user_films SET rating = NULL, rated_at = NULL WHERE user_id = ? AND film_id = ?",
             (user_id, film_id),
@@ -2845,7 +2846,7 @@ async def clear_rating(user_id: int, film_id: int) -> None:
 async def set_status(user_id: int, film_id: int, status: str) -> None:
     """Сменить статус. Фильм появляется в списке, если его не было. Оценка сохраняется."""
     watched_at = _now() if status == "watched" else None
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             """
             INSERT INTO user_films (user_id, film_id, status, added_at, watched_at)
@@ -2868,7 +2869,7 @@ async def set_comment(user_id: int, film_id: int, text: str) -> None:
     Their text therefore remains ``private_legacy``. If the same user already
     has a published review, a cached client may edit it without demoting it.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         now = _now()
         await db.execute(
             """
@@ -2889,7 +2890,7 @@ async def set_comment(user_id: int, film_id: int, text: str) -> None:
 
 
 async def delete_comment(user_id: int, film_id: int) -> None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "UPDATE user_films SET comment = NULL, comment_status = 'deleted', commented_at = ? "
             "WHERE user_id = ? AND film_id = ?",
@@ -2929,7 +2930,7 @@ async def _ensure_review_identity(db, user_id: int, film_id: int) -> int:
 async def set_public_review(user_id: int, film_id: int, rating: int, text: str) -> dict:
     """Publish or edit the one current review for ``(user, film)`` atomically."""
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         review_id = await _ensure_review_identity(db, user_id, film_id)
         await db.execute(
@@ -2962,7 +2963,7 @@ async def set_public_review(user_id: int, film_id: int, rating: int, text: str) 
 
 
 async def delete_public_review(user_id: int, film_id: int) -> bool:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE user_films SET comment = NULL, comment_status = 'deleted', commented_at = ? "
             "WHERE user_id = ? AND film_id = ? AND comment_status IN ('published','private_legacy')",
@@ -2974,7 +2975,7 @@ async def delete_public_review(user_id: int, film_id: int) -> bool:
 
 async def publish_legacy_review(user_id: int, film_id: int) -> dict | None:
     """Publish an old private note only after an explicit user action."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         current = await (await db.execute(
             "SELECT rating, comment FROM user_films WHERE user_id = ? AND film_id = ? "
@@ -3004,7 +3005,7 @@ async def publish_legacy_review(user_id: int, film_id: int) -> dict | None:
 
 async def get_movie_rating_context(user_id: int, film_id: int) -> dict:
     """Current user's review state plus the active reciprocal partner's rating."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         mine = await (await db.execute(
             "SELECT status, rating, comment, commented_at, comment_status "
@@ -3038,7 +3039,7 @@ async def list_movie_reviews(user_id: int, film_id: int, *, limit: int = 10,
     if sort not in {"newest", "highest", "lowest"}:
         raise ValueError("unsupported review sort")
     limit = max(1, min(int(limit), 50))
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         partner_row = await (await db.execute(
             "SELECT p.partner_id FROM partners p JOIN partners reciprocal "
@@ -3120,7 +3121,7 @@ async def list_movie_reviews(user_id: int, film_id: int, *, limit: int = 10,
 
 
 async def report_review(reporter_id: int, film_id: int, review_id: int, reason: str | None) -> bool:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         review = await (await db.execute(
             "SELECT ri.user_id FROM review_identities ri JOIN user_films uf "
@@ -3140,7 +3141,7 @@ async def report_review(reporter_id: int, film_id: int, review_id: int, reason: 
 
 
 async def hide_review(review_id: int) -> dict | None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         row = await (await db.execute(
             "SELECT user_id, film_id FROM review_identities WHERE id = ?", (review_id,)
@@ -3158,7 +3159,7 @@ async def hide_review(review_id: int) -> dict | None:
 
 async def remove_from_list(user_id: int, film_id: int) -> None:
     """Убрать фильм из СВОЕГО списка. В общем каталоге films он остаётся."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "DELETE FROM user_films WHERE user_id = ? AND film_id = ?", (user_id, film_id))
         await db.commit()
@@ -3168,7 +3169,7 @@ async def get_user_films(user_id: int, status: str, limit: int = 50, offset: int
                          sort: str = "date") -> list[dict]:
     """Список фильмов пользователя. status: want_to_watch | watched | top.
     top = просмотренные и оценённые этим юзером, по убыванию его оценки."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         base = """
             SELECT f.*, uf.status AS status, uf.rating AS my_rating,
@@ -3229,7 +3230,7 @@ def _films_for_person(rows, column: str, name: str) -> list[dict]:
 async def get_person_watched_films(user_id: int, role: str, name: str, limit: int = 200) -> list[dict]:
     """Films this user watched that contain the selected actor or director."""
     column = _person_column(role)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT f.*, uf.rating AS my_rating, uf.watched_at AS watched_at FROM user_films uf "
@@ -3250,7 +3251,7 @@ async def get_pair_person_watched_films(user_id: int, partner_id: int, since: st
     it opens only the films from the latest session.
     """
     column = _person_column(role)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         sessions = await _pair_sessions_for(db, user_id, partner_id, since)
         period_sql, period_params = _pair_session_predicate(sessions)
@@ -3266,7 +3267,7 @@ async def get_pair_person_watched_films(user_id: int, partner_id: int, since: st
 
 
 async def count_user_films(user_id: int, status: str) -> int:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         if status == "top":
             cur = await db.execute(
                 "SELECT COUNT(*) FROM user_films WHERE user_id=? AND status='watched' "
@@ -3293,7 +3294,7 @@ async def pick_random_wishlist_film(user_id: int) -> dict | None:
     для аудита.
     """
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         # Строка состояния — точка сериализации. В Postgres блокируем её, чтобы
         # параллельные запросы одного пользователя выстроились в очередь.
@@ -3361,7 +3362,7 @@ async def prepare_random_wishlist_film(user_id: int) -> dict | None:
     anything.  That keeps abandoned tabs and failed image downloads out of the
     durable roulette history.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         state = await (await db.execute(
             "SELECT cycle_number FROM wishlist_random_state WHERE user_id=?",
@@ -3415,7 +3416,7 @@ async def consume_prepared_wishlist_film(
         return None
 
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         await db.execute(
             "INSERT INTO wishlist_random_state (user_id, cycle_number, updated_at) "
@@ -3484,7 +3485,7 @@ async def get_random_want(user_id: int) -> dict | None:
 
 async def wishlist_roulette_state(user_id: int) -> dict:
     """Диагностика круга: сколько показано и сколько осталось."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         state = await (await db.execute(
             "SELECT cycle_number FROM wishlist_random_state WHERE user_id=?", (user_id,))).fetchone()
@@ -3520,7 +3521,7 @@ async def create_recommendation_session(user_id: int, version: str, session_id: 
     policy = versions.get("policy_version")
     taxonomy = versions.get("taxonomy_version")
     feature = versions.get("feature_version")
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "INSERT INTO recommendation_sessions (id, user_id, version, answers, current_question, "
             "state, created_at, updated_at, expires_at, engine_version, policy_version, "
@@ -3536,7 +3537,7 @@ async def create_recommendation_session(user_id: int, version: str, session_id: 
 
 
 async def get_recommendation_session(user_id: int, session_id: str) -> dict | None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT * FROM recommendation_sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
@@ -3562,7 +3563,7 @@ async def get_recommendation_session(user_id: int, session_id: str) -> dict | No
 async def update_recommendation_session(user_id: int, session_id: str, answers: dict,
                                         current_question: str | None, state: str = "active") -> dict | None:
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE recommendation_sessions SET answers=?, current_question=?, state=?, results=NULL, updated_at=? "
             "WHERE id=? AND user_id=?",
@@ -3581,7 +3582,7 @@ async def restart_recommendation_session(user_id: int, session_id: str, current_
     now = _now()
     expires = (datetime.now(UTC) + _RECOMMENDATION_SESSION_TTL).isoformat()
     versions = versions or {}
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE recommendation_sessions SET answers='{}', current_question=?, state='active', "
             "results=NULL, updated_at=?, expires_at=?, version=COALESCE(?, version), "
@@ -3600,7 +3601,7 @@ async def restart_recommendation_session(user_id: int, session_id: str, current_
 
 async def save_recommendation_session_results(user_id: int, session_id: str, items: list[dict]) -> dict | None:
     """Persist public result cards once; re-opening a completed quiz is stable."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE recommendation_sessions SET results=?, updated_at=? WHERE id=? AND user_id=? AND state='complete'",
             (json.dumps(items, ensure_ascii=False, separators=(",", ":")), _now(), session_id, user_id),
@@ -3639,7 +3640,7 @@ async def get_recommendation_candidates(
     ids_clause = ""
     if excluded_ids:
         ids_clause = f" AND f.id NOT IN ({','.join('?' for _ in excluded_ids)})"
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         if partner_id is None:
             personal_shown = shown_clause.format(users_operator="=?")
@@ -3688,7 +3689,7 @@ async def get_recent_recommendation_shows(
     if partner_id is not None:
         users.append(int(partner_id))
     placeholders = ",".join("?" for _ in users)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             f"SELECT film_id, MAX(created_at) AS shown_at "
@@ -3707,7 +3708,7 @@ get_recent_recommendation_history = get_recent_recommendation_shows
 
 async def get_recommendation_preferences(user_id: int) -> dict:
     """Small, explainable signals from personal watch history, not opaque profiling."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT f.genres, f.actors, f.directors, uf.rating FROM user_films uf JOIN films f ON f.id=uf.film_id "
@@ -3742,7 +3743,7 @@ async def save_recommendation_tags(film_id: int, tags: dict[str, float], *, sour
     rows = [(film_id, tag, max(0.0, min(1.0, float(value))), source, version, _now()) for tag, value in tags.items()]
     if not rows:
         return
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         for row in rows:
             await db.execute(
                 "INSERT INTO film_recommendation_tags (film_id, tag, confidence, source, version, updated_at) "
@@ -3754,7 +3755,7 @@ async def save_recommendation_tags(film_id: int, tags: dict[str, float], *, sour
 async def record_recommendation_history(user_id: int, film_id: int, mode: str, *, session_id: str | None = None,
                                         role: str | None = None, score: float | None = None,
                                         action: str = "shown") -> None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "INSERT INTO recommendation_history (user_id, film_id, mode, session_id, role, score, action, created_at) "
             "VALUES (?,?,?,?,?,?,?,?)",
@@ -3807,7 +3808,7 @@ async def recommendation_pick_lock(user_id: int):
                 _pick_lock_users.pop(key, None)
                 _pick_locks.pop(key, None)
         return
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as lock_conn:
+    async with db_session.connect() as lock_conn:
         await lock_conn.execute("SELECT pg_advisory_lock(?, ?)",
                                 (_RANDOM_PICK_LOCK_NAMESPACE, int(user_id) % (2 ** 31)))
         try:
@@ -3827,7 +3828,7 @@ RECOMMENDATION_HISTORY_RETENTION_DAYS = 90
 async def prune_recommendation_history(days: int = RECOMMENDATION_HISTORY_RETENTION_DAYS) -> int:
     """Единственная таблица, которая росла линейно от активности и не чистилась."""
     cutoff = (datetime.now(UTC) - timedelta(days=max(1, int(days)))).isoformat()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "DELETE FROM recommendation_history WHERE action <> 'rejected' AND created_at < ?",
             (cutoff,))
@@ -3838,7 +3839,7 @@ async def prune_recommendation_history(days: int = RECOMMENDATION_HISTORY_RETENT
 async def get_recommendation_shown(user_id: int, film_id: int, mode: str) -> dict | None:
     """Последняя запись показа: сервер помнит, с какой ролью и счётом он сам
     показал фильм. Значения из клиента для аналитики не годятся."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         row = await (await db.execute(
             "SELECT role, score FROM recommendation_history WHERE user_id=? AND film_id=? "
@@ -3853,7 +3854,7 @@ async def was_wishlist_pick_shown(user_id: int, film_id: int) -> bool:
     Своя таблица, а не recommendation_history: рулетка не рекомендация каталога,
     и смешивать их источники правды нельзя.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         row = await (await db.execute(
             "SELECT 1 FROM wishlist_random_picks WHERE user_id=? AND film_id=? LIMIT 1",
             (user_id, film_id))).fetchone()
@@ -3863,7 +3864,7 @@ async def was_wishlist_pick_shown(user_id: int, film_id: int) -> bool:
 async def get_unrated_watched(user_id: int, since_days: int = 30, limit: int = 10) -> list[dict]:
     """Просмотренные за N дней, не оценённые пользователем (для напоминаний ботом)."""
     cutoff = (datetime.now(UTC) - timedelta(days=since_days)).isoformat()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
@@ -3935,7 +3936,7 @@ def _rank_people(counts: dict[str, int], prominence: dict[str, tuple[int, int]])
 async def get_user_stats(user_id: int) -> dict:
     """Личная статистика пользователя: счётчики, экранное время, средняя оценка,
     топ жанров/актёров/режиссёров (ничьи честно), итоги года."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
 
         watched = (await (await db.execute(
@@ -4028,7 +4029,7 @@ async def get_year_stats(user_id: int, year: int) -> dict:
     """Личные итоги года. Ничьи — честно: список лучших, «актёр года» только при
     единоличном лидерстве (урок: случайный «первый из пяти» — это ложь)."""
     like = f"{year}-%"
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
@@ -4123,7 +4124,7 @@ _BROWSE_AGGREGATE_COLS = """
 
 async def browse_popular(user_id: int, limit: int = 30, offset: int = 0) -> list[dict]:
     """Популярное: по числу пользователей, добавивших фильм."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             _BROWSE_AGGREGATES + f"""
@@ -4141,7 +4142,7 @@ async def browse_top(user_id: int, limit: int = 30, offset: int = 0,
                      min_votes: int | None = None) -> list[dict]:
     """Топ спильноты: по средней оценке всех пользователей (min_votes — честный порог)."""
     mv = MIN_COMMUNITY_VOTES if min_votes is None else min_votes
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             _BROWSE_AGGREGATES + """
@@ -4162,7 +4163,7 @@ async def browse_by_genre(user_id: int, genre: str, limit: int = 30, offset: int
     (напр. «драма» и «Drama»), чтобы русский канон собирал оба источника."""
     aliases = _genre_query_aliases(genre)
     placeholders = ",".join("?" for _ in aliases)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             _BROWSE_AGGREGATES + f"""
@@ -4183,7 +4184,7 @@ async def list_genres() -> list[dict]:
     now = datetime.now(UTC).timestamp()
     if _genres_cache and _genres_cache[0] > now:
         return [dict(item) for item in _genres_cache[1]]
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT genre AS name, COUNT(*) AS count FROM film_genres GROUP BY genre"
@@ -4203,7 +4204,7 @@ async def list_genres() -> list[dict]:
 
 # ── Пара (Фаза E): приглашения, пары, совместная статистика ───────────────────
 async def get_user(user_id: int) -> dict | None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT id, first_name, username, photo_url FROM users WHERE id = ?", (user_id,))
         row = await cur.fetchone()
@@ -4212,7 +4213,7 @@ async def get_user(user_id: int) -> dict | None:
 
 # ── Центр уведомлений и пользовательские настройки ───────────────────────────
 async def get_notification_settings(user_id: int) -> dict:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         row = await (await db.execute(
             "SELECT language, telegram_enabled FROM user_notification_settings WHERE user_id = ?", (user_id,))).fetchone()
@@ -4227,7 +4228,7 @@ async def update_notification_settings(user_id: int, *, language: str | None = N
     current = await get_notification_settings(user_id)
     next_language = language if language in ("ru", "en") else current["language"]
     next_telegram = current["telegram_enabled"] if telegram_enabled is None else bool(telegram_enabled)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "INSERT INTO user_notification_settings (user_id, language, telegram_enabled, updated_at) VALUES (?,?,?,?) "
             "ON CONFLICT(user_id) DO UPDATE SET language = excluded.language, "
@@ -4241,7 +4242,7 @@ async def create_notification(*, event_type: str, recipient_id: int, actor_id: i
                               entity_id: str, payload: dict, deep_link: str | None,
                               idempotency_key: str, event_id: str | None = None) -> tuple[int, bool]:
     """Persist one inbox entry exactly once; returns ``(id, created)``."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "INSERT INTO notifications (event_id, event_type, recipient_id, actor_id, entity_id, payload, deep_link, created_at, idempotency_key) "
             "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",
@@ -4263,7 +4264,7 @@ async def get_partner_rating_notification_context(actor_id: int, film_id: int) -
     Only the symmetric current relationship is considered. Historic
     ``pair_sessions`` intentionally do not participate in activity delivery.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         row = await (await db.execute(
             """
@@ -4312,7 +4313,7 @@ async def create_notification_for_current_partner(
     """Insert an inbox row only while the exact pair session is still active."""
     encoded_payload = json.dumps(payload, ensure_ascii=False)
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             """
             INSERT INTO notifications (
@@ -4356,7 +4357,7 @@ async def create_notification_for_current_partner(
 async def create_notification_delivery(notification_id: int, *, channel: str,
                                        idempotency_key: str) -> bool:
     now = _now()
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "INSERT INTO notification_deliveries (notification_id, channel, status, created_at, updated_at, idempotency_key) "
             "VALUES (?,?,'pending',?,?,?) ON CONFLICT(idempotency_key) DO NOTHING RETURNING notification_id",
@@ -4368,7 +4369,7 @@ async def create_notification_delivery(notification_id: int, *, channel: str,
 
 async def finish_notification_delivery(notification_id: int, *, channel: str, sent: bool,
                                        error: str | None = None) -> None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "UPDATE notification_deliveries SET status = ?, attempts = attempts + 1, last_error = ?, "
             "updated_at = ?, sent_at = CASE WHEN ? THEN ? ELSE sent_at END "
@@ -4396,7 +4397,7 @@ async def claim_notification_delivery(notification_id: int, *, channel: str,
     :func:`abandon_stale_notification_deliveries`.
     """
     params: list = [_now(), notification_id, channel]
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE notification_deliveries SET status = 'sending', updated_at = ? "
             "WHERE notification_id = ? AND channel = ? "
@@ -4415,7 +4416,7 @@ async def list_recoverable_notification_deliveries(*, stale_before: str, limit: 
     created in earlier releases.
     """
     limit = max(1, min(int(limit), 500))
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT d.notification_id, d.status, d.last_error, n.recipient_id, n.payload, n.deep_link "
@@ -4433,7 +4434,7 @@ async def abandon_stale_notification_deliveries(*, stale_before: str) -> int:
     Telegram and persisting the result. Keeping it visible for diagnostics but
     not retrying it gives the user an at-most-once bot notification guarantee.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE notification_deliveries SET status='abandoned', "
             "last_error=COALESCE(last_error, ?), updated_at=? "
@@ -4492,7 +4493,7 @@ async def list_notifications(
         where += " AND n.id < ?"
         params.append(int(before_id))
     params.append(limit + 1)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT n.id, n.event_type, n.recipient_id, n.actor_id, n.entity_id, n.payload, n.deep_link, "
@@ -4531,7 +4532,7 @@ async def list_notifications(
 
 
 async def mark_notification_read(user_id: int, notification_id: int) -> bool:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE notifications SET read_at = COALESCE(read_at, ?) WHERE id = ? AND recipient_id = ?",
             (_now(), notification_id, user_id))
@@ -4540,7 +4541,7 @@ async def mark_notification_read(user_id: int, notification_id: int) -> bool:
 
 
 async def mark_all_notifications_read(user_id: int) -> int:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "UPDATE notifications SET read_at = ? WHERE recipient_id = ? AND read_at IS NULL", (_now(), user_id))
         await db.commit()
@@ -4548,7 +4549,7 @@ async def mark_all_notifications_read(user_id: int) -> int:
 
 
 async def get_partner(user_id: int) -> int | None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute("SELECT partner_id FROM partners WHERE user_id = ?", (user_id,))
         row = await cur.fetchone()
         return row[0] if row else None
@@ -4556,7 +4557,7 @@ async def get_partner(user_id: int) -> int | None:
 
 async def get_pending_invite(from_user: int) -> str | None:
     """Токен своего активного (неиспользованного) приглашения, если есть."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "SELECT token FROM partner_invites WHERE from_user = ? AND status = 'pending' "
             "AND (expires_at IS NULL OR expires_at > ?) "
@@ -4572,7 +4573,7 @@ async def get_invite_sender(token: str) -> dict | None:
     this small preview lets that same recipient see who invited them before
     deciding.  It intentionally does not expose any relationship data.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT u.id, u.first_name, u.username, u.photo_url "
@@ -4681,7 +4682,7 @@ async def _insert_pair_event(db, event: dict, *, recipients: list[tuple[int, int
 
 async def get_pair_event_recipients(event_id: str) -> list[dict]:
     """Return the immutable, transactionally stored audience of a pair event."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT recipient_user_id, partner_user_id FROM pair_event_recipients "
@@ -4694,7 +4695,7 @@ async def get_pair_event_recipients(event_id: str) -> list[dict]:
 
 async def mark_pair_event_recipient_dispatched(event_id: str, recipient_user_id: int) -> None:
     """A durable outbox acknowledgement after inbox/bot work has been queued."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "UPDATE pair_event_recipients SET dispatched_at = ? "
             "WHERE event_id = ? AND recipient_user_id = ? AND dispatched_at IS NULL",
@@ -4705,7 +4706,7 @@ async def mark_pair_event_recipient_dispatched(event_id: str, recipient_user_id:
 async def list_pending_pair_events(limit: int = 100) -> list[dict]:
     """Read the durable notification outbox without scanning already dispatched events."""
     limit = max(1, min(int(limit), 500))
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(
             "SELECT DISTINCT pe.id, pe.event_type, pe.invitation_id, pe.pair_id, pe.inviter_user_id, "
@@ -4722,7 +4723,7 @@ async def create_invite(from_user: int, *, with_state: bool = False) -> str | di
     взяття того самого lock, що й ``accept_invite``: інакше accept між окремими
     ``get_partner`` та INSERT міг залишити чинне запрошення у вже створеній парі.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await _lock_pair_users(db, from_user)
         cur = await db.execute("SELECT 1 FROM partners WHERE user_id = ?", (from_user,))
         if await cur.fetchone():
@@ -4776,7 +4777,7 @@ async def accept_invite(token: str, accepting_user: int) -> dict:
     KEY), вставка молча не пройдёт и мы это увидим по пустому RETURNING.
     """
     try:
-        async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+        async with db_session.connect() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 "SELECT from_user FROM partner_invites WHERE token = ? AND status = 'pending' "
@@ -4839,7 +4840,7 @@ async def register_invite_recipient(token: str, user_id: int) -> bool:
     an allow-list: it only lets cancellation/expiry reach people who actually
     saw the invitation and gives the app an honest recipient for its inbox.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "SELECT from_user FROM partner_invites WHERE token = ? AND status = 'pending' "
             "AND (expires_at IS NULL OR expires_at > ?)", (token, _now()))
@@ -4857,7 +4858,7 @@ async def register_invite_recipient(token: str, user_id: int) -> bool:
 
 
 async def get_invite_recipients(token: str) -> list[int]:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute(
             "SELECT user_id FROM pair_invite_recipients WHERE invite_token = ? ORDER BY user_id", (token,))
         return [int(row[0]) for row in await cur.fetchall()]
@@ -4865,7 +4866,7 @@ async def get_invite_recipients(token: str) -> list[int]:
 
 async def decline_invite(token: str, declining_user: int) -> dict:
     """Decline an invitation without deleting its audit trail."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT from_user FROM partner_invites WHERE token = ? AND status = 'pending' "
@@ -4895,7 +4896,7 @@ async def expire_pending_invites() -> list[dict]:
     """Atomically expire old invitations and return their known participants."""
     now = _now()
     expired: list[dict] = []
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT token, from_user FROM partner_invites WHERE status = 'pending' "
@@ -4925,7 +4926,7 @@ async def unpair(user_id: int) -> dict:
     Поиск партнёра и удаление выполняются в одной транзакции. Поэтому
     запоздалый запрос не может удалить новую пару бывшего партнёра.
     """
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute("SELECT partner_id, since FROM partners WHERE user_id = ?", (user_id,))
         row = await cur.fetchone()
         if row:
@@ -4979,7 +4980,7 @@ async def unpair(user_id: int) -> dict:
 
 async def get_pair(user_id: int) -> dict | None:
     """Партнёр + момент создания пары (since) — граница «пар-периода»."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT partner_id, since FROM partners WHERE user_id = ?", (user_id,))
         row = await cur.fetchone()
@@ -4992,7 +4993,7 @@ async def sync_film_to_partner(user_id: int, film_id: int) -> None:
     # Один INSERT ... SELECT замість get_partner() + add_to_list() у різних
     # транзакціях: фільм потрапляє тільки до партнера, який існує саме в момент
     # запису, а не до вже колишнього партнера після concurrent unpair.
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "INSERT INTO user_films (user_id, film_id, status, added_at) "
             "SELECT partner_id, ?, 'want_to_watch', ? FROM partners WHERE user_id = ? "
@@ -5054,7 +5055,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
     user's personal list is never modified or reset by this calculation.
     """
     year_now = datetime.now(UTC).year
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         sessions = await _pair_sessions_for(db, user_id, partner_id, since)
         period_sql, period_params = _pair_session_predicate(sessions)
@@ -5182,7 +5183,7 @@ async def pair_period_stats(user_id: int, partner_id: int, since: str) -> dict:
 # ── Подборки (кураторские коллекции) ───────────────────────────────────────────
 async def get_user_role(user_id: int) -> str | None:
     """Роль из БД (назначается вручную админом) — отдельно от ADMIN_USER_IDS (main.py)."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         cur = await db.execute("SELECT role FROM users WHERE id = ?", (user_id,))
         row = await cur.fetchone()
         return row[0] if row else None
@@ -5207,7 +5208,7 @@ async def list_collections(statuses: tuple[str, ...] = ("published",)) -> list[d
     """Подборки с обложкой и счётчиком. Публичный вызов передаёт только
     ('published',) — черновики и архив не должны утекать в общий каталог."""
     placeholders = ",".join("?" for _ in statuses)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(f"""
             SELECT {_COLLECTION_COLS},
@@ -5246,7 +5247,7 @@ async def create_collection(title: str, created_by: int, description: str | None
     """
     now = _now()
     film_ids = list(ordered_film_ids or [])
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         if film_ids:
             placeholders = ",".join("?" for _ in film_ids)
@@ -5271,7 +5272,7 @@ async def create_collection(title: str, created_by: int, description: str | None
 
 
 async def delete_collection(collection_id: int) -> None:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute("DELETE FROM collection_films WHERE collection_id = ?", (collection_id,))
         await db.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
         await db.commit()
@@ -5284,7 +5285,7 @@ async def get_collection(collection_id: int, statuses: tuple[str, ...] | None = 
     if statuses is not None:
         clause = f" AND c.status IN ({','.join('?' for _ in statuses)})"
         params.extend(statuses)
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(f"""
             SELECT {_COLLECTION_COLS},
@@ -5317,7 +5318,7 @@ async def update_collection(collection_id: int, expected_version: int, actor_id:
         return await get_collection(collection_id)
     assignments = ", ".join(f"{k} = ?" for k in allowed)
     params = [*allowed.values(), actor_id, _now(), collection_id, expected_version]
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             f"UPDATE collections SET {assignments}, updated_by = ?, updated_at = ?, "
@@ -5338,7 +5339,7 @@ async def set_collection_status(collection_id: int, new_status: str, expected_ve
     if new_status == "published":
         params.extend([actor_id, _now()])
     params.extend([collection_id, expected_version])
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             f"UPDATE collections SET status = ?, updated_by = ?, updated_at = ?{publish_set}, "
@@ -5350,7 +5351,7 @@ async def set_collection_status(collection_id: int, new_status: str, expected_ve
 
 async def add_film_to_collection(collection_id: int, film_id: int, added_by: int | None = None) -> bool:
     """True — фильм реально добавлен (не был в подборке раньше). Позиция — в конец."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT COALESCE(MAX(position), 0) + 1 AS next FROM collection_films "
@@ -5367,7 +5368,7 @@ async def add_film_to_collection(collection_id: int, film_id: int, added_by: int
 
 async def remove_film_from_collection(collection_id: int, film_id: int) -> None:
     """Удаляем и сразу схлопываем «дырку» в позициях — порядок остаётся плотным."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT position FROM collection_films WHERE collection_id = ? AND film_id = ?",
@@ -5388,7 +5389,7 @@ async def reorder_collection_items(collection_id: int, ordered_film_ids: list[in
                                    expected_version: int, actor_id: int) -> dict | None:
     """Полная перестановка одной транзакцией. Набор ID обязан точно совпадать с
     текущим составом — иначе это рассинхрон клиента, а не переупорядочивание."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT version FROM collections WHERE id = ?", (collection_id,))
         row = await cur.fetchone()
@@ -5419,7 +5420,7 @@ async def reorder_collection_items(collection_id: int, ordered_film_ids: list[in
 async def get_collection_films(collection_id: int, user_id: int) -> list[dict]:
     """Фильмы подборки в кураторском порядке — тот же формат, что browse_*
     (community-рейтинг + мой статус), чтобы фронтенд переиспользовал posterTile()."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             f"""
@@ -5435,7 +5436,7 @@ async def get_collection_films(collection_id: int, user_id: int) -> list[dict]:
 async def reorder_collections(ordered_ids: list[int], actor_id: int) -> bool:
     """Порядок подборок на главной (sort_order). Одна транзакция: либо
     переставились все, либо ни одна — частичный порядок недопустим."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         placeholders = ",".join("?" for _ in ordered_ids)
         cur = await db.execute(
@@ -5456,7 +5457,7 @@ async def write_audit(actor_id: int, actor_role: str, action: str, entity_type: 
                       entity_id: str | int, details: dict | None = None) -> None:
     """Append-only журнал админских мутаций. Секреты/initData сюда не попадают —
     вызывающий передаёт только редактируемые поля."""
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         await db.execute(
             "INSERT INTO admin_audit_log (actor_id, actor_role, action, entity_type, entity_id, "
             "details, created_at) VALUES (?,?,?,?,?,?,?)",
@@ -5466,7 +5467,7 @@ async def write_audit(actor_id: int, actor_role: str, action: str, entity_type: 
 
 
 async def list_audit_log(limit: int = 50) -> list[dict]:
-    async with db_runtime.connect(DB_PATH, DATABASE_URL) as db:
+    async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT actor_id, actor_role, action, entity_type, entity_id, details, created_at "
