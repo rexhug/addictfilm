@@ -39,6 +39,7 @@ import recommendations
 import search
 import sentry_sdk
 import stats_cache
+import user_touch
 import wikidata
 from auth import extract_start_param, validate_init_data
 from config import (
@@ -282,7 +283,8 @@ async def current_user(x_init_data: str = Header(default="")) -> dict:
     user["id"] = user_id
     # Параметр берём из той же строки, подпись которой только что проверена, и
     # передаём отдельным аргументом: в профиль он не подмешивается.
-    await db.upsert_user(user, start_param=extract_start_param(x_init_data))
+    if user_touch.should_persist(user):
+        await db.upsert_user(user, start_param=extract_start_param(x_init_data))
     return user
 
 
