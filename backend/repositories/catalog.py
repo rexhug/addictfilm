@@ -77,6 +77,7 @@ def normalize_acquisition(start_param: object) -> tuple[str, str | None]:
     return ACQUISITION_CAMPAIGN, None
 
 
+# ── Пользователи ─────────────────────────────────────────────────────────────
 async def upsert_user(user: dict, start_param: object = None) -> None:
     """Регистрация/обновление любого пользователя Telegram без write-amplification.
 
@@ -179,6 +180,7 @@ async def user_analytics(now: datetime | None = None) -> dict:
     }
 
 
+# ── Каталог фильмов ──────────────────────────────────────────────────────────
 def _prefer_catalog_value(current: str | None, incoming: str | None) -> str | None:
     """Fill a genuinely missing catalog field without overwriting good data."""
     return current if str(current or "").strip() else incoming

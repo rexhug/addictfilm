@@ -29,23 +29,45 @@ class BlankLineHygieneTests(unittest.TestCase):
 
 
 class SectionMarkerTests(unittest.TestCase):
-    """The `# ── ... ─` markers are the only navigation in the large modules.
+    """The `# ── ... ─` markers are the only navigation in the large modules."""
 
-    Asserted across the package, not per file: a marker legitimately moves when
-    its section is extracted into a repository. What must not happen is that it
-    disappears entirely — that is how the last split started blind — or that it
-    ends up in two places, which means a section was copied rather than moved.
-    """
+    def _sources(self):
+        return [p for p in sorted(BACKEND.rglob("*.py")) if "__pycache__" not in p.parts]
 
-    def test_every_section_marker_survives_exactly_once(self):
-        sources = [p for p in BACKEND.rglob("*.py") if "__pycache__" not in p.parts]
-        for marker in ("Инициализация", "Каталог фильмов", "Список пользователя",
-                       "Подбор", "Центр уведомлений"):
-            with self.subTest(marker=marker):
-                homes = [p.relative_to(BACKEND).as_posix() for p in sources
-                         if any(l.startswith("# ── ") and marker in l
-                                for l in p.read_text(encoding="utf-8").splitlines())]
-                self.assertEqual(len(homes), 1, f"{marker}: {homes}")
+    def _markers(self):
+        seen = {}
+        for path in self._sources():
+            for index, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if line.startswith("# ── "):
+                    seen.setdefault(line.rstrip("─ ").removeprefix("# ── ").strip(),
+                                    []).append(f"{path.relative_to(BACKEND)}:{index}")
+        return seen
+
+    def test_no_section_title_is_used_twice(self):
+        """Counted by occurrence, not by file: an earlier version counted files,
+        so two markers inside one module were invisible — which is exactly how a
+        pair of orphans survived the catalogue extraction.
+        """
+        for title, places in sorted(self._markers().items()):
+            with self.subTest(marker=title):
+                self.assertEqual(len(places), 1, f"{title}: {places}")
+
+    def test_no_section_marker_is_left_without_a_section(self):
+        """A marker with nothing under it is signage left behind after a move.
+
+        Counting occurrences does not catch this: an orphan satisfies "exists
+        exactly once" just as well as a marker in its right place.
+        """
+        for path in self._sources():
+            lines = path.read_text(encoding="utf-8").splitlines()
+            for i, line in enumerate(lines):
+                if not line.startswith("# ── "):
+                    continue
+                tail = [l for l in lines[i + 1:] if l.strip()]
+                with self.subTest(file=path.name, marker=line[:40]):
+                    self.assertTrue(tail, "marker at end of file")
+                    self.assertFalse(tail[0].startswith("# ── "),
+                                     f"{path.name}:{i + 1} — section with no body")
 
 
 if __name__ == "__main__":

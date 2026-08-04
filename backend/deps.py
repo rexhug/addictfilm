@@ -81,7 +81,7 @@ async def require_admin_user(user: dict = Depends(current_user)) -> dict:
     return user
 
 
-# ── Обслуживание (админ по ADMIN_TOKEN) ──────────────────────────────────────
+# ── Гейт обслуживания (админ по ADMIN_TOKEN) ─────────────────────────────────
 def require_admin(x_admin_token: str = Header(default="")) -> None:
     """Гейт для служебных эндпоинтов. Без заданного ADMIN_TOKEN — выключены (404)."""
     if not ADMIN_TOKEN:
