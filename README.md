@@ -12,13 +12,19 @@
 
 ```
 Telegram (кнопка меню бота)
-   └─▶ frontend/  — Mini App (HTML/JS, Telegram WebApp SDK, тема из Telegram)
+   └─▶ frontend/  — Mini App (HTML/JS, Telegram WebApp SDK, RU/EN, тема Telegram)
          └─▶ backend/ — FastAPI: раздаёт фронт + JSON API
-               ├─ auth.py      — проверка initData (HMAC), регистрируем любого юзера
-               ├─ search.py    — поиск: kinopoisk.dev → fallback OMDb+Wikidata
-               ├─ database.py  — Neon/Postgres у production, SQLite (WAL) локально:
-               │                  users / films (общий каталог) / user_films (per-user)
-               └─ kinopoisk.py / omdb.py / wikidata.py — клиенты источников
+               ├─ auth.py       — initData (HMAC), регистрируем любого юзера
+               ├─ search.py     — cache-first: каталог → kinopoisk.dev → OMDb/Wikidata
+               ├─ database.py   — Neon/Postgres в проде, SQLite (WAL) локально
+               ├─ ratelimit.py  — дневной бюджет источников + per-user throttle
+               ├─ recommendation*/mood.py — подбор: quiz-граф, mood-слой, движки
+               ├─ hero_media.py / fanart.py / posters.py — визуал карточек
+               └─ pair_*.py     — партнёр: приглашения, события, уведомления
+
+   Fly.io process group `worker` (отдельная машина, тот же образ)
+         └─▶ backend/enrichment/ — фоновое обогащение каталога:
+               постеры, кадры, состав, режиссёры, media-type, hero-медиа
 ```
 
 Mini App пушить не умеет — уведомления (напоминания оценить и т.п.) при желании
@@ -61,6 +67,31 @@ Mini App пушить не умеет — уведомления (напомин
 - **RU-хелперы** (`ru.py`): жанры на русском, plural_ru, человеческие даты,
   компактные голоса (1.1M), звёзды ★★★★☆.
 
+## Что есть сейчас
+
+- **Списки и оценки** — «Хочу посмотреть» / «Смотрел», оценка 1–10,
+  community-рейтинг как средняя по всем пользователям.
+- **Каталог и discovery** — популярное, выбор сообщества, жанры, поиск с
+  cache-first стратегией под лимит kinopoisk.dev.
+- **Подбор фильма** — случайный из «Хочу», случайный по вкусу и опрос по
+  настроению (`recommendation_questions.py`, `recommendation_graph.py`,
+  mood-слой в `mood.py`).
+- **Партнёр** — приглашение по deep-link, совместимость вкусов, общая
+  статистика, события и уведомления (`pair_notifications.py`,
+  `pair_activity_notifications.py`, 7 роутов `/api/partner/*`).
+- **Публичные отзывы** — оценка + текст, видимые всем, с жалобами и модерацией.
+- **Подборки с админкой** — роли `editor`/`admin`, черновики/публикация/архив,
+  большие редакционные блоки на главной (31 роут `/api/admin/*`).
+- **Статистика** — KPI, гистограмма оценок, жанры, актёры, режиссёры, «Итоги
+  года»; отдельно личная и совместная с партнёром.
+- **Фоновое обогащение** — отдельный Fly-процесс `worker`: постеры, кадры,
+  канонический состав, портреты, hero-медиа. Подробности —
+  [docs/ENRICHMENT.md](docs/ENRICHMENT.md).
+- **Локализация RU/EN** — весь видимый текст через `DICT` во `frontend/app.js`.
+
+Архитектурные решения и их причины — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
+добытые граблями уроки — [docs/LESSONS.md](docs/LESSONS.md).
+
 ## Роадмап (публичный продукт)
 
 - [x] **Фаза A — мультитенантный фундамент**: схема users/films/user_films,
@@ -81,9 +112,19 @@ Mini App пушить не умеет — уведомления (напомин
 - [x] **Ops при росте**: SQLite→Postgres (Neon), кросс-инстансный дневной
       бюджет kinopoisk (атомарный UPSERT), Sentry. Платный тариф kinopoisk
       не нужен — 4 ключа × 200 = 800/сутки хватает с большим запасом.
+- [x] **Партнёр**: приглашения, совместимость, общая статистика, уведомления.
+- [x] **Публичные отзывы** с модерацией и жалобами.
+- [x] **Редакционные подборки** с ролевой админкой.
+- [x] **Подбор фильма**: quiz-граф, mood-слой, две «случайные» стратегии.
+- [x] **Фоновое обогащение** отдельным Fly-процессом (`backend/enrichment/`).
+- [x] **Локализация RU/EN**.
 - [ ] Веб-логин вне Telegram (сейчас только Telegram initData).
 - [x] CI: GitHub Actions запускає smoke-тести й лише потім деплоїть `main` на Fly.
 - [ ] Бот-уведомления (напоминания оценить) — есть только БД-заготовка
       (`get_unrated_watched`), сам бот не написан.
 
 Все грабли и уроки — в **docs/LESSONS.md** (обязательно к прочтению).
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE).
