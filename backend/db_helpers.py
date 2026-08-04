@@ -10,6 +10,9 @@ import json
 import re
 from datetime import UTC, datetime
 
+# Media kinds are a value vocabulary shared by the catalogue and the pickers.
+_MEDIA_MOVIE, _MEDIA_SERIES, _MEDIA_EPISODE, _MEDIA_SHORT = "movie", "series", "episode", "short"
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -102,7 +105,6 @@ def _portrait_entries(value: str | None) -> list[dict]:
     return [entry for entry in decoded if isinstance(entry, dict)] if isinstance(decoded, list) else []
 
 
-# ── Каталог фильмов ──────────────────────────────────────────────────────────
 def _catalog_search_text(title: str | None, title_original: str | None,
                          actors: str | None, directors: str | None,
                          imdb_id: str, kp_id: str | None) -> str:

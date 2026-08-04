@@ -658,8 +658,6 @@ async def report_movie_review(film_id: int, review_id: int, body: ReviewReportBo
     return {"ok": True}
 
 
-
-
 @app.delete("/api/movie/{film_id}")
 async def delete(film_id: int, user: dict = Depends(throttled_mutation)):
     await db.remove_from_list(user["id"], film_id)  # из своего списка; в каталоге остаётся
