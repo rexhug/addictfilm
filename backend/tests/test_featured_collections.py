@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import database as db
 import main
+import routers.admin as admin_router_module
 from fastapi import HTTPException
 
 
@@ -81,7 +82,7 @@ class DisplayTypeTests(_Base):
     async def test_invalid_display_type_is_rejected_by_api(self):
         cid = await self._collection()
         body = main.CollectionPatchBody(version=1, display_type="banner")
-        with patch.object(main, "_audit"), self.assertRaises(HTTPException) as ctx:
+        with patch.object(admin_router_module, "_audit"), self.assertRaises(HTTPException) as ctx:
             await main.collection_update(cid, body, user={"id": 1})
         self.assertEqual(ctx.exception.status_code, 422)
         self.assertEqual(ctx.exception.detail["code"], "INVALID_DISPLAY_TYPE")
@@ -174,7 +175,7 @@ class ImageUrlValidationTests(unittest.IsolatedAsyncioTestCase):
 class FeaturedPublishGuardTests(_Base):
     async def test_featured_without_image_cannot_be_published(self):
         cid = await self._collection(film=self.bare, featured=True)
-        with patch.object(main, "_audit"), self.assertRaises(HTTPException) as ctx:
+        with patch.object(admin_router_module, "_audit"), self.assertRaises(HTTPException) as ctx:
             await main._transition(cid, "published", (await db.get_collection(cid))["version"],
                                    {"id": 1}, "collection.published")
         self.assertEqual(ctx.exception.status_code, 422)
@@ -182,7 +183,7 @@ class FeaturedPublishGuardTests(_Base):
 
     async def test_featured_with_resolvable_image_publishes(self):
         cid = await self._collection(featured=True)
-        with patch.object(main, "_audit"):
+        with patch.object(admin_router_module, "_audit"):
             result = await main._transition(cid, "published",
                                             (await db.get_collection(cid))["version"],
                                             {"id": 1}, "collection.published")
@@ -190,7 +191,7 @@ class FeaturedPublishGuardTests(_Base):
 
     async def test_standard_without_image_still_publishes(self):
         cid = await self._collection(film=self.bare)
-        with patch.object(main, "_audit"):
+        with patch.object(admin_router_module, "_audit"):
             result = await main._transition(cid, "published",
                                             (await db.get_collection(cid))["version"],
                                             {"id": 1}, "collection.published")

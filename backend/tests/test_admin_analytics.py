@@ -15,6 +15,7 @@ import database as db
 import db_runtime
 import deps
 import main
+import routers.admin as admin_router_module
 from auth import extract_start_param
 from fastapi import HTTPException
 
@@ -81,7 +82,10 @@ class AdminAnalyticsAccessTests(unittest.IsolatedAsyncioTestCase):
 
     def test_the_endpoint_is_wired_to_the_admin_gate(self):
         """Гейт объявлен на маршруте, а не проверяется внутри обработчика."""
-        route = next(r for r in main.app.routes
+        # The endpoint moved into the admin router; app.routes no longer
+        # flattens included routers in this FastAPI version, so the router is
+        # where the declaration now lives. The assertion below is unchanged.
+        route = next(r for r in admin_router_module.router.routes
                      if getattr(r, "path", "") == "/api/admin/analytics")
         gates = {d.call for d in route.dependant.dependencies}
         self.assertIn(main.require_admin_user, gates)
