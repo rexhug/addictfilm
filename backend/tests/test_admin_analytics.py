@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import database as db
 import db_runtime
+import deps
 import main
 from auth import extract_start_param
 from fastapi import HTTPException
@@ -54,7 +55,7 @@ class AcquisitionNormalizationTests(unittest.TestCase):
 
 class AdminAnalyticsAccessTests(unittest.IsolatedAsyncioTestCase):
     async def _call(self, role):
-        with patch.object(main, "_effective_role", return_value=role):
+        with patch.object(deps, "_effective_role", return_value=role):
             return await main.require_admin_user(user={"id": 42})
 
     async def test_only_the_admin_role_passes(self):
@@ -73,7 +74,7 @@ class AdminAnalyticsAccessTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ctx.exception.status_code, 403)
 
     async def test_a_client_supplied_role_is_ignored(self):
-        with patch.object(main, "_effective_role", return_value=None), \
+        with patch.object(deps, "_effective_role", return_value=None), \
                 self.assertRaises(HTTPException) as ctx:
             await main.require_admin_user(user={"id": 42, "role": "admin"})
         self.assertEqual(ctx.exception.status_code, 403)

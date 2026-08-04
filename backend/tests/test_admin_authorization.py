@@ -6,13 +6,14 @@
 import unittest
 from unittest.mock import patch
 
+import deps
 import main
 from fastapi import HTTPException
 
 
 class RequireEditorTests(unittest.IsolatedAsyncioTestCase):
     async def _call(self, role):
-        with patch.object(main, "_effective_role", return_value=role):
+        with patch.object(deps, "_effective_role", return_value=role):
             return await main.require_editor(user={"id": 42})
 
     async def test_ordinary_user_is_denied(self):
@@ -36,7 +37,7 @@ class RequireEditorTests(unittest.IsolatedAsyncioTestCase):
         """Подделанные клиентом поля не участвуют в решении: роль берётся
         сервером по проверенному ID, а не из тела/заголовков запроса."""
         forged = {"id": 42, "role": "admin", "is_admin": True}
-        with patch.object(main, "_effective_role", return_value=None), \
+        with patch.object(deps, "_effective_role", return_value=None), \
                 self.assertRaises(HTTPException) as ctx:
             await main.require_editor(user=forged)
         self.assertEqual(ctx.exception.status_code, 403)
@@ -48,7 +49,7 @@ class RequireEditorTests(unittest.IsolatedAsyncioTestCase):
             seen["arg"] = user_id
             return "editor"
 
-        with patch.object(main, "_effective_role", side_effect=fake_role):
+        with patch.object(deps, "_effective_role", side_effect=fake_role):
             await main.require_editor(user={"id": 777, "username": "someone_else"})
         self.assertEqual(seen["arg"], 777)
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 import database as db
+import deps
 import main
 import recommendations as rec
 
@@ -194,7 +195,7 @@ class HeroApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((payload["hero_focus_x"], payload["hero_focus_y"]), (0.2, 0.8))
 
     async def test_non_admin_is_stopped_by_the_shared_server_gate(self):
-        with mock.patch.object(main, "_effective_role", new=mock.AsyncMock(return_value=None)):
+        with mock.patch.object(deps, "_effective_role", new=mock.AsyncMock(return_value=None)):
             with self.assertRaises(main.HTTPException) as error:
                 await main.require_editor(user={"id": 999})
         self.assertEqual(error.exception.status_code, 403)

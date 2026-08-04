@@ -35,11 +35,12 @@ class HttpContractTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory()
         db.DB_PATH = str(Path(cls.temp.name) / "http.db")
         db.DATABASE_URL, db._PG = "", False
+        import deps
         import main
         from fastapi.testclient import TestClient
         cls.db = db
         cls.main = main
-        main.BOT_TOKEN = BOT_TOKEN
+        deps.BOT_TOKEN = BOT_TOKEN
         # Real lifespan: init_db runs, so the schema under test is the real one.
         cls.client = TestClient(main.app)
         cls.client.__enter__()
