@@ -35,11 +35,12 @@ class HttpContractTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory()
         db.DB_PATH = str(Path(cls.temp.name) / "http.db")
         db.DATABASE_URL, db._PG = "", False
+        import deps
         import main
         from fastapi.testclient import TestClient
         cls.db = db
         cls.main = main
-        main.BOT_TOKEN = BOT_TOKEN
+        deps.BOT_TOKEN = BOT_TOKEN
         # Real lifespan: init_db runs, so the schema under test is the real one.
         cls.client = TestClient(main.app)
         cls.client.__enter__()
@@ -105,6 +106,135 @@ class HttpContractTests(unittest.TestCase):
 
     def test_unknown_api_path_is_not_swallowed_by_the_static_mount(self):
         self.assertEqual(self.client.get("/api/definitely-not-a-route").status_code, 404)
+
+
+ADMIN_PATHS = {
+    ("/api/admin/analytics", "GET"),
+    ("/api/admin/audit-log", "GET"),
+    ("/api/admin/backfill-actor-photos", "POST"),
+    ("/api/admin/backfill-director-photos", "POST"),
+    ("/api/admin/backfill-posters", "POST"),
+    ("/api/admin/collections", "GET"),
+    ("/api/admin/collections", "POST"),
+    ("/api/admin/collections/featured/order", "PUT"),
+    ("/api/admin/collections/{collection_id}", "DELETE"),
+    ("/api/admin/collections/{collection_id}", "GET"),
+    ("/api/admin/collections/{collection_id}", "PATCH"),
+    ("/api/admin/collections/{collection_id}/archive", "POST"),
+    ("/api/admin/collections/{collection_id}/films", "POST"),
+    ("/api/admin/collections/{collection_id}/films/{film_id}", "DELETE"),
+    ("/api/admin/collections/{collection_id}/items/order", "PUT"),
+    ("/api/admin/collections/{collection_id}/publish", "POST"),
+    ("/api/admin/collections/{collection_id}/restore", "POST"),
+    ("/api/admin/collections/{collection_id}/unpublish", "POST"),
+    ("/api/admin/enrich-film-people/{imdb_id}", "POST"),
+    ("/api/admin/enrichment", "GET"),
+    ("/api/admin/enrichment/exceptions", "GET"),
+    ("/api/admin/enrichment/{film_id}/override", "DELETE"),
+    ("/api/admin/enrichment/{film_id}/override", "PUT"),
+    ("/api/admin/enrichment/{film_id}/rebuild", "POST"),
+    ("/api/admin/films/resolve", "POST"),
+    ("/api/admin/films/{film_id}/hero-presentation", "PATCH"),
+    ("/api/admin/films/{film_id}/movie-flow", "PATCH"),
+    ("/api/admin/films/{film_id}/poster-display", "PATCH"),
+    ("/api/admin/performance", "GET"),
+    ("/api/admin/reviews/{review_id}/hide", "PATCH"),
+    ("/api/admin/upgrade-omdb-posters", "POST"),
+}
+
+
+class AdminRouteTableTests(unittest.TestCase):
+    """Moving the admin surface into its own module must not lose a path.
+
+    A separate check on purpose: the admin tests call handlers directly and
+    would pass even if the route were never registered with the application.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        # Own client, not the one HttpContractTests owns: sharing it made the
+        # lifespan context be entered twice and closed twice. Registration and
+        # a 401 are both decided before any handler touches the database, so
+        # this client deliberately does not start the lifespan.
+        import main
+        from fastapi.testclient import TestClient
+        cls.main = main
+        cls.client = TestClient(main.app)
+
+    def test_every_admin_route_stays_registered(self):
+        # app.routes stopped flattening included routers in this FastAPI
+        # version, so the schema is what actually reflects registration.
+        spec = self.main.app.openapi()
+        registered = {(path, method.upper())
+                      for path, operations in spec["paths"].items()
+                      for method in operations}
+        self.assertTrue(registered >= ADMIN_PATHS, ADMIN_PATHS - registered)
+
+    def test_admin_routes_are_not_swallowed_by_the_static_mount(self):
+        # Registering the router after app.mount("/") would answer 404 here.
+        self.assertNotEqual(self.client.get("/api/admin/collections").status_code, 404)
+
+    def test_admin_routes_reject_anonymous_callers(self):
+        for path in ("/api/admin/collections", "/api/admin/audit-log", "/api/admin/analytics"):
+            with self.subTest(path=path):
+                self.assertEqual(self.client.get(path).status_code, 401)
+
+
+GUARDS = {"require_editor", "require_admin_user", "require_admin"}
+
+
+def _guards_of(route) -> set[str]:
+    """Every dependency name reachable from a route, at any depth.
+
+    Walks the tree rather than the top level: a guard declared as
+    dependencies=[Depends(...)] and one taken as a handler argument end up at
+    different depths, and both must count.
+    """
+    seen, stack = set(), list(route.dependant.dependencies)
+    while stack:
+        dep = stack.pop()
+        if dep.call is not None:
+            seen.add(getattr(dep.call, "__name__", ""))
+        stack.extend(dep.dependencies)
+    return seen
+
+
+class AdminGuardTests(unittest.TestCase):
+    def test_every_admin_route_keeps_an_authorization_guard(self):
+        """The blind spot in comparing OpenAPI: Depends never reaches the schema.
+
+        A route that lost its guard while being moved into the router would
+        produce a byte-identical schema and an admin surface open to anyone.
+        Nothing else in the suite would notice.
+        """
+        from routers.admin import router
+        for route in router.routes:
+            with self.subTest(path=route.path):
+                self.assertTrue(GUARDS & _guards_of(route), f"{route.path} без гейта")
+
+    def test_the_guard_distribution_matches_what_each_surface_needs(self):
+        """Not just "some guard": the wrong one is its own failure. Analytics on
+        require_editor would hand audience numbers to a collections editor.
+        """
+        from routers.admin import router
+        # Counted per route, not per path: /collections carries GET and POST,
+        # and each method is guarded separately.
+        by_guard = {}
+        for route in router.routes:
+            for guard in GUARDS & _guards_of(route):
+                by_guard.setdefault(guard, []).append(route.path)
+        self.assertEqual(set(by_guard["require_admin_user"]), {"/api/admin/analytics"})
+        # Token-gated maintenance: curl and scripts, never the Mini App.
+        self.assertEqual(set(by_guard["require_admin"]), {
+            "/api/admin/performance",
+            "/api/admin/backfill-posters",
+            "/api/admin/backfill-actor-photos",
+            "/api/admin/backfill-director-photos",
+            "/api/admin/upgrade-omdb-posters",
+            "/api/admin/enrich-film-people/{imdb_id}",
+        })
+        self.assertEqual(len(by_guard["require_editor"]), 24)
+        self.assertEqual(sum(len(paths) for paths in by_guard.values()), len(router.routes))
 
 
 if __name__ == "__main__":

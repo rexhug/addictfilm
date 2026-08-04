@@ -7,6 +7,7 @@ operational debugging.  It never stores a user id, query string, or request body
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
@@ -80,3 +81,14 @@ async def observe_request(
         response.headers.setdefault("Cache-Control", "private, no-store")
         append_vary(response, "X-Init-Data")
     return response
+
+
+# The application and the admin router both need the same window, and neither
+# should own it: keeping the singleton beside its class is what lets the router
+# read metrics without importing the application module.
+REQUEST_METRICS_MAX_SAMPLES = max(50, int(os.getenv("REQUEST_METRICS_MAX_SAMPLES", "500")))
+request_metrics = RequestMetrics(REQUEST_METRICS_MAX_SAMPLES)
+
+
+def performance_snapshot() -> dict:
+    return request_metrics.snapshot()

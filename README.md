@@ -125,6 +125,27 @@ Mini App пушить не умеет — уведомления (напомин
 
 Все грабли и уроки — в **docs/LESSONS.md** (обязательно к прочтению).
 
+## Зависимости
+
+`requirements.in` — файл намерений (версии с `~=`, комментарии почему).
+`requirements.txt` — сгенерированный lock с хешами, его не правят руками.
+
+Обновление:
+
+```bash
+# 1. правим requirements.in
+# 2. компилируем ИМЕННО в прод-образе: маркеры резолюции на macOS дают другой
+#    набор транзитивных пакетов, чем в linux
+docker run --rm -v "$PWD":/w -w /w python:3.12-slim sh -c \
+  "pip install -q uv && uv pip compile requirements.in -o requirements.txt --generate-hashes"
+# 3. проверяем, что образ собирается с --require-hashes
+docker build -t addictfilm-lockcheck .
+# 4. коммитим оба файла
+```
+
+Без lock-файла CI зеленел сегодня и краснел завтра без единого коммита, а
+прод-образ не воспроизводился.
+
 ## Лицензия
 
 MIT — см. [LICENSE](LICENSE).

@@ -13,7 +13,9 @@ from unittest.mock import patch
 
 import database as db
 import db_runtime
+import deps
 import main
+import routers.admin as admin_router_module
 from auth import extract_start_param
 from fastapi import HTTPException
 
@@ -54,7 +56,7 @@ class AcquisitionNormalizationTests(unittest.TestCase):
 
 class AdminAnalyticsAccessTests(unittest.IsolatedAsyncioTestCase):
     async def _call(self, role):
-        with patch.object(main, "_effective_role", return_value=role):
+        with patch.object(deps, "_effective_role", return_value=role):
             return await main.require_admin_user(user={"id": 42})
 
     async def test_only_the_admin_role_passes(self):
@@ -73,14 +75,17 @@ class AdminAnalyticsAccessTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ctx.exception.status_code, 403)
 
     async def test_a_client_supplied_role_is_ignored(self):
-        with patch.object(main, "_effective_role", return_value=None), \
+        with patch.object(deps, "_effective_role", return_value=None), \
                 self.assertRaises(HTTPException) as ctx:
             await main.require_admin_user(user={"id": 42, "role": "admin"})
         self.assertEqual(ctx.exception.status_code, 403)
 
     def test_the_endpoint_is_wired_to_the_admin_gate(self):
         """Гейт объявлен на маршруте, а не проверяется внутри обработчика."""
-        route = next(r for r in main.app.routes
+        # The endpoint moved into the admin router; app.routes no longer
+        # flattens included routers in this FastAPI version, so the router is
+        # where the declaration now lives. The assertion below is unchanged.
+        route = next(r for r in admin_router_module.router.routes
                      if getattr(r, "path", "") == "/api/admin/analytics")
         gates = {d.call for d in route.dependant.dependencies}
         self.assertIn(main.require_admin_user, gates)

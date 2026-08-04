@@ -43,7 +43,11 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-      - run: pip install -r requirements.txt -r requirements-dev.txt
+      # Two steps, not one: hashes in requirements.txt turn on --require-hashes
+      # for the whole pip invocation, and the dev file deliberately has none —
+      # those packages never reach the image.
+      - run: pip install --require-hashes -r requirements.txt
+      - run: pip install -r requirements-dev.txt
       - run: python -m pip check
       - run: ruff check backend scripts
       - run: python -m compileall -q backend scripts
