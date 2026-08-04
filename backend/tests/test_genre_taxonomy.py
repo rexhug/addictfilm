@@ -15,17 +15,17 @@ class GenreTaxonomyTests(unittest.IsolatedAsyncioTestCase):
         db.DB_PATH = str(Path(self.temp_dir.name) / "test.db")
         db.DATABASE_URL = ""
         db._PG = False
-        db._genres_cache = None
+        db._invalidate_genres_cache()
         await db.init_db()
         await db.upsert_user({"id": 1, "first_name": "One", "username": None})
 
     async def asyncTearDown(self):
         db.DB_PATH, db.DATABASE_URL, db._PG = self.old_path, self.old_url, self.old_pg
-        db._genres_cache = None
+        db._invalidate_genres_cache()
         self.temp_dir.cleanup()
 
     async def _genres(self):
-        db._genres_cache = None  # кэш переживает setUp — сбрасываем явно
+        db._invalidate_genres_cache()  # кэш переживает setUp — сбрасываем явно
         return await db.list_genres()
 
     async def test_language_duplicates_merge_into_one_russian_canon(self):

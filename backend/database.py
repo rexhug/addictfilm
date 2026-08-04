@@ -65,93 +65,6 @@ _PAIR_INVITE_TTL = timedelta(days=7)
 _DEFAULT_RECOMMENDATION_COOLDOWN = object()
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ── Инициализация ────────────────────────────────────────────────────────────
 # Идентификатор консультативной блокировки. Произвольное, но СТАБИЛЬНОЕ число:
 # менять его нельзя — иначе старый и новый процесс возьмут разные замки и снова
@@ -628,8 +541,7 @@ async def user_analytics(now: datetime | None = None) -> dict:
     }
 
 
-
-
+# ── Каталог фильмов ──────────────────────────────────────────────────────────
 def _prefer_catalog_value(current: str | None, incoming: str | None) -> str | None:
     """Fill a genuinely missing catalog field without overwriting good data."""
     return current if str(current or "").strip() else incoming
@@ -3463,12 +3375,6 @@ async def _lock_pair_users(db, *user_ids: int) -> None:
 def _pair_id(first_user_id: int, second_user_id: int, since: str) -> str:
     low, high = sorted((int(first_user_id), int(second_user_id)))
     return f"pair:{low}:{high}:{since}"
-
-
-
-
-
-
 
 
 def _new_pair_session(first_user_id: int, second_user_id: int, started_at: str) -> dict:

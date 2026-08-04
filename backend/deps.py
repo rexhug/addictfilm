@@ -36,7 +36,6 @@ async def current_user(x_init_data: str = Header(default="")) -> dict:
     return user
 
 
-
 async def _effective_role(user_id: int) -> str | None:
     """"admin" — если id в ADMIN_USER_IDS (bootstrap-секрет, всегда есть, не зависит
     от БД); иначе — роль из users.role ("editor"/"admin", назначается вручную)."""
@@ -80,7 +79,6 @@ async def require_admin_user(user: dict = Depends(current_user)) -> dict:
     if await _effective_role(user["id"]) != "admin":
         raise HTTPException(status_code=403, detail="Недостаточно прав")
     return user
-
 
 
 # ── Обслуживание (админ по ADMIN_TOKEN) ──────────────────────────────────────
