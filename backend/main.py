@@ -60,6 +60,7 @@ from pydantic import BaseModel, Field
 from recommendation import engines
 from recommendation_questions import next_question_id, public_question
 from routers.admin import router as admin_router
+from routers.notifications import router as notifications_router
 from starlette.middleware.gzip import GZipMiddleware
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -117,6 +118,7 @@ _HTML_CSP = (
 # static mount at the bottom: a mount added first would swallow /api/admin/* and
 # the whole surface would answer 404 with nothing in the logs.
 app.include_router(admin_router)
+app.include_router(notifications_router)
 
 
 # Back-compat: tests reach into main for the metrics window.
@@ -350,24 +352,6 @@ async def patch_settings(body: SettingsBody, user: dict = Depends(current_user))
     settings = await db.update_notification_settings(
         user["id"], language=body.language, telegram_enabled=body.telegram_notifications)
     return {**settings, "telegram_available": bool(BOT_TOKEN)}
-
-
-@app.get("/api/notifications")
-async def notifications(limit: int = 20, before_id: int | None = None,
-                        category: Literal["all", "pair", "films", "system"] = "all",
-                        user: dict = Depends(current_user)):
-    return await db.list_notifications(
-        user["id"], limit=limit, before_id=before_id, category=category)
-
-
-@app.post("/api/notifications/read-all")
-async def notifications_read_all(user: dict = Depends(current_user)):
-    return {"updated": await db.mark_all_notifications_read(user["id"])}
-
-
-@app.post("/api/notifications/{notification_id}/read")
-async def notification_read(notification_id: int, user: dict = Depends(current_user)):
-    return {"ok": await db.mark_notification_read(user["id"], notification_id)}
 
 
 @app.get("/api/movies")
