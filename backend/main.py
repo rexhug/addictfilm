@@ -62,6 +62,7 @@ from recommendation_questions import next_question_id, public_question
 from routers.admin import router as admin_router
 from routers.auth import SettingsBody
 from routers.auth import router as auth_router
+from routers.movies import router as movies_router
 from routers.notifications import router as notifications_router
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -122,6 +123,7 @@ _HTML_CSP = (
 app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(notifications_router)
+app.include_router(movies_router)
 
 
 # Back-compat: tests reach into main for the metrics window.
@@ -348,7 +350,7 @@ async def patch_settings(body: SettingsBody, user: dict = Depends(current_user))
     return {**settings, "telegram_available": bool(BOT_TOKEN)}
 
 
-@app.get("/api/movies")
+@app.get("/api/movies", include_in_schema=False)
 async def movies(status: str = "want_to_watch", sort: str = "date",
                  limit: int = 50, offset: int = 0, user: dict = Depends(current_user)):
     if status not in ("want_to_watch", "watched", "top"):
@@ -482,7 +484,7 @@ class RateBody(BaseModel):
     rating: int = Field(ge=1, le=10)
 
 
-@app.post("/api/movie/{film_id}/rate")
+@app.post("/api/movie/{film_id}/rate", include_in_schema=False)
 async def rate(film_id: int, body: RateBody, user: dict = Depends(throttled_mutation)):
     if not await db.get_film(film_id):
         raise HTTPException(status_code=404, detail="Фильм не найден")
@@ -509,7 +511,7 @@ async def rate(film_id: int, body: RateBody, user: dict = Depends(throttled_muta
     return {"ok": True}
 
 
-@app.delete("/api/movie/{film_id}/rate")
+@app.delete("/api/movie/{film_id}/rate", include_in_schema=False)
 async def unrate(film_id: int, user: dict = Depends(current_user)):
     """Убрать оценку — повторный тап по своей звезде. Статус (списки) не меняется."""
     await db.clear_rating(user["id"], film_id)
@@ -521,7 +523,7 @@ class StatusBody(BaseModel):
     status: str  # want_to_watch | watched
 
 
-@app.post("/api/movie/{film_id}/status")
+@app.post("/api/movie/{film_id}/status", include_in_schema=False)
 async def set_status(film_id: int, body: StatusBody, user: dict = Depends(throttled_mutation)):
     if body.status not in ("want_to_watch", "watched"):
         raise HTTPException(status_code=422, detail="Неизвестный статус")
@@ -537,7 +539,7 @@ class CommentBody(BaseModel):
     text: str = Field(max_length=500)
 
 
-@app.post("/api/movie/{film_id}/comment")
+@app.post("/api/movie/{film_id}/comment", include_in_schema=False)
 async def comment(film_id: int, body: CommentBody, user: dict = Depends(current_user)):
     if not await db.get_film(film_id):  # иначе set_comment создаёт «сиротский» user_films
         raise HTTPException(status_code=404, detail="Фильм не найден")
@@ -567,7 +569,7 @@ def _guard_review_write(user_id: int) -> None:
         raise HTTPException(status_code=429, detail="Слишком много изменений. Попробуйте через минуту")
 
 
-@app.get("/api/movie/{film_id}/reviews")
+@app.get("/api/movie/{film_id}/reviews", include_in_schema=False)
 async def movie_reviews(film_id: int, limit: int = 10, before_id: int | None = None,
                         sort: Literal["newest", "highest", "lowest"] = "newest",
                         user: dict = Depends(current_user)):
@@ -582,7 +584,7 @@ async def movie_reviews(film_id: int, limit: int = 10, before_id: int | None = N
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
 
-@app.put("/api/movie/{film_id}/review")
+@app.put("/api/movie/{film_id}/review", include_in_schema=False)
 async def publish_movie_review(film_id: int, body: ReviewBody,
                                user: dict = Depends(current_user)):
     _guard_review_write(user["id"])
@@ -596,14 +598,14 @@ async def publish_movie_review(film_id: int, body: ReviewBody,
     return {"ok": True, "item": item}
 
 
-@app.delete("/api/movie/{film_id}/review")
+@app.delete("/api/movie/{film_id}/review", include_in_schema=False)
 async def delete_movie_review(film_id: int, user: dict = Depends(current_user)):
     _guard_review_write(user["id"])
     deleted = await db.delete_public_review(user["id"], film_id)
     return {"ok": True, "deleted": deleted}
 
 
-@app.post("/api/movie/{film_id}/review/legacy")
+@app.post("/api/movie/{film_id}/review/legacy", include_in_schema=False)
 async def legacy_movie_review(film_id: int, body: LegacyReviewBody,
                               user: dict = Depends(current_user)):
     _guard_review_write(user["id"])
@@ -621,7 +623,7 @@ async def legacy_movie_review(film_id: int, body: LegacyReviewBody,
     return {"ok": True, "status": "published", "item": item}
 
 
-@app.post("/api/movie/{film_id}/reviews/{review_id}/report")
+@app.post("/api/movie/{film_id}/reviews/{review_id}/report", include_in_schema=False)
 async def report_movie_review(film_id: int, review_id: int, body: ReviewReportBody,
                               user: dict = Depends(current_user)):
     _guard_review_write(user["id"])
@@ -636,7 +638,7 @@ async def report_movie_review(film_id: int, review_id: int, body: ReviewReportBo
     return {"ok": True}
 
 
-@app.delete("/api/movie/{film_id}")
+@app.delete("/api/movie/{film_id}", include_in_schema=False)
 async def delete(film_id: int, user: dict = Depends(throttled_mutation)):
     await db.remove_from_list(user["id"], film_id)  # из своего списка; в каталоге остаётся
     await _invalidate_stats_for(user["id"])
@@ -644,7 +646,7 @@ async def delete(film_id: int, user: dict = Depends(throttled_mutation)):
 
 
 # ── API: поиск и добавление ───────────────────────────────────────────────────
-@app.get("/api/search")
+@app.get("/api/search", include_in_schema=False)
 async def api_search(q: str, user: dict = Depends(current_user)):
     q = q.strip()
     if len(q) > 200:
@@ -681,7 +683,7 @@ class AddBody(BaseModel):
     status: str = "want_to_watch"
 
 
-@app.post("/api/add")
+@app.post("/api/add", include_in_schema=False)
 async def add(body: AddBody, user: dict = Depends(throttled_mutation)):
     if body.src not in ("k", "i"):
         raise HTTPException(status_code=422, detail="Неизвестный источник")
