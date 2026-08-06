@@ -1088,6 +1088,7 @@ async function showPicker() {
 // не попадают: незнакомый код просто пропускается, а не печатается как есть.
 const recommendationUi = window.AddictFilmRecommendations.create({ translate: key => t(key) });
 const reviewsUi = window.AddictFilmReviews.create({ pageSize: 10 });
+const partnerUi = window.AddictFilmPartner.create();
 function recommendationReasons(item) {
   return recommendationUi.reasons(item);
 }
@@ -4622,6 +4623,7 @@ function personalStatsHTML(s, scope = "me", expanded = { genres: false }) {
 
 // ── Пара ──────────────────────────────────────────────────────────────────────
 function partnerCardHTML(p, ps) {
+  p = partnerUi.normalize(p);
   if (p.status === "paired") {
     // The active pair has a dedicated statistics tab. Pair management is only
     // available through Settings, so a stale fallback cannot expose unlinking
