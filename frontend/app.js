@@ -479,20 +479,9 @@ const api = window.AddictFilmApi.create({
   cacheTtl: _READ_CACHE_TTL,
 });
 
-// Текст ошибки от сервера приходит по-русски — показывать его в английском
-// интерфейсе нельзя. Отдаём локализованное сообщение по статусу, а если статус
-// ни о чём не говорит — общий фолбэк. Подробности уходят в консоль: они нужны
-// для отладки, но не пользователю.
-const _ERROR_KEY_BY_STATUS = {
-  401: "auth_err_s", 403: "auth_err_s",
-  404: "load_err", 409: "load_err",
-  429: "search_toomany_s", 503: "search_limited_s",
-};
-function uiError(error, fallbackKey = "load_err") {
-  const status = error && error.status;
-  if (status) console.warn("api error", status, error.code || "", error.message || "");
-  return t(_ERROR_KEY_BY_STATUS[status] || fallbackKey);
-}
+// Текст ошибки локализуется отдельным UI-модулем, но остаётся той же функцией
+// для всех существующих экранов и обработчиков.
+const uiError = window.AddictFilmUi.createErrorMapper((key) => t(key));
 
 // ── Утилиты ───────────────────────────────────────────────────────────────────
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
