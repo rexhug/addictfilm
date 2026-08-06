@@ -472,31 +472,12 @@ function applyTabLabels() {
   document.querySelectorAll("#tabbar .tab").forEach(b => { const s = b.querySelector("span"); if (s) s.textContent = t(map[b.dataset.tab]); });
 }
 
-async function api(path, opts = {}) {
-  const method = (opts.method || "GET").toUpperCase();
-  const canCache = cacheableRead(path, opts);
-  const cached = canCache && _readCache.get(path);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
-  const res = await fetch(path, {
-    ...opts,
-    // Вне Telegram tg === null: без ?. падал сам вызов api(), и экран
-    // «нужен Telegram» не успевал отрисоваться — вместо него было исключение.
-    headers: { "Content-Type": "application/json", "X-Init-Data": tg?.initData || "", ...(opts.headers || {}) },
-  });
-  if (!res.ok) {
-    // detail бывает строкой (обычные ошибки) и объектом {code, message} —
-    // сохраняем и статус, и код, чтобы вызывающий различал 403/409 надёжно.
-    const detail = (await res.json().catch(() => ({}))).detail;
-    const error = new Error(typeof detail === "string" ? detail : (detail?.message || String(res.status)));
-    error.status = res.status;
-    error.code = detail && typeof detail === "object" ? detail.code : null;
-    throw error;
-  }
-  const value = await res.json();
-  if (canCache) _readCache.set(path, { value, expiresAt: Date.now() + _READ_CACHE_TTL });
-  if (method !== "GET") _readCache.clear();
-  return value;
-}
+const api = window.AddictFilmApi.create({
+  getInitData: () => tg?.initData || "",
+  cacheableRead,
+  cache: _readCache,
+  cacheTtl: _READ_CACHE_TTL,
+});
 
 // Текст ошибки от сервера приходит по-русски — показывать его в английском
 // интерфейсе нельзя. Отдаём локализованное сообщение по статусу, а если статус
