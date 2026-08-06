@@ -14,7 +14,10 @@ from config import KINOPOISK_TOKENS
 
 logger = logging.getLogger(__name__)
 
-BASE = "https://api.poiskkino.dev/v1.4"
+BASE_V14 = "https://api.poiskkino.dev/v1.4"
+BASE_V15 = "https://api.poiskkino.dev/v1.5"
+# Kept for imports and diagnostics that still refer to the legacy API base.
+BASE = BASE_V14
 _TIMEOUT = aiohttp.ClientTimeout(total=12)
 _session: aiohttp.ClientSession | None = None
 
@@ -162,7 +165,7 @@ async def aclose() -> None:
     _session = None
 
 
-async def _request(path: str, params) -> dict | None:
+async def _request(path: str, params, *, base: str = BASE_V14) -> dict | None:
     """GET к kinopoisk с ротацией токенов. Перебираем пул по кругу; при
     401/402/403/429 (квота/доступ) пробуем следующий ключ. None = все ключи не
     дали ответа (или пул пуст)."""
@@ -182,7 +185,7 @@ async def _request(path: str, params) -> dict | None:
             return None
         try:
             session = await _get_session()
-            async with session.get(f"{BASE}{path}", params=params,
+            async with session.get(f"{base}{path}", params=params,
                                    headers={"X-API-KEY": keys[idx]}) as resp:
                 if resp.status == 200:
                     return await resp.json()
@@ -199,6 +202,56 @@ async def _request(path: str, params) -> dict | None:
             continue
     logger.warning("Kinopoisk %s: пул ключей исчерпан (last=%s)", path, last)
     return None
+
+
+KINOPOISK_HERO_IMAGE_TYPES = (
+    "backdrops", "frame", "still", "screenshot", "wallpaper",
+)
+_last_image_request_unavailable = False
+
+
+def _normalized_image_candidate(raw: dict) -> dict | None:
+    if not isinstance(raw, dict) or raw.get("type") not in KINOPOISK_HERO_IMAGE_TYPES:
+        return None
+    url = str(raw.get("url") or "").strip()
+    width, height = raw.get("width"), raw.get("height")
+    if not url:
+        return None
+    try:
+        width, height = int(width), int(height)
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return {
+        "url": url,
+        "preview_url": str(raw.get("preview_url") or raw.get("previewUrl") or "").strip() or None,
+        "width": width,
+        "height": height,
+        "type": raw.get("type"),
+        "language": raw.get("language"),
+    }
+
+
+async def image_candidates(kp_id: str, limit: int = 10) -> list[dict]:
+    """Return a bounded, provider-typed set of possible hero images."""
+    global _last_image_request_unavailable
+    _last_image_request_unavailable = False
+    key = str(kp_id or "").strip()
+    if not key or not KINOPOISK_TOKENS:
+        return []
+    bounded = max(1, min(int(limit), 10))
+    params = [("movieId", key), ("page", "1"), ("limit", str(bounded))]
+    params += [("notNullFields", field) for field in ("url", "width", "height")]
+    params += [("sortField", "width"), ("sortType", "-1")]
+    params += [("type", image_type) for image_type in KINOPOISK_HERO_IMAGE_TYPES]
+    data = await _request("/image", params, base=BASE_V15)
+    if data is None:
+        _last_image_request_unavailable = True
+        return []
+    docs = data.get("docs", []) if isinstance(data, dict) else []
+    return [candidate for raw in docs
+            if (candidate := _normalized_image_candidate(raw)) is not None]
 
 
 async def search_movies(query: str, limit: int = 20) -> list[dict]:

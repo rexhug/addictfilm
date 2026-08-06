@@ -52,6 +52,7 @@ _SCHEMA_MIGRATION_PUBLIC_REVIEWS = "2026-07-29-public-reviews-v1"
 _SCHEMA_MIGRATION_FILM_IDENTITY = "2026-07-29-film-identity-v1"
 _SCHEMA_MIGRATION_CANONICAL_CAST = "2026-07-29-canonical-cast-v1"
 _SCHEMA_MIGRATION_USER_ACQUISITION = "2026-08-01-user-acquisition-v1"
+_SCHEMA_MIGRATION_HERO_POLICY_V3 = "2026-08-06-hero-policy-v3-recheck"
 
 
 # PostgreSQL SQLSTATE codes for "the object I am adding is already there".
@@ -829,6 +830,16 @@ async def _apply_user_acquisition_migration() -> None:
     await _add_column_if_missing("users", "acquisition_param TEXT")
 
 
+async def _apply_hero_policy_v3_migration() -> None:
+    """Recheck only poster fallbacks under the stricter verified-frame policy."""
+    async with db_session.connect() as db:
+        await db.execute(
+            "UPDATE films SET hero_checked_at = NULL "
+            "WHERE hero_type IS NULL OR hero_type = 'poster_blur'"
+        )
+        await db.commit()
+
+
 def _row_time(row: dict, *fields: str) -> str:
     """Comparable ISO timestamp for conflict resolution during a film merge."""
     return max((str(row.get(field) or "") for field in fields), default="")
@@ -1175,6 +1186,7 @@ async def run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_FILM_IDENTITY, _apply_film_identity_migration),
         (_SCHEMA_MIGRATION_CANONICAL_CAST, _apply_canonical_cast_migration),
         (_SCHEMA_MIGRATION_USER_ACQUISITION, _apply_user_acquisition_migration),
+        (_SCHEMA_MIGRATION_HERO_POLICY_V3, _apply_hero_policy_v3_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):

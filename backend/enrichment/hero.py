@@ -23,6 +23,7 @@ import aiohttp
 import database as db
 import fanart
 import hero_media
+import kinopoisk
 from config import (
     FANART_HERO_ENABLED,
     HERO_REFRESH_BATCH,
@@ -293,15 +294,17 @@ def _unchanged(film: dict, selection: hero_media.HeroSelection) -> bool:
 async def _try_kinopoisk(film: dict, *, probe_session) -> tuple[hero_media.HeroSelection | None, bool]:
     """(выбор, был ли временный сбой).
 
-    Ходит только за файлом, ссылка на который УЖЕ лежит в каталоге: никакого
-    стороннего API здесь нет. Поэтому канал продолжает работать, когда Fanart
-    недоступен, — ради этого он и заведён.
+    Сначала проверяет сохранённую ссылку, а после её отказа использует
+    выделенный endpoint кадров Kinopoisk. Запрос ограничен метаданными и
+    несколькими последовательными пробами, поэтому внешний API не попадает
+    на пользовательский путь.
     """
+    saved_backdrop = str(film.get("backdrop_url") or "").strip()
     # Сохранённый размер в ссылке — это то, что вернул API, а не единственная
     # доступная редакция файла: тот же CDN по тому же пути отдаёт крупнее.
     # Пробуем предпочтительный размер, затем исходный. Решает всё равно
     # заголовок скачанного файла, а не наши ожидания от URL.
-    for candidate in hero_media.kinopoisk_rendition_candidates(film.get("backdrop_url")):
+    for candidate in hero_media.kinopoisk_rendition_candidates(saved_backdrop):
         result = await probe_image_info(candidate, session=probe_session)
         if result.verdict == PROBE_UNKNOWN:
             # Сеть, а не файл: второй размер просить бессмысленно, вернёмся позже.
@@ -312,6 +315,26 @@ async def _try_kinopoisk(film: dict, *, probe_session) -> tuple[hero_media.HeroS
         # подойдёт», а «не доказано»: такой кадр в полноэкранный блок не попадает.
         selection = hero_media.choose_kinopoisk_background(
             candidate, width=result.width, height=result.height)
+        if selection is not None:
+            return selection, False
+    # A catalog row without a usable saved backdrop can ask the dedicated image
+    # endpoint for real frames/stills. Keep this bounded and deterministic.
+    if not film.get("kp_id"):
+        return None, False
+    candidates = await kinopoisk.image_candidates(str(film["kp_id"]), limit=10)
+    if kinopoisk._last_image_request_unavailable:
+        return None, True
+    ordered = sorted(candidates, key=hero_media.kinopoisk_image_metadata_rank, reverse=True)
+    for candidate in ordered[:5]:
+        result = await probe_image_info(
+            candidate["url"], expected_width=candidate.get("width"),
+            expected_height=candidate.get("height"), session=probe_session)
+        if result.verdict == PROBE_UNKNOWN:
+            return None, True
+        if result.verdict != PROBE_OK:
+            continue
+        selection = hero_media.choose_kinopoisk_background(
+            candidate["url"], width=result.width, height=result.height)
         if selection is not None:
             return selection, False
     return None, False

@@ -19,6 +19,20 @@ def image(width=1920, height=1080, likes=12, language="00", ident="a") -> Fanart
 
 
 class QualificationTests(unittest.TestCase):
+    def test_kinopoisk_hero_floor_accepts_supported_cinematic_sizes(self):
+        for width, height in ((1200, 633), (1200, 672), (1920, 804), (1920, 1080)):
+            with self.subTest(width=width, height=height):
+                selection = hero_media.choose_kinopoisk_background(
+                    "https://kp/frame.jpg", width=width, height=height)
+                self.assertIsNotNone(selection)
+                self.assertEqual(selection.source, hero_media.SOURCE_KINOPOISK)
+
+    def test_kinopoisk_hero_floor_rejects_small_or_portrait_files(self):
+        for width, height in ((800, 450), (900, 900), (600, 1200), (1600, 500)):
+            with self.subTest(width=width, height=height):
+                self.assertIsNone(hero_media.choose_kinopoisk_background(
+                    "https://kp/frame.jpg", width=width, height=height))
+
     def test_full_hd_textless_and_liked_qualifies(self):
         selection = hero_media.choose_fanart_background([image()])
         self.assertIsNotNone(selection)

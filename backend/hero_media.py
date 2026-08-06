@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 from fanart import FanartImage
 
-HERO_POLICY_VERSION = "hero-policy-v2"
+HERO_POLICY_VERSION = "hero-policy-v3"
 
 HERO_BACKDROP = "backdrop"
 HERO_POSTER_BLUR = "poster_blur"
@@ -39,6 +39,12 @@ DEFAULT_HERO_FOCUS_Y = 0.36
 # заметно мылит, а соотношение вне диапазона либо обрежется до неузнаваемости,
 # либо оставит пустые поля.
 MIN_FANART_HERO_SCORE = 0.72
+MIN_KINOPOISK_HERO_WIDTH = 1200
+MIN_KINOPOISK_HERO_HEIGHT = 630
+MIN_KINOPOISK_HERO_PIXELS = 750_000
+MIN_KINOPOISK_HERO_RATIO = 1.45
+MAX_KINOPOISK_HERO_RATIO = 2.55
+# Fanart keeps its stricter, editorial quality gate.
 MIN_HERO_WIDTH = 1600
 MIN_HERO_HEIGHT = 850
 MIN_HERO_RATIO = 1.55
@@ -154,7 +160,18 @@ def score_kinopoisk_background(width: int, height: int) -> float:
     прежним, то есть кадру от kinopoisk приходится быть объективно крупнее,
     чтобы его добрать без «социальных» очков.
     """
-    score = _resolution_score(width, height) * 0.65 + _ratio_score(width, height) * 0.35
+    if width < MIN_KINOPOISK_HERO_WIDTH or height < MIN_KINOPOISK_HERO_HEIGHT:
+        return 0.0
+    pixels = width * height
+    if pixels < MIN_KINOPOISK_HERO_PIXELS:
+        return 0.0
+    # The hard dimensions above are the quality floor; larger files receive a
+    # deterministic bonus without letting popularity or URL order decide.
+    resolution = min(1.0, 0.72 + (pixels - MIN_KINOPOISK_HERO_PIXELS) / 2_000_000)
+    # The policy's explicit ratio band is the guardrail. Cinematic stills such
+    # as 1920x804 are intentionally wider than 16:9, so do not reject them by
+    # applying Fanart's narrower closeness score here.
+    score = resolution * 0.65 + 1.0 * 0.35
     return round(max(0.0, min(1.0, score)), 4)
 
 
@@ -192,15 +209,35 @@ def choose_kinopoisk_background(url: str | None, *, width: int | None,
     normalized = str(url or "").strip()
     if not normalized or not width or not height:
         return None
-    if width < MIN_HERO_WIDTH or height < MIN_HERO_HEIGHT:
+    if width < MIN_KINOPOISK_HERO_WIDTH or height < MIN_KINOPOISK_HERO_HEIGHT:
         return None
-    if not MIN_HERO_RATIO <= width / height <= MAX_HERO_RATIO:
+    if width * height < MIN_KINOPOISK_HERO_PIXELS:
+        return None
+    if not MIN_KINOPOISK_HERO_RATIO <= width / height <= MAX_KINOPOISK_HERO_RATIO:
         return None
     score = score_kinopoisk_background(width, height)
     if score < MIN_KINOPOISK_HERO_SCORE:
         return None
     return HeroSelection(url=normalized, hero_type=HERO_BACKDROP, source=SOURCE_KINOPOISK,
                          quality_score=score, width=width, height=height)
+
+
+KINOPOISK_IMAGE_TYPE_PRIORITY = {
+    "backdrops": 5, "still": 4, "frame": 3, "screenshot": 2, "wallpaper": 1,
+}
+
+
+def kinopoisk_image_metadata_rank(candidate: dict) -> tuple:
+    """Stable ordering only; downloaded-file validation remains authoritative."""
+    width = int(candidate.get("width") or 0)
+    height = int(candidate.get("height") or 0)
+    ratio = width / height if width and height else 0.0
+    return (
+        KINOPOISK_IMAGE_TYPE_PRIORITY.get(candidate.get("type"), 0),
+        width * height,
+        -abs(ratio - (16 / 9)),
+        str(candidate.get("url") or ""),
+    )
 
 
 def poster_fallback(poster_url: str | None) -> HeroSelection | None:

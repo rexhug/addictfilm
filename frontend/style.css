@@ -475,6 +475,11 @@ section{margin-top:30px;}
 .d-backdrop.no-bd .d-scrim-t{height:76px;background:linear-gradient(180deg,rgba(0,0,0,.38),transparent);}
 .d-backdrop.no-bd .d-scrim-b{height:100%;background:linear-gradient(180deg,transparent 18%,var(--bg) 94%);}
 .d-backdrop.no-bd + .d-body{margin-top:-38px;}
+.d-backdrop:not(.is-poster-blur) img{object-fit:var(--hero-fit,contain);object-position:var(--hero-focus-x,50%) var(--hero-focus-y,36%);background:var(--bg);}
+.d-backdrop.is-poster-blur img{object-fit:cover;filter:blur(28px) saturate(.72) brightness(.34);transform:scale(1.22);opacity:.9;}
+.d-backdrop.is-poster-blur .d-scrim-b{height:100%;background:linear-gradient(180deg,rgba(0,0,0,.22),var(--bg) 92%);}
+.d-backdrop.no-image{background:linear-gradient(180deg,#101216 0%,var(--bg) 92%);}
+.d-backdrop.no-image .d-scrim-b{height:100%;background:linear-gradient(180deg,transparent,var(--bg) 92%);}
 .detail-preview .d-preview-lines{min-height:58px;padding-top:8px;}
 
 /* Telegram's iOS WebView can dispatch pointerup and click separately. Give each

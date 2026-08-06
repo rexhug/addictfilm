@@ -16,6 +16,8 @@ import aiohttp
 import database as db
 import fanart
 import hero_media
+import kinopoisk
+import migrations
 from enrichment import hero
 
 
@@ -63,6 +65,21 @@ class HeroPipelineTests(unittest.IsolatedAsyncioTestCase):
         await db.init_db()
         film_id = await self._film()
         self.assertIsNotNone(await db.get_film(film_id))
+
+    async def test_hero_policy_rechecks_poster_fallback_but_keeps_verified_backdrop(self):
+        poster_id = await self._film("tt0000101")
+        backdrop_id = await self._film("tt0000102")
+        await db.update_film_hero(
+            poster_id, hero_url="https://p/1.jpg", hero_type=hero_media.HERO_POSTER_BLUR,
+            hero_source=hero_media.SOURCE_POSTER, hero_quality_score=0.0,
+            hero_width=None, hero_height=None)
+        await db.update_film_hero(
+            backdrop_id, hero_url="https://kp/backdrop.jpg", hero_type=hero_media.HERO_BACKDROP,
+            hero_source=hero_media.SOURCE_KINOPOISK, hero_quality_score=0.9,
+            hero_width=1920, hero_height=1080)
+        await migrations._apply_hero_policy_v3_migration()
+        self.assertIsNone((await db.get_film(poster_id))["hero_checked_at"])
+        self.assertIsNotNone((await db.get_film(backdrop_id))["hero_checked_at"])
 
     async def test_a_legacy_row_without_hero_columns_stays_readable(self):
         film_id = await self._film()
@@ -377,6 +394,33 @@ class HeroPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(distribution["checked"], 1)
         self.assertEqual(distribution["by_source"]["fanart"]["count"], 1)
         self.assertEqual(distribution["by_source"]["none"]["count"], 1)
+
+
+class KinopoiskImageClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_image_candidates_use_one_v15_request_and_filter_types(self):
+        calls = []
+
+        async def _request(path, params, **kwargs):
+            calls.append((path, params, kwargs))
+            return {"docs": [
+                {"url": "https://kp/backdrop.jpg", "previewUrl": "https://kp/p.jpg",
+                 "width": 1920, "height": 1080, "type": "backdrops", "language": "00"},
+                {"url": "https://kp/cover.jpg", "width": 1920, "height": 1080,
+                 "type": "cover", "language": "00"},
+                {"url": "", "width": 1920, "height": 1080, "type": "still"},
+            ]}
+
+        with mock.patch.object(kinopoisk, "KINOPOISK_TOKENS", ("test-token",)), \
+                mock.patch.object(kinopoisk, "_request", new=_request):
+            candidates = await kinopoisk.image_candidates("5003510", limit=10)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "/image")
+        self.assertEqual(calls[0][2]["base"], kinopoisk.BASE_V15)
+        self.assertEqual(candidates, [{
+            "url": "https://kp/backdrop.jpg", "preview_url": "https://kp/p.jpg",
+            "width": 1920, "height": 1080, "type": "backdrops", "language": "00",
+        }])
 
 
 class ImageProbeTests(unittest.TestCase):
@@ -895,8 +939,11 @@ class KinopoiskRenditionFlowTests(unittest.IsolatedAsyncioTestCase):
         with patch_probe:
             await hero.refresh_due_heroes(limit=1)
         self.assertEqual(len(asked), 2)
-        # 1344x756 не проходит порог — честно уходим в постер, а не растягиваем.
-        self.assertEqual((await db.get_film(self.film_id))["hero_type"], "poster_blur")
+        # 1344x756 meets the Kinopoisk floor; the saved rendition remains a
+        # real backdrop after the preferred 1920 rendition is unavailable.
+        film = await db.get_film(self.film_id)
+        self.assertEqual(film["hero_type"], "backdrop")
+        self.assertEqual((film["hero_width"], film["hero_height"]), (1344, 756))
 
     async def test_a_network_failure_does_not_trigger_a_second_rendition_request(self):
         asked, patch_probe = self._probe(lambda _url: hero.ImageProbeResult(hero.PROBE_UNKNOWN))
@@ -905,6 +952,24 @@ class KinopoiskRenditionFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(asked), 1, "сеть лежит — второй размер просить бессмысленно")
         self.assertEqual(report.unavailable, 1)
         self.assertIsNone((await db.get_film(self.film_id))["hero_checked_at"])
+
+    async def test_rejected_saved_backdrop_fetches_one_image_collection_and_accepts_first_frame(self):
+        async with db.db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute("UPDATE films SET kp_id = ? WHERE id = ?", ("5003510", self.film_id))
+            await conn.commit()
+        asked, patch_probe = self._probe(
+            lambda url: hero.ImageProbeResult(hero.PROBE_REJECTED)
+            if "avatars.mds" in url else hero.ImageProbeResult(hero.PROBE_OK, 1920, 1080))
+        collection = mock.AsyncMock(return_value=[{
+            "url": "https://kp/frame.jpg", "preview_url": None,
+            "width": 1920, "height": 1080, "type": "frame", "language": "00",
+        }])
+        with patch_probe, mock.patch.object(kinopoisk, "image_candidates", new=collection):
+            await hero.refresh_due_heroes(limit=1)
+        collection.assert_awaited_once_with("5003510", limit=10)
+        film = await db.get_film(self.film_id)
+        self.assertEqual(film["hero_type"], "backdrop")
+        self.assertEqual(film["hero_source"], "kinopoisk")
 
 
 class SourceSelectionTests(unittest.IsolatedAsyncioTestCase):
