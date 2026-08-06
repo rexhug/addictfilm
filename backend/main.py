@@ -64,6 +64,7 @@ from routers.auth import SettingsBody
 from routers.auth import router as auth_router
 from routers.movies import router as movies_router
 from routers.notifications import router as notifications_router
+from routers.pairs import router as pairs_router
 from starlette.middleware.gzip import GZipMiddleware
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -124,6 +125,7 @@ app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(notifications_router)
 app.include_router(movies_router)
+app.include_router(pairs_router)
 
 
 # Back-compat: tests reach into main for the metrics window.
@@ -1436,7 +1438,7 @@ def _avatar_url(viewer_id: int, user_id: int) -> str | None:
     return f"/api/avatar/{user_id}?viewer={viewer_id}&exp={expires_at}&sig={sig}"
 
 
-@app.get("/api/partner")
+@app.get("/api/partner", include_in_schema=False)
 async def partner(user: dict = Depends(current_user)):
     pid = await db.get_partner(user["id"])
     if pid is not None:
@@ -1447,7 +1449,7 @@ async def partner(user: dict = Depends(current_user)):
     return {"status": "none"}
 
 
-@app.post("/api/partner/invite")
+@app.post("/api/partner/invite", include_in_schema=False)
 async def partner_invite(user: dict = Depends(throttled_mutation)):
     if await db.get_partner(user["id"]) is not None:
         raise HTTPException(status_code=409, detail="Пара уже есть")
@@ -1458,7 +1460,7 @@ async def partner_invite(user: dict = Depends(throttled_mutation)):
     return {"link": _invite_link(token), "code": token}
 
 
-@app.get("/api/partner/invite/{token}")
+@app.get("/api/partner/invite/{token}", include_in_schema=False)
 async def partner_invite_preview(token: str, user: dict = Depends(current_user)):
     """Preview the sender tied to a valid invite, without changing its state."""
     token = token.strip()
@@ -1478,7 +1480,7 @@ class AcceptBody(BaseModel):
     token: str = Field(max_length=128)
 
 
-@app.post("/api/partner/accept")
+@app.post("/api/partner/accept", include_in_schema=False)
 async def partner_accept(body: AcceptBody, user: dict = Depends(current_user)):
     token = body.token.strip()
     if token.startswith("inv_"):
@@ -1491,7 +1493,7 @@ async def partner_accept(body: AcceptBody, user: dict = Depends(current_user)):
     return {"ok": True, "partner": _partner_brief(await db.get_user(res["partner_id"]), user["id"])}
 
 
-@app.post("/api/partner/decline")
+@app.post("/api/partner/decline", include_in_schema=False)
 async def partner_decline(body: AcceptBody, user: dict = Depends(current_user)):
     token = body.token.strip()
     if token.startswith("inv_"):
@@ -1503,7 +1505,7 @@ async def partner_decline(body: AcceptBody, user: dict = Depends(current_user)):
     return {"ok": result["ok"], "reason": result.get("reason")}
 
 
-@app.post("/api/partner/unpair")
+@app.post("/api/partner/unpair", include_in_schema=False)
 async def partner_unpair(user: dict = Depends(current_user)):
     result = await db.unpair(user["id"])
     await _invalidate_stats_for(user["id"])
@@ -1512,7 +1514,7 @@ async def partner_unpair(user: dict = Depends(current_user)):
     return {"ok": True}
 
 
-@app.get("/api/partner/stats")
+@app.get("/api/partner/stats", include_in_schema=False)
 async def partner_stats(user: dict = Depends(current_user)):
     pair = await db.get_pair(user["id"])
     if pair is None:
