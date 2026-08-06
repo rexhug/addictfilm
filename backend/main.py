@@ -67,6 +67,7 @@ from routers.movies import router as movies_router
 from routers.notifications import router as notifications_router
 from routers.pairs import router as pairs_router
 from routers.recommendations import router as recommendations_router
+from routers.stats import router as stats_router
 from starlette.middleware.gzip import GZipMiddleware
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -130,6 +131,7 @@ app.include_router(notifications_router)
 app.include_router(movies_router)
 app.include_router(pairs_router)
 app.include_router(recommendations_router)
+app.include_router(stats_router)
 
 
 # Back-compat: tests reach into main for the metrics window.
@@ -724,7 +726,7 @@ async def _invalidate_stats_for(user_id: int) -> None:
 
 
 # ── API: статистика (личная) и случайный фильм ────────────────────────────────
-@app.get("/api/stats")
+@app.get("/api/stats", include_in_schema=False)
 async def stats(user: dict = Depends(current_user)):
     year = datetime.now(UTC).year
     key = ("personal", user["id"], year)
@@ -739,7 +741,7 @@ async def stats(user: dict = Depends(current_user)):
     return stats_cache.put(key, s)
 
 
-@app.get("/api/stats/person")
+@app.get("/api/stats/person", include_in_schema=False)
 async def stats_person_films(role: str = "actor", name: str = "", scope: str = "me",
                              user: dict = Depends(current_user)):
     """Exact watched-film drill-down for an actor/director profile card."""
