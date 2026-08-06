@@ -4603,7 +4603,7 @@ function personalStatsHTML(s, scope = "me", expanded = { genres: false }) {
     ${statTile("star", s.avg_rating ?? "—", t("tile_avg"))}${statTile("clock", hours, t("tile_hours"))}</div>`;
   const dist = s.rating_dist || [];
   const maxD = Math.max(1, ...dist);
-  const rankedRatings = dist.map((count, index) => ({ rating: index + 1, count })).filter(x => x.count).sort((a, b) => b.count - a.count).slice(0, 2).map(x => x.rating);
+  const rankedRatings = window.AddictFilmStats.rankedRatings(dist, 2);
   // Значения — целые 1…10, полученные из индекса гистограммы, поэтому <b> вокруг
   // них безопасен: пользовательского текста здесь нет. Само предложение и союз
   // между числами живут в словаре — по-русски их нельзя склеивать в рендерере.
