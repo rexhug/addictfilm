@@ -64,7 +64,6 @@ from routers.auth import SettingsBody
 from routers.auth import router as auth_router
 from routers.browse import router as browse_router
 from routers.images import router as images_router
-from routers.media import router as media_router
 from routers.movies import router as movies_router
 from routers.notifications import router as notifications_router
 from routers.pairs import router as pairs_router
@@ -136,7 +135,6 @@ app.include_router(pairs_router)
 app.include_router(recommendations_router)
 app.include_router(recommendations_legacy_router)
 app.include_router(stats_router)
-app.include_router(media_router)
 app.include_router(images_router)
 
 
