@@ -60,6 +60,8 @@ from pydantic import BaseModel, Field
 from recommendation import engines
 from recommendation_questions import next_question_id, public_question
 from routers.admin import router as admin_router
+from routers.auth import SettingsBody
+from routers.auth import router as auth_router
 from routers.notifications import router as notifications_router
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -118,6 +120,7 @@ _HTML_CSP = (
 # static mount at the bottom: a mount added first would swallow /api/admin/* and
 # the whole surface would answer 404 with nothing in the logs.
 app.include_router(admin_router)
+app.include_router(auth_router)
 app.include_router(notifications_router)
 
 
@@ -304,7 +307,6 @@ _ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
 }
 
 
-@app.get("/api/me/capabilities")
 async def me_capabilities(user: dict = Depends(current_user)):
     role = await _effective_role(user["id"])
     capabilities = _ROLE_CAPABILITIES.get(role or "", ())
@@ -322,7 +324,6 @@ def _client_features() -> dict:
 
 
 # ── API: список пользователя ──────────────────────────────────────────────────
-@app.get("/api/me")
 async def me(user: dict = Depends(current_user)):
     settings = await db.get_notification_settings(user["id"])
     return {"id": user["id"], "label": user.get("first_name", ""),
@@ -335,17 +336,10 @@ async def me(user: dict = Depends(current_user)):
             "features": _client_features(), **settings}
 
 
-class SettingsBody(BaseModel):
-    language: str | None = Field(default=None, max_length=8)
-    telegram_notifications: bool | None = None
-
-
-@app.get("/api/settings")
 async def get_settings(user: dict = Depends(current_user)):
     return {**(await db.get_notification_settings(user["id"])), "telegram_available": bool(BOT_TOKEN)}
 
 
-@app.patch("/api/settings")
 async def patch_settings(body: SettingsBody, user: dict = Depends(current_user)):
     if body.language is not None and body.language not in ("ru", "en"):
         raise HTTPException(status_code=422, detail="Unsupported language")
