@@ -223,7 +223,11 @@ def choose_kinopoisk_background(url: str | None, *, width: int | None,
 
 
 KINOPOISK_IMAGE_TYPE_PRIORITY = {
-    "backdrops": 5, "still": 4, "frame": 3, "screenshot": 2, "wallpaper": 1,
+    "backdrops": 5,
+    "frame": 4,
+    "still": 4,
+    "screenshot": 3,
+    "wallpaper": 2,
 }
 
 
@@ -235,6 +239,7 @@ def kinopoisk_image_metadata_rank(candidate: dict) -> tuple:
     return (
         KINOPOISK_IMAGE_TYPE_PRIORITY.get(candidate.get("type"), 0),
         width * height,
+        width,
         -abs(ratio - (16 / 9)),
         str(candidate.get("url") or ""),
     )

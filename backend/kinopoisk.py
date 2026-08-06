@@ -6,6 +6,7 @@
 """
 import logging
 from collections import OrderedDict
+from dataclasses import dataclass
 
 import aiohttp
 import cast as cast_model
@@ -207,7 +208,12 @@ async def _request(path: str, params, *, base: str = BASE_V14) -> dict | None:
 KINOPOISK_HERO_IMAGE_TYPES = (
     "backdrops", "frame", "still", "screenshot", "wallpaper",
 )
-_last_image_request_unavailable = False
+
+
+@dataclass(frozen=True)
+class ImageCandidatesResult:
+    candidates: tuple[dict, ...]
+    unavailable: bool = False
 
 
 def _normalized_image_candidate(raw: dict) -> dict | None:
@@ -233,13 +239,11 @@ def _normalized_image_candidate(raw: dict) -> dict | None:
     }
 
 
-async def image_candidates(kp_id: str, limit: int = 10) -> list[dict]:
+async def image_candidates(kp_id: str, limit: int = 10) -> ImageCandidatesResult:
     """Return a bounded, provider-typed set of possible hero images."""
-    global _last_image_request_unavailable
-    _last_image_request_unavailable = False
     key = str(kp_id or "").strip()
     if not key or not KINOPOISK_TOKENS:
-        return []
+        return ImageCandidatesResult(())
     bounded = max(1, min(int(limit), 10))
     params = [("movieId", key), ("page", "1"), ("limit", str(bounded))]
     params += [("notNullFields", field) for field in ("url", "width", "height")]
@@ -247,11 +251,12 @@ async def image_candidates(kp_id: str, limit: int = 10) -> list[dict]:
     params += [("type", image_type) for image_type in KINOPOISK_HERO_IMAGE_TYPES]
     data = await _request("/image", params, base=BASE_V15)
     if data is None:
-        _last_image_request_unavailable = True
-        return []
+        return ImageCandidatesResult((), unavailable=True)
     docs = data.get("docs", []) if isinstance(data, dict) else []
-    return [candidate for raw in docs
-            if (candidate := _normalized_image_candidate(raw)) is not None]
+    return ImageCandidatesResult(tuple(
+        candidate for raw in docs
+        if (candidate := _normalized_image_candidate(raw)) is not None
+    ))
 
 
 async def search_movies(query: str, limit: int = 20) -> list[dict]:

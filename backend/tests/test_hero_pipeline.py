@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -412,15 +413,45 @@ class KinopoiskImageClientTests(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch.object(kinopoisk, "KINOPOISK_TOKENS", ("test-token",)), \
                 mock.patch.object(kinopoisk, "_request", new=_request):
-            candidates = await kinopoisk.image_candidates("5003510", limit=10)
+            result = await kinopoisk.image_candidates("5003510", limit=10)
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], "/image")
         self.assertEqual(calls[0][2]["base"], kinopoisk.BASE_V15)
-        self.assertEqual(candidates, [{
+        self.assertFalse(result.unavailable)
+        self.assertEqual(result.candidates, ({
             "url": "https://kp/backdrop.jpg", "preview_url": "https://kp/p.jpg",
             "width": 1920, "height": 1080, "type": "backdrops", "language": "00",
-        }])
+        },))
+
+    async def test_image_candidate_unavailability_is_request_scoped(self):
+        started_unavailable = asyncio.Event()
+        release_unavailable = asyncio.Event()
+
+        async def _request(_path, params, **_kwargs):
+            kp_id = dict(params)["movieId"]
+            if kp_id == "A":
+                started_unavailable.set()
+                await release_unavailable.wait()
+                return None
+            await started_unavailable.wait()
+            release_unavailable.set()
+            return {"docs": [{
+                "url": "https://kp/frame.jpg", "width": 1920, "height": 1080,
+                "type": "frame", "language": "00",
+            }]}
+
+        with mock.patch.object(kinopoisk, "KINOPOISK_TOKENS", ("test-token",)), \
+                mock.patch.object(kinopoisk, "_request", new=_request):
+            unavailable, successful = await asyncio.gather(
+                kinopoisk.image_candidates("A"),
+                kinopoisk.image_candidates("B"),
+            )
+
+        self.assertTrue(unavailable.unavailable)
+        self.assertEqual(unavailable.candidates, ())
+        self.assertFalse(successful.unavailable)
+        self.assertEqual(len(successful.candidates), 1)
 
 
 class ImageProbeTests(unittest.TestCase):
@@ -960,16 +991,46 @@ class KinopoiskRenditionFlowTests(unittest.IsolatedAsyncioTestCase):
         asked, patch_probe = self._probe(
             lambda url: hero.ImageProbeResult(hero.PROBE_REJECTED)
             if "avatars.mds" in url else hero.ImageProbeResult(hero.PROBE_OK, 1920, 1080))
-        collection = mock.AsyncMock(return_value=[{
+        collection = mock.AsyncMock(return_value=kinopoisk.ImageCandidatesResult(({
             "url": "https://kp/frame.jpg", "preview_url": None,
             "width": 1920, "height": 1080, "type": "frame", "language": "00",
-        }])
+        },)))
         with patch_probe, mock.patch.object(kinopoisk, "image_candidates", new=collection):
             await hero.refresh_due_heroes(limit=1)
         collection.assert_awaited_once_with("5003510", limit=10)
         film = await db.get_film(self.film_id)
         self.assertEqual(film["hero_type"], "backdrop")
         self.assertEqual(film["hero_source"], "kinopoisk")
+
+    async def test_transient_image_collection_result_keeps_hero_unavailable(self):
+        async with db.db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute(
+                "UPDATE films SET kp_id = ?, backdrop_url = NULL WHERE id = ?",
+                ("5003510", self.film_id),
+            )
+            await conn.commit()
+        collection = mock.AsyncMock(
+            return_value=kinopoisk.ImageCandidatesResult((), unavailable=True)
+        )
+        with mock.patch.object(kinopoisk, "image_candidates", new=collection):
+            report = await hero.refresh_due_heroes(limit=1)
+        self.assertEqual(report.unavailable, 1)
+        self.assertIsNone((await db.get_film(self.film_id))["hero_checked_at"])
+
+    async def test_successful_empty_image_collection_is_not_unavailable(self):
+        async with db.db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            await conn.execute(
+                "UPDATE films SET kp_id = ?, backdrop_url = NULL WHERE id = ?",
+                ("5003510", self.film_id),
+            )
+            await conn.commit()
+        collection = mock.AsyncMock(
+            return_value=kinopoisk.ImageCandidatesResult((), unavailable=False)
+        )
+        with mock.patch.object(kinopoisk, "image_candidates", new=collection):
+            report = await hero.refresh_due_heroes(limit=1)
+        self.assertEqual(report.unavailable, 0)
+        self.assertIsNotNone((await db.get_film(self.film_id))["hero_checked_at"])
 
 
 class SourceSelectionTests(unittest.IsolatedAsyncioTestCase):

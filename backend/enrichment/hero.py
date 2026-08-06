@@ -321,22 +321,42 @@ async def _try_kinopoisk(film: dict, *, probe_session) -> tuple[hero_media.HeroS
     # endpoint for real frames/stills. Keep this bounded and deterministic.
     if not film.get("kp_id"):
         return None, False
-    candidates = await kinopoisk.image_candidates(str(film["kp_id"]), limit=10)
-    if kinopoisk._last_image_request_unavailable:
+    image_result = await kinopoisk.image_candidates(str(film["kp_id"]), limit=10)
+    if image_result.unavailable:
+        if kinopoisk.KINOPOISK_TOKENS:
+            logger.info(
+                "hero: kinopoisk images film_id=%s candidates=%s probed=%s selected=%s",
+                film["id"], 0, 0, False,
+            )
         return None, True
+    candidates = list(image_result.candidates)
     ordered = sorted(candidates, key=hero_media.kinopoisk_image_metadata_rank, reverse=True)
+    probed = 0
     for candidate in ordered[:5]:
+        probed += 1
         result = await probe_image_info(
             candidate["url"], expected_width=candidate.get("width"),
             expected_height=candidate.get("height"), session=probe_session)
         if result.verdict == PROBE_UNKNOWN:
+            logger.info(
+                "hero: kinopoisk images film_id=%s candidates=%s probed=%s selected=%s",
+                film["id"], len(candidates), probed, False,
+            )
             return None, True
         if result.verdict != PROBE_OK:
             continue
         selection = hero_media.choose_kinopoisk_background(
             candidate["url"], width=result.width, height=result.height)
         if selection is not None:
+            logger.info(
+                "hero: kinopoisk images film_id=%s candidates=%s probed=%s selected=%s",
+                film["id"], len(candidates), probed, True,
+            )
             return selection, False
+    logger.info(
+        "hero: kinopoisk images film_id=%s candidates=%s probed=%s selected=%s",
+        film["id"], len(candidates), probed, False,
+    )
     return None, False
 
 
