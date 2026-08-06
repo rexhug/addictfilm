@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/recommendations", tags=["recommendations"])
+legacy_router = APIRouter(prefix="/api", tags=["recommendations"])
 
 
 class RecommendationStartBody(BaseModel):
@@ -36,6 +37,10 @@ class RecommendationFeedbackBody(BaseModel):
     score: float | None = None
 
 
+class WishlistPreparedConsumeBody(BaseModel):
+    token: str = Field(min_length=32, max_length=1024)
+
+
 async def _main_handler(name: str, *args, **kwargs):
     # Resolve lazily to avoid a module import cycle.  The existing implementation
     # remains the single source of truth while the transport surface is split.
@@ -47,6 +52,27 @@ async def _main_handler(name: str, *args, **kwargs):
 async def recommendation_random(body: RandomRecommendationBody,
                                 user: dict = Depends(throttled_quiz)):
     return await _main_handler("recommendation_random", body, user)
+
+
+@legacy_router.post("/wishlist/random")
+async def wishlist_random(user: dict = Depends(throttled_quiz)):
+    return await _main_handler("wishlist_random", user)
+
+
+@legacy_router.post("/wishlist/random/prepare")
+async def wishlist_random_prepare(user: dict = Depends(throttled_quiz)):
+    return await _main_handler("wishlist_random_prepare", user)
+
+
+@legacy_router.post("/wishlist/random/consume")
+async def wishlist_random_consume(body: WishlistPreparedConsumeBody,
+                                  user: dict = Depends(throttled_quiz)):
+    return await _main_handler("wishlist_random_consume", body, user)
+
+
+@legacy_router.get("/random")
+async def random_movie(user: dict = Depends(current_user)):
+    return await _main_handler("random_movie", user)
 
 
 @router.post("/quiz/start")

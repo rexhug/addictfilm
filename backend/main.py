@@ -67,6 +67,7 @@ from routers.media import router as media_router
 from routers.movies import router as movies_router
 from routers.notifications import router as notifications_router
 from routers.pairs import router as pairs_router
+from routers.recommendations import legacy_router as recommendations_legacy_router
 from routers.recommendations import router as recommendations_router
 from routers.stats import router as stats_router
 from starlette.middleware.gzip import GZipMiddleware
@@ -132,6 +133,7 @@ app.include_router(notifications_router)
 app.include_router(movies_router)
 app.include_router(pairs_router)
 app.include_router(recommendations_router)
+app.include_router(recommendations_legacy_router)
 app.include_router(stats_router)
 app.include_router(media_router)
 
@@ -828,7 +830,7 @@ def _schedule_profile_director_enrichment(user_id: int) -> None:
     task.add_done_callback(_director_profile_enrichment_tasks.discard)
 
 
-@app.post("/api/wishlist/random")
+@app.post("/api/wishlist/random", include_in_schema=False)
 async def wishlist_random(user: dict = Depends(throttled_quiz)):
     """Рулетка по СВОЕМУ списку «Хочу посмотреть».
 
@@ -930,7 +932,7 @@ def _wishlist_prepared_envelope(user_id: int, prepared: dict | None) -> dict | N
     }
 
 
-@app.post("/api/wishlist/random/prepare")
+@app.post("/api/wishlist/random/prepare", include_in_schema=False)
 async def wishlist_random_prepare(user: dict = Depends(throttled_quiz)):
     """Read-only prefetch: select a card without recording a show."""
     prepared = await db.prepare_random_wishlist_film(user["id"])
@@ -939,7 +941,7 @@ async def wishlist_random_prepare(user: dict = Depends(throttled_quiz)):
     return _wishlist_prepared_envelope(user["id"], prepared)
 
 
-@app.post("/api/wishlist/random/consume")
+@app.post("/api/wishlist/random/consume", include_in_schema=False)
 async def wishlist_random_consume(
         body: WishlistPreparedConsumeBody, user: dict = Depends(throttled_quiz)):
     """Validate a prepared card and atomically record the real show."""
@@ -959,7 +961,7 @@ async def wishlist_random_consume(
     }
 
 
-@app.get("/api/random")
+@app.get("/api/random", include_in_schema=False)
 async def random_movie(user: dict = Depends(current_user)):
     """Прежний эндпоинт: оставлен для уже установленных клиентов."""
     item = await db.pick_random_wishlist_film(user["id"])
