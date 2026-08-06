@@ -66,6 +66,7 @@ from routers.browse import router as browse_router
 from routers.movies import router as movies_router
 from routers.notifications import router as notifications_router
 from routers.pairs import router as pairs_router
+from routers.recommendations import router as recommendations_router
 from starlette.middleware.gzip import GZipMiddleware
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -128,6 +129,7 @@ app.include_router(browse_router)
 app.include_router(notifications_router)
 app.include_router(movies_router)
 app.include_router(pairs_router)
+app.include_router(recommendations_router)
 
 
 # Back-compat: tests reach into main for the metrics window.
@@ -1035,7 +1037,7 @@ async def _quiz_payload(session: dict, language: str, user_id: int) -> dict:
             "total": 8, "pair_available": partner_available, **engine_meta}
 
 
-@app.post("/api/recommendations/random")
+@app.post("/api/recommendations/random", include_in_schema=False)
 async def recommendation_random(body: RandomRecommendationBody, user: dict = Depends(throttled_quiz)):
     language = _recommendation_language(body.language)
     if body.context not in {"solo", "pair"}:
@@ -1099,7 +1101,7 @@ def _session_versions_match(session: dict) -> bool:
     return all(value is None or value == current[key] for key, value in stored.items())
 
 
-@app.post("/api/recommendations/quiz/start")
+@app.post("/api/recommendations/quiz/start", include_in_schema=False)
 async def recommendation_quiz_start(body: RecommendationStartBody, user: dict = Depends(throttled_quiz)):
     language = _recommendation_language(body.language)
     engine = await _engine_for_new_session(user["id"])
@@ -1109,7 +1111,7 @@ async def recommendation_quiz_start(body: RecommendationStartBody, user: dict = 
     return await _quiz_payload(session, language, user["id"])
 
 
-@app.get("/api/recommendations/quiz/{session_id}")
+@app.get("/api/recommendations/quiz/{session_id}", include_in_schema=False)
 async def recommendation_quiz_get(session_id: str, language: str = "ru", user: dict = Depends(current_user)):
     session = await db.get_recommendation_session(user["id"], session_id)
     if not session:
@@ -1119,7 +1121,7 @@ async def recommendation_quiz_get(session_id: str, language: str = "ru", user: d
     return await _quiz_payload(session, _recommendation_language(language), user["id"])
 
 
-@app.post("/api/recommendations/quiz/{session_id}/answer")
+@app.post("/api/recommendations/quiz/{session_id}/answer", include_in_schema=False)
 async def recommendation_quiz_answer(session_id: str, body: RecommendationAnswerBody,
                                      user: dict = Depends(throttled_quiz)):
     from recommendation_questions import option_for
@@ -1148,7 +1150,7 @@ async def recommendation_quiz_answer(session_id: str, body: RecommendationAnswer
     return await _quiz_payload(updated, language, user["id"])
 
 
-@app.post("/api/recommendations/quiz/{session_id}/back")
+@app.post("/api/recommendations/quiz/{session_id}/back", include_in_schema=False)
 async def recommendation_quiz_back(session_id: str, body: RecommendationStartBody, user: dict = Depends(throttled_quiz)):
     session = await db.get_recommendation_session(user["id"], session_id)
     if not session:
@@ -1161,7 +1163,7 @@ async def recommendation_quiz_back(session_id: str, body: RecommendationStartBod
     return await _quiz_payload(updated, _recommendation_language(body.language), user["id"])
 
 
-@app.post("/api/recommendations/quiz/{session_id}/restart")
+@app.post("/api/recommendations/quiz/{session_id}/restart", include_in_schema=False)
 async def recommendation_quiz_restart(session_id: str, body: RecommendationStartBody, user: dict = Depends(throttled_quiz)):
     # Перезапуск — новый проход: берём версию, доступную СЕЙЧАС.
     engine = await _engine_for_new_session(user["id"])
@@ -1172,7 +1174,7 @@ async def recommendation_quiz_restart(session_id: str, body: RecommendationStart
     return await _quiz_payload(session, _recommendation_language(body.language), user["id"])
 
 
-@app.get("/api/recommendations/quiz/{session_id}/results")
+@app.get("/api/recommendations/quiz/{session_id}/results", include_in_schema=False)
 async def recommendation_quiz_results(session_id: str, language: str = "ru", user: dict = Depends(current_user)):
     locale = _recommendation_language(language)
     session = await db.get_recommendation_session(user["id"], session_id)
@@ -1205,7 +1207,7 @@ async def recommendation_quiz_results(session_id: str, language: str = "ru", use
             "context": "pair" if partner_id else "solo", **engine_meta}
 
 
-@app.post("/api/recommendations/quiz/{session_id}/replace")
+@app.post("/api/recommendations/quiz/{session_id}/replace", include_in_schema=False)
 async def recommendation_quiz_replace(session_id: str, body: RecommendationReplaceBody,
                                       user: dict = Depends(throttled_quiz)):
     """Заменить один отклонённый вариант, не трогая остальные.
@@ -1266,7 +1268,7 @@ async def recommendation_quiz_replace(session_id: str, body: RecommendationRepla
             "context": "pair" if partner_id else "solo", **engine_meta}
 
 
-@app.post("/api/recommendations/{film_id}/feedback")
+@app.post("/api/recommendations/{film_id}/feedback", include_in_schema=False)
 async def recommendation_feedback(film_id: int, body: RecommendationFeedbackBody,
                                   user: dict = Depends(current_user)):
     if body.action not in {"opened", "want", "watched", "rejected", "another"}:
