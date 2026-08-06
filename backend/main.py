@@ -62,6 +62,7 @@ from recommendation_questions import next_question_id, public_question
 from routers.admin import router as admin_router
 from routers.auth import SettingsBody
 from routers.auth import router as auth_router
+from routers.browse import router as browse_router
 from routers.movies import router as movies_router
 from routers.notifications import router as notifications_router
 from routers.pairs import router as pairs_router
@@ -123,6 +124,7 @@ _HTML_CSP = (
 # the whole surface would answer 404 with nothing in the logs.
 app.include_router(admin_router)
 app.include_router(auth_router)
+app.include_router(browse_router)
 app.include_router(notifications_router)
 app.include_router(movies_router)
 app.include_router(pairs_router)
@@ -1342,7 +1344,7 @@ async def _server_recommendation_metadata(user_id: int, film_id: int, mode: str,
 
 
 # ── API: discovery (публичный каталог) ────────────────────────────────────────
-@app.get("/api/browse")
+@app.get("/api/browse", include_in_schema=False)
 async def browse(sort: str = "popular", genre: str = "", limit: int = 30,
                  offset: int = 0, user: dict = Depends(current_user)):
     limit = max(1, min(limit, 60))
@@ -1362,7 +1364,7 @@ async def browse(sort: str = "popular", genre: str = "", limit: int = 30,
     return {"items": items}
 
 
-@app.get("/api/genres")
+@app.get("/api/genres", include_in_schema=False)
 async def genres(user: dict = Depends(current_user)):
     return {"items": await db.list_genres()}
 
@@ -1381,14 +1383,14 @@ def _public_collection(row: dict) -> dict:
     return {k: row.get(k) for k in _PUBLIC_COLLECTION_FIELDS if k in row}
 
 
-@app.get("/api/collections")
+@app.get("/api/collections", include_in_schema=False)
 async def collections_list(user: dict = Depends(current_user)):
     """Публичные подборки. Крупные и обычные отдаются одним запросом и
     разделяются по display_type на клиенте — лишних round-trip'ов на главной нет."""
     return {"items": [_public_collection(c) for c in await db.list_collections(("published",))]}
 
 
-@app.get("/api/collections/{collection_id}")
+@app.get("/api/collections/{collection_id}", include_in_schema=False)
 async def collection_detail(collection_id: int, user: dict = Depends(current_user)):
     c = await db.get_collection(collection_id, statuses=("published",))
     if not c:
