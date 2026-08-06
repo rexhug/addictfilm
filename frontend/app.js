@@ -1087,6 +1087,7 @@ async function showPicker() {
 // Причины приходят кодами и переводятся здесь. Сырые внутренние теги в интерфейс
 // не попадают: незнакомый код просто пропускается, а не печатается как есть.
 const recommendationUi = window.AddictFilmRecommendations.create({ translate: key => t(key) });
+const reviewsUi = window.AddictFilmReviews.create({ pageSize: 10 });
 function recommendationReasons(item) {
   return recommendationUi.reasons(item);
 }
@@ -3967,8 +3968,7 @@ async function loadMovieReviews(id, beforeId = null, append = false) {
   try {
     // The public feed has one predictable order: newest to oldest. Keeping the
     // sort explicit also makes every pagination request use the same cursor order.
-    const query = new URLSearchParams({ limit: "10", sort: "newest" });
-    if (beforeId) query.set("before_id", String(beforeId));
+    const query = reviewsUi.query(beforeId);
     const data = await api(`/api/movie/${id}/reviews?${query}`);
     if (!document.getElementById("d-public-reviews") || String(host.dataset.filmId) !== String(id)) return;
     const cards = [
@@ -3979,8 +3979,9 @@ async function loadMovieReviews(id, beforeId = null, append = false) {
     else list.innerHTML = "";
     if (cards) list.insertAdjacentHTML("beforeend", cards);
     if (!list.querySelector(".d-review-card")) list.innerHTML = `<div class="d-reviews-state">${esc(t("reviews_empty"))}</div>`;
-    if (data.next_before_id) list.insertAdjacentHTML("beforeend",
-      `<button class="d-reviews-more" data-next-review="${data.next_before_id}">${esc(t("reviews_load_more"))}</button>`);
+    const nextCursor = reviewsUi.nextCursor(data);
+    if (nextCursor) list.insertAdjacentHTML("beforeend",
+      `<button class="d-reviews-more" data-next-review="${esc(nextCursor)}">${esc(t("reviews_load_more"))}</button>`);
     list.querySelector(".d-reviews-more")?.addEventListener("click", event => {
       event.currentTarget.disabled = true;
       loadMovieReviews(id, event.currentTarget.dataset.nextReview, true);
