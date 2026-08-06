@@ -1086,10 +1086,9 @@ async function showPicker() {
 
 // Причины приходят кодами и переводятся здесь. Сырые внутренние теги в интерфейс
 // не попадают: незнакомый код просто пропускается, а не печатается как есть.
+const recommendationUi = window.AddictFilmRecommendations.create({ translate: key => t(key) });
 function recommendationReasons(item) {
-  const codes = Array.isArray(item.reasons) ? item.reasons : [];
-  const phrases = codes.map(code => t(`reason_${code}`)).filter(text => text && !text.startsWith("reason_"));
-  return phrases.length ? phrases.join(" · ") : "";
+  return recommendationUi.reasons(item);
 }
 
 function recommendationMovieCard(item, { sessionId = null, onAnother = null } = {}) {
