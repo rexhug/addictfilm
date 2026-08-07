@@ -472,46 +472,16 @@ function applyTabLabels() {
   document.querySelectorAll("#tabbar .tab").forEach(b => { const s = b.querySelector("span"); if (s) s.textContent = t(map[b.dataset.tab]); });
 }
 
-async function api(path, opts = {}) {
-  const method = (opts.method || "GET").toUpperCase();
-  const canCache = cacheableRead(path, opts);
-  const cached = canCache && _readCache.get(path);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
-  const res = await fetch(path, {
-    ...opts,
-    // Вне Telegram tg === null: без ?. падал сам вызов api(), и экран
-    // «нужен Telegram» не успевал отрисоваться — вместо него было исключение.
-    headers: { "Content-Type": "application/json", "X-Init-Data": tg?.initData || "", ...(opts.headers || {}) },
-  });
-  if (!res.ok) {
-    // detail бывает строкой (обычные ошибки) и объектом {code, message} —
-    // сохраняем и статус, и код, чтобы вызывающий различал 403/409 надёжно.
-    const detail = (await res.json().catch(() => ({}))).detail;
-    const error = new Error(typeof detail === "string" ? detail : (detail?.message || String(res.status)));
-    error.status = res.status;
-    error.code = detail && typeof detail === "object" ? detail.code : null;
-    throw error;
-  }
-  const value = await res.json();
-  if (canCache) _readCache.set(path, { value, expiresAt: Date.now() + _READ_CACHE_TTL });
-  if (method !== "GET") _readCache.clear();
-  return value;
-}
+const api = window.AddictFilmApi.create({
+  getInitData: () => tg?.initData || "",
+  cacheableRead,
+  cache: _readCache,
+  cacheTtl: _READ_CACHE_TTL,
+});
 
-// Текст ошибки от сервера приходит по-русски — показывать его в английском
-// интерфейсе нельзя. Отдаём локализованное сообщение по статусу, а если статус
-// ни о чём не говорит — общий фолбэк. Подробности уходят в консоль: они нужны
-// для отладки, но не пользователю.
-const _ERROR_KEY_BY_STATUS = {
-  401: "auth_err_s", 403: "auth_err_s",
-  404: "load_err", 409: "load_err",
-  429: "search_toomany_s", 503: "search_limited_s",
-};
-function uiError(error, fallbackKey = "load_err") {
-  const status = error && error.status;
-  if (status) console.warn("api error", status, error.code || "", error.message || "");
-  return t(_ERROR_KEY_BY_STATUS[status] || fallbackKey);
-}
+// Текст ошибки локализуется отдельным UI-модулем, но остаётся той же функцией
+// для всех существующих экранов и обработчиков.
+const uiError = window.AddictFilmUi.createErrorMapper((key) => t(key));
 
 // ── Утилиты ───────────────────────────────────────────────────────────────────
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
@@ -1116,10 +1086,11 @@ async function showPicker() {
 
 // Причины приходят кодами и переводятся здесь. Сырые внутренние теги в интерфейс
 // не попадают: незнакомый код просто пропускается, а не печатается как есть.
+const recommendationUi = window.AddictFilmRecommendations.create({ translate: key => t(key) });
+const reviewsUi = window.AddictFilmReviews.create({ pageSize: 10 });
+const partnerUi = window.AddictFilmPartner.create();
 function recommendationReasons(item) {
-  const codes = Array.isArray(item.reasons) ? item.reasons : [];
-  const phrases = codes.map(code => t(`reason_${code}`)).filter(text => text && !text.startsWith("reason_"));
-  return phrases.length ? phrases.join(" · ") : "";
+  return recommendationUi.reasons(item);
 }
 
 function recommendationMovieCard(item, { sessionId = null, onAnother = null } = {}) {
@@ -3998,8 +3969,7 @@ async function loadMovieReviews(id, beforeId = null, append = false) {
   try {
     // The public feed has one predictable order: newest to oldest. Keeping the
     // sort explicit also makes every pagination request use the same cursor order.
-    const query = new URLSearchParams({ limit: "10", sort: "newest" });
-    if (beforeId) query.set("before_id", String(beforeId));
+    const query = reviewsUi.query(beforeId);
     const data = await api(`/api/movie/${id}/reviews?${query}`);
     if (!document.getElementById("d-public-reviews") || String(host.dataset.filmId) !== String(id)) return;
     const cards = [
@@ -4010,8 +3980,9 @@ async function loadMovieReviews(id, beforeId = null, append = false) {
     else list.innerHTML = "";
     if (cards) list.insertAdjacentHTML("beforeend", cards);
     if (!list.querySelector(".d-review-card")) list.innerHTML = `<div class="d-reviews-state">${esc(t("reviews_empty"))}</div>`;
-    if (data.next_before_id) list.insertAdjacentHTML("beforeend",
-      `<button class="d-reviews-more" data-next-review="${data.next_before_id}">${esc(t("reviews_load_more"))}</button>`);
+    const nextCursor = reviewsUi.nextCursor(data);
+    if (nextCursor) list.insertAdjacentHTML("beforeend",
+      `<button class="d-reviews-more" data-next-review="${esc(nextCursor)}">${esc(t("reviews_load_more"))}</button>`);
     list.querySelector(".d-reviews-more")?.addEventListener("click", event => {
       event.currentTarget.disabled = true;
       loadMovieReviews(id, event.currentTarget.dataset.nextReview, true);
@@ -4634,7 +4605,7 @@ function personalStatsHTML(s, scope = "me", expanded = { genres: false }) {
     ${statTile("star", s.avg_rating ?? "—", t("tile_avg"))}${statTile("clock", hours, t("tile_hours"))}</div>`;
   const dist = s.rating_dist || [];
   const maxD = Math.max(1, ...dist);
-  const rankedRatings = dist.map((count, index) => ({ rating: index + 1, count })).filter(x => x.count).sort((a, b) => b.count - a.count).slice(0, 2).map(x => x.rating);
+  const rankedRatings = window.AddictFilmStats.rankedRatings(dist, 2);
   // Значения — целые 1…10, полученные из индекса гистограммы, поэтому <b> вокруг
   // них безопасен: пользовательского текста здесь нет. Само предложение и союз
   // между числами живут в словаре — по-русски их нельзя склеивать в рендерере.
@@ -4652,6 +4623,7 @@ function personalStatsHTML(s, scope = "me", expanded = { genres: false }) {
 
 // ── Пара ──────────────────────────────────────────────────────────────────────
 function partnerCardHTML(p, ps) {
+  p = partnerUi.normalize(p);
   if (p.status === "paired") {
     // The active pair has a dedicated statistics tab. Pair management is only
     // available through Settings, so a stale fallback cannot expose unlinking

@@ -9,21 +9,30 @@
 ```text
 Telegram WebApp
   └─ frontend/ (vanilla JS, CSS, RU/EN)
-       └─ FastAPI / backend/main.py
-            ├─ auth.py: HMAC-проверка Telegram initData
-            ├─ database.py: продуктовые запросы и схема
-            ├─ db_runtime.py: SQLite / asyncpg adapter
-            ├─ search.py: catalog-first поиск и кэши
-            ├─ kinopoisk.py, omdb.py, wikidata.py: внешние источники
-            ├─ ratelimit.py: лимиты внешних вызовов и image proxy
-            ├─ stats_cache.py: короткий cache статистики
-            └─ /img и /api/avatar: безопасные прокси изображений
+       ├─ app.js: экранный оркестратор и Telegram WebApp
+       └─ js/: API, UI, отзывы, партнёр, статистика и подбор
+            └─ FastAPI / backend/main.py
+                 ├─ создание app, middleware, lifespan и static mount
+                 ├─ routers/: HTTP-границы по доменам
+                 │    ├─ auth, movies, browse, stats, pairs
+                 │    ├─ recommendations, notifications, images
+                 │    └─ admin
+                 ├─ deps.py, auth.py: HMAC-проверка Telegram initData и роли
+                 ├─ database.py + repositories/: публичный DB-фасад и запросы
+                 ├─ db_runtime.py: SQLite / asyncpg adapter
+                 ├─ search.py: catalog-first поиск и кэши
+                 ├─ kinopoisk.py, omdb.py, wikidata.py: внешние источники
+                 ├─ ratelimit.py: лимиты внешних вызовов и image proxy
+                 ├─ stats_cache.py: короткий cache статистики
+                 └─ /img и /api/avatar: безопасные прокси изображений
 ```
 
-`frontend/app.js` — единый клиентский модуль без сборщика. Он передаёт
-`X-Init-Data` в каждый API-запрос, отменяет устаревшие detail/search запросы,
-лениво загружает изображения и кратко кеширует home-rails в памяти вкладки.
-`style.css` — фиксированная тёмная тема, не зависящая от цветовой темы Telegram.
+Сборщик не используется: `frontend/app.js` остаётся экранным оркестратором, а
+небольшие классические browser-скрипты из `frontend/js/` загружаются перед ним.
+Клиент передаёт `X-Init-Data` в каждый API-запрос, отменяет устаревшие
+detail/search запросы, лениво загружает изображения и кратко кеширует home-rails
+в памяти вкладки. `style.css` — фиксированная тёмная тема, не зависящая от
+цветовой темы Telegram.
 
 ## Данные
 
@@ -117,6 +126,20 @@ Kinopoisk, OMDb или Wikidata; image proxy по-прежнему вообще 
 есть» безопасно пропускается, но ошибки сети, прав, синтаксиса или диска больше
 не скрываются. Новое изменение схемы добавляется как отдельный шаг миграции и
 отмечается в журнале только после успешного выполнения.
+
+### Маршруты и фоновые задачи
+
+`main.py` собирает приложение и подключает все доменные роутеры до catch-all
+static mount. Один путь и HTTP-метод имеют одного владельца: legacy-функции в
+`main.py` могут оставаться внутренними помощниками для совместимости, но больше
+не регистрируются скрытыми дублями. Отдельный контрактный тест защищает это
+свойство.
+
+Lifespan управляет SQLite-backup, sweep приглашений и задачами enrichment: при
+остановке процесса они отменяются и ожидаются. Парные события отправляются через
+durable outbox и переигрываются после рестарта. `bot_notifications.py` —
+самостоятельная одноразовая команда для планируемых напоминаний; она не является
+ещё одним HTTP-сервером и запускается только явным scheduler/worker-процессом.
 
 ## Производительность и наблюдаемость
 

@@ -10,6 +10,18 @@ import unittest
 import main
 import ratelimit
 from fastapi import HTTPException
+from fastapi.routing import APIRoute
+
+
+def _registered_api_routes(routes):
+    """Walk FastAPI's included-router wrappers as well as root routes."""
+    for route in routes:
+        if isinstance(route, APIRoute):
+            yield route
+            continue
+        nested_router = getattr(route, "original_router", None)
+        if nested_router is not None:
+            yield from _registered_api_routes(nested_router.routes)
 
 
 class MutationBudgetTests(unittest.TestCase):
@@ -90,9 +102,10 @@ class ThrottleWiringTests(unittest.TestCase):
             ("/api/recommendations/random", "POST"): "throttled_quiz",
             ("/api/wishlist/random", "POST"): "throttled_quiz",
         }
+        routes = tuple(_registered_api_routes(main.app.router.routes))
         for (path, method), guard in expected.items():
             with self.subTest(path=path, method=method):
-                route = next(r for r in main.app.routes
+                route = next(r for r in routes
                              if getattr(r, "path", None) == path
                              and method in getattr(r, "methods", ()))
                 names = {sub.call.__name__ for sub in route.dependant.dependencies}

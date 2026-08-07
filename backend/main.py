@@ -1,6 +1,6 @@
 """FastAPI-бэкенд публичного Mini App: раздаёт фронтенд + JSON API.
 
-Модель: single-user. Любой пользователь Telegram регистрируется при первом входе
+Модель: multi-user. Любой пользователь Telegram регистрируется при первом входе
 (белого списка нет), у каждого свой список и оценки; каталог films — общий,
 community-рейтинг = средняя оценка всех пользователей по фильму.
 
@@ -60,6 +60,16 @@ from pydantic import BaseModel, Field
 from recommendation import engines
 from recommendation_questions import next_question_id, public_question
 from routers.admin import router as admin_router
+from routers.auth import SettingsBody
+from routers.auth import router as auth_router
+from routers.browse import router as browse_router
+from routers.images import router as images_router
+from routers.movies import router as movies_router
+from routers.notifications import router as notifications_router
+from routers.pairs import router as pairs_router
+from routers.recommendations import legacy_router as recommendations_legacy_router
+from routers.recommendations import router as recommendations_router
+from routers.stats import router as stats_router
 from starlette.middleware.gzip import GZipMiddleware
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -117,6 +127,15 @@ _HTML_CSP = (
 # static mount at the bottom: a mount added first would swallow /api/admin/* and
 # the whole surface would answer 404 with nothing in the logs.
 app.include_router(admin_router)
+app.include_router(auth_router)
+app.include_router(browse_router)
+app.include_router(notifications_router)
+app.include_router(movies_router)
+app.include_router(pairs_router)
+app.include_router(recommendations_router)
+app.include_router(recommendations_legacy_router)
+app.include_router(stats_router)
+app.include_router(images_router)
 
 
 # Back-compat: tests reach into main for the metrics window.
@@ -302,7 +321,6 @@ _ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
 }
 
 
-@app.get("/api/me/capabilities")
 async def me_capabilities(user: dict = Depends(current_user)):
     role = await _effective_role(user["id"])
     capabilities = _ROLE_CAPABILITIES.get(role or "", ())
@@ -320,7 +338,6 @@ def _client_features() -> dict:
 
 
 # ── API: список пользователя ──────────────────────────────────────────────────
-@app.get("/api/me")
 async def me(user: dict = Depends(current_user)):
     settings = await db.get_notification_settings(user["id"])
     return {"id": user["id"], "label": user.get("first_name", ""),
@@ -333,17 +350,10 @@ async def me(user: dict = Depends(current_user)):
             "features": _client_features(), **settings}
 
 
-class SettingsBody(BaseModel):
-    language: str | None = Field(default=None, max_length=8)
-    telegram_notifications: bool | None = None
-
-
-@app.get("/api/settings")
 async def get_settings(user: dict = Depends(current_user)):
     return {**(await db.get_notification_settings(user["id"])), "telegram_available": bool(BOT_TOKEN)}
 
 
-@app.patch("/api/settings")
 async def patch_settings(body: SettingsBody, user: dict = Depends(current_user)):
     if body.language is not None and body.language not in ("ru", "en"):
         raise HTTPException(status_code=422, detail="Unsupported language")
@@ -352,25 +362,6 @@ async def patch_settings(body: SettingsBody, user: dict = Depends(current_user))
     return {**settings, "telegram_available": bool(BOT_TOKEN)}
 
 
-@app.get("/api/notifications")
-async def notifications(limit: int = 20, before_id: int | None = None,
-                        category: Literal["all", "pair", "films", "system"] = "all",
-                        user: dict = Depends(current_user)):
-    return await db.list_notifications(
-        user["id"], limit=limit, before_id=before_id, category=category)
-
-
-@app.post("/api/notifications/read-all")
-async def notifications_read_all(user: dict = Depends(current_user)):
-    return {"updated": await db.mark_all_notifications_read(user["id"])}
-
-
-@app.post("/api/notifications/{notification_id}/read")
-async def notification_read(notification_id: int, user: dict = Depends(current_user)):
-    return {"ok": await db.mark_notification_read(user["id"], notification_id)}
-
-
-@app.get("/api/movies")
 async def movies(status: str = "want_to_watch", sort: str = "date",
                  limit: int = 50, offset: int = 0, user: dict = Depends(current_user)):
     if status not in ("want_to_watch", "watched", "top"):
@@ -504,7 +495,6 @@ class RateBody(BaseModel):
     rating: int = Field(ge=1, le=10)
 
 
-@app.post("/api/movie/{film_id}/rate")
 async def rate(film_id: int, body: RateBody, user: dict = Depends(throttled_mutation)):
     if not await db.get_film(film_id):
         raise HTTPException(status_code=404, detail="Фильм не найден")
@@ -531,7 +521,6 @@ async def rate(film_id: int, body: RateBody, user: dict = Depends(throttled_muta
     return {"ok": True}
 
 
-@app.delete("/api/movie/{film_id}/rate")
 async def unrate(film_id: int, user: dict = Depends(current_user)):
     """Убрать оценку — повторный тап по своей звезде. Статус (списки) не меняется."""
     await db.clear_rating(user["id"], film_id)
@@ -543,7 +532,6 @@ class StatusBody(BaseModel):
     status: str  # want_to_watch | watched
 
 
-@app.post("/api/movie/{film_id}/status")
 async def set_status(film_id: int, body: StatusBody, user: dict = Depends(throttled_mutation)):
     if body.status not in ("want_to_watch", "watched"):
         raise HTTPException(status_code=422, detail="Неизвестный статус")
@@ -559,7 +547,6 @@ class CommentBody(BaseModel):
     text: str = Field(max_length=500)
 
 
-@app.post("/api/movie/{film_id}/comment")
 async def comment(film_id: int, body: CommentBody, user: dict = Depends(current_user)):
     if not await db.get_film(film_id):  # иначе set_comment создаёт «сиротский» user_films
         raise HTTPException(status_code=404, detail="Фильм не найден")
@@ -589,7 +576,6 @@ def _guard_review_write(user_id: int) -> None:
         raise HTTPException(status_code=429, detail="Слишком много изменений. Попробуйте через минуту")
 
 
-@app.get("/api/movie/{film_id}/reviews")
 async def movie_reviews(film_id: int, limit: int = 10, before_id: int | None = None,
                         sort: Literal["newest", "highest", "lowest"] = "newest",
                         user: dict = Depends(current_user)):
@@ -604,7 +590,6 @@ async def movie_reviews(film_id: int, limit: int = 10, before_id: int | None = N
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
 
-@app.put("/api/movie/{film_id}/review")
 async def publish_movie_review(film_id: int, body: ReviewBody,
                                user: dict = Depends(current_user)):
     _guard_review_write(user["id"])
@@ -618,14 +603,12 @@ async def publish_movie_review(film_id: int, body: ReviewBody,
     return {"ok": True, "item": item}
 
 
-@app.delete("/api/movie/{film_id}/review")
 async def delete_movie_review(film_id: int, user: dict = Depends(current_user)):
     _guard_review_write(user["id"])
     deleted = await db.delete_public_review(user["id"], film_id)
     return {"ok": True, "deleted": deleted}
 
 
-@app.post("/api/movie/{film_id}/review/legacy")
 async def legacy_movie_review(film_id: int, body: LegacyReviewBody,
                               user: dict = Depends(current_user)):
     _guard_review_write(user["id"])
@@ -643,7 +626,6 @@ async def legacy_movie_review(film_id: int, body: LegacyReviewBody,
     return {"ok": True, "status": "published", "item": item}
 
 
-@app.post("/api/movie/{film_id}/reviews/{review_id}/report")
 async def report_movie_review(film_id: int, review_id: int, body: ReviewReportBody,
                               user: dict = Depends(current_user)):
     _guard_review_write(user["id"])
@@ -658,7 +640,6 @@ async def report_movie_review(film_id: int, review_id: int, body: ReviewReportBo
     return {"ok": True}
 
 
-@app.delete("/api/movie/{film_id}")
 async def delete(film_id: int, user: dict = Depends(throttled_mutation)):
     await db.remove_from_list(user["id"], film_id)  # из своего списка; в каталоге остаётся
     await _invalidate_stats_for(user["id"])
@@ -666,7 +647,6 @@ async def delete(film_id: int, user: dict = Depends(throttled_mutation)):
 
 
 # ── API: поиск и добавление ───────────────────────────────────────────────────
-@app.get("/api/search")
 async def api_search(q: str, user: dict = Depends(current_user)):
     q = q.strip()
     if len(q) > 200:
@@ -703,7 +683,6 @@ class AddBody(BaseModel):
     status: str = "want_to_watch"
 
 
-@app.post("/api/add")
 async def add(body: AddBody, user: dict = Depends(throttled_mutation)):
     if body.src not in ("k", "i"):
         raise HTTPException(status_code=422, detail="Неизвестный источник")
@@ -738,7 +717,6 @@ async def _invalidate_stats_for(user_id: int) -> None:
 
 
 # ── API: статистика (личная) и случайный фильм ────────────────────────────────
-@app.get("/api/stats")
 async def stats(user: dict = Depends(current_user)):
     year = datetime.now(UTC).year
     key = ("personal", user["id"], year)
@@ -753,7 +731,6 @@ async def stats(user: dict = Depends(current_user)):
     return stats_cache.put(key, s)
 
 
-@app.get("/api/stats/person")
 async def stats_person_films(role: str = "actor", name: str = "", scope: str = "me",
                              user: dict = Depends(current_user)):
     """Exact watched-film drill-down for an actor/director profile card."""
@@ -838,7 +815,6 @@ def _schedule_profile_director_enrichment(user_id: int) -> None:
     task.add_done_callback(_director_profile_enrichment_tasks.discard)
 
 
-@app.post("/api/wishlist/random")
 async def wishlist_random(user: dict = Depends(throttled_quiz)):
     """Рулетка по СВОЕМУ списку «Хочу посмотреть».
 
@@ -940,7 +916,6 @@ def _wishlist_prepared_envelope(user_id: int, prepared: dict | None) -> dict | N
     }
 
 
-@app.post("/api/wishlist/random/prepare")
 async def wishlist_random_prepare(user: dict = Depends(throttled_quiz)):
     """Read-only prefetch: select a card without recording a show."""
     prepared = await db.prepare_random_wishlist_film(user["id"])
@@ -949,7 +924,6 @@ async def wishlist_random_prepare(user: dict = Depends(throttled_quiz)):
     return _wishlist_prepared_envelope(user["id"], prepared)
 
 
-@app.post("/api/wishlist/random/consume")
 async def wishlist_random_consume(
         body: WishlistPreparedConsumeBody, user: dict = Depends(throttled_quiz)):
     """Validate a prepared card and atomically record the real show."""
@@ -969,7 +943,6 @@ async def wishlist_random_consume(
     }
 
 
-@app.get("/api/random")
 async def random_movie(user: dict = Depends(current_user)):
     """Прежний эндпоинт: оставлен для уже установленных клиентов."""
     item = await db.pick_random_wishlist_film(user["id"])
@@ -1051,7 +1024,6 @@ async def _quiz_payload(session: dict, language: str, user_id: int) -> dict:
             "total": 8, "pair_available": partner_available, **engine_meta}
 
 
-@app.post("/api/recommendations/random")
 async def recommendation_random(body: RandomRecommendationBody, user: dict = Depends(throttled_quiz)):
     language = _recommendation_language(body.language)
     if body.context not in {"solo", "pair"}:
@@ -1115,7 +1087,6 @@ def _session_versions_match(session: dict) -> bool:
     return all(value is None or value == current[key] for key, value in stored.items())
 
 
-@app.post("/api/recommendations/quiz/start")
 async def recommendation_quiz_start(body: RecommendationStartBody, user: dict = Depends(throttled_quiz)):
     language = _recommendation_language(body.language)
     engine = await _engine_for_new_session(user["id"])
@@ -1125,7 +1096,6 @@ async def recommendation_quiz_start(body: RecommendationStartBody, user: dict = 
     return await _quiz_payload(session, language, user["id"])
 
 
-@app.get("/api/recommendations/quiz/{session_id}")
 async def recommendation_quiz_get(session_id: str, language: str = "ru", user: dict = Depends(current_user)):
     session = await db.get_recommendation_session(user["id"], session_id)
     if not session:
@@ -1135,7 +1105,6 @@ async def recommendation_quiz_get(session_id: str, language: str = "ru", user: d
     return await _quiz_payload(session, _recommendation_language(language), user["id"])
 
 
-@app.post("/api/recommendations/quiz/{session_id}/answer")
 async def recommendation_quiz_answer(session_id: str, body: RecommendationAnswerBody,
                                      user: dict = Depends(throttled_quiz)):
     from recommendation_questions import option_for
@@ -1164,7 +1133,6 @@ async def recommendation_quiz_answer(session_id: str, body: RecommendationAnswer
     return await _quiz_payload(updated, language, user["id"])
 
 
-@app.post("/api/recommendations/quiz/{session_id}/back")
 async def recommendation_quiz_back(session_id: str, body: RecommendationStartBody, user: dict = Depends(throttled_quiz)):
     session = await db.get_recommendation_session(user["id"], session_id)
     if not session:
@@ -1177,7 +1145,6 @@ async def recommendation_quiz_back(session_id: str, body: RecommendationStartBod
     return await _quiz_payload(updated, _recommendation_language(body.language), user["id"])
 
 
-@app.post("/api/recommendations/quiz/{session_id}/restart")
 async def recommendation_quiz_restart(session_id: str, body: RecommendationStartBody, user: dict = Depends(throttled_quiz)):
     # Перезапуск — новый проход: берём версию, доступную СЕЙЧАС.
     engine = await _engine_for_new_session(user["id"])
@@ -1188,7 +1155,6 @@ async def recommendation_quiz_restart(session_id: str, body: RecommendationStart
     return await _quiz_payload(session, _recommendation_language(body.language), user["id"])
 
 
-@app.get("/api/recommendations/quiz/{session_id}/results")
 async def recommendation_quiz_results(session_id: str, language: str = "ru", user: dict = Depends(current_user)):
     locale = _recommendation_language(language)
     session = await db.get_recommendation_session(user["id"], session_id)
@@ -1221,7 +1187,6 @@ async def recommendation_quiz_results(session_id: str, language: str = "ru", use
             "context": "pair" if partner_id else "solo", **engine_meta}
 
 
-@app.post("/api/recommendations/quiz/{session_id}/replace")
 async def recommendation_quiz_replace(session_id: str, body: RecommendationReplaceBody,
                                       user: dict = Depends(throttled_quiz)):
     """Заменить один отклонённый вариант, не трогая остальные.
@@ -1282,7 +1247,6 @@ async def recommendation_quiz_replace(session_id: str, body: RecommendationRepla
             "context": "pair" if partner_id else "solo", **engine_meta}
 
 
-@app.post("/api/recommendations/{film_id}/feedback")
 async def recommendation_feedback(film_id: int, body: RecommendationFeedbackBody,
                                   user: dict = Depends(current_user)):
     if body.action not in {"opened", "want", "watched", "rejected", "another"}:
@@ -1360,7 +1324,6 @@ async def _server_recommendation_metadata(user_id: int, film_id: int, mode: str,
 
 
 # ── API: discovery (публичный каталог) ────────────────────────────────────────
-@app.get("/api/browse")
 async def browse(sort: str = "popular", genre: str = "", limit: int = 30,
                  offset: int = 0, user: dict = Depends(current_user)):
     limit = max(1, min(limit, 60))
@@ -1380,7 +1343,6 @@ async def browse(sort: str = "popular", genre: str = "", limit: int = 30,
     return {"items": items}
 
 
-@app.get("/api/genres")
 async def genres(user: dict = Depends(current_user)):
     return {"items": await db.list_genres()}
 
@@ -1399,14 +1361,12 @@ def _public_collection(row: dict) -> dict:
     return {k: row.get(k) for k in _PUBLIC_COLLECTION_FIELDS if k in row}
 
 
-@app.get("/api/collections")
 async def collections_list(user: dict = Depends(current_user)):
     """Публичные подборки. Крупные и обычные отдаются одним запросом и
     разделяются по display_type на клиенте — лишних round-trip'ов на главной нет."""
     return {"items": [_public_collection(c) for c in await db.list_collections(("published",))]}
 
 
-@app.get("/api/collections/{collection_id}")
 async def collection_detail(collection_id: int, user: dict = Depends(current_user)):
     c = await db.get_collection(collection_id, statuses=("published",))
     if not c:
@@ -1456,7 +1416,6 @@ def _avatar_url(viewer_id: int, user_id: int) -> str | None:
     return f"/api/avatar/{user_id}?viewer={viewer_id}&exp={expires_at}&sig={sig}"
 
 
-@app.get("/api/partner")
 async def partner(user: dict = Depends(current_user)):
     pid = await db.get_partner(user["id"])
     if pid is not None:
@@ -1467,7 +1426,6 @@ async def partner(user: dict = Depends(current_user)):
     return {"status": "none"}
 
 
-@app.post("/api/partner/invite")
 async def partner_invite(user: dict = Depends(throttled_mutation)):
     if await db.get_partner(user["id"]) is not None:
         raise HTTPException(status_code=409, detail="Пара уже есть")
@@ -1478,7 +1436,6 @@ async def partner_invite(user: dict = Depends(throttled_mutation)):
     return {"link": _invite_link(token), "code": token}
 
 
-@app.get("/api/partner/invite/{token}")
 async def partner_invite_preview(token: str, user: dict = Depends(current_user)):
     """Preview the sender tied to a valid invite, without changing its state."""
     token = token.strip()
@@ -1498,7 +1455,6 @@ class AcceptBody(BaseModel):
     token: str = Field(max_length=128)
 
 
-@app.post("/api/partner/accept")
 async def partner_accept(body: AcceptBody, user: dict = Depends(current_user)):
     token = body.token.strip()
     if token.startswith("inv_"):
@@ -1511,7 +1467,6 @@ async def partner_accept(body: AcceptBody, user: dict = Depends(current_user)):
     return {"ok": True, "partner": _partner_brief(await db.get_user(res["partner_id"]), user["id"])}
 
 
-@app.post("/api/partner/decline")
 async def partner_decline(body: AcceptBody, user: dict = Depends(current_user)):
     token = body.token.strip()
     if token.startswith("inv_"):
@@ -1523,7 +1478,6 @@ async def partner_decline(body: AcceptBody, user: dict = Depends(current_user)):
     return {"ok": result["ok"], "reason": result.get("reason")}
 
 
-@app.post("/api/partner/unpair")
 async def partner_unpair(user: dict = Depends(current_user)):
     result = await db.unpair(user["id"])
     await _invalidate_stats_for(user["id"])
@@ -1532,7 +1486,6 @@ async def partner_unpair(user: dict = Depends(current_user)):
     return {"ok": True}
 
 
-@app.get("/api/partner/stats")
 async def partner_stats(user: dict = Depends(current_user)):
     pair = await db.get_pair(user["id"])
     if pair is None:
@@ -1581,7 +1534,6 @@ async def _img_sess() -> aiohttp.ClientSession:
     return _img_session
 
 
-@app.get("/api/avatar/{user_id}", include_in_schema=False)
 async def telegram_avatar(user_id: int, viewer: int = 0, exp: int = 0, sig: str = ""):
     """Проксі аватара партнера без передачі Telegram bot token у браузер.
 
@@ -1923,7 +1875,6 @@ async def _stream_image_body(content: aiohttp.StreamReader, prefix: bytes,
                 pass
 
 
-@app.get("/img")
 async def img_proxy(request: Request, u: str):
     if len(u) > 4096:
         raise HTTPException(status_code=400, detail="Недопустимый источник")
