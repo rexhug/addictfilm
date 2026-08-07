@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 import cast as cast_model
 import database as db
 import db_runtime
+import film_localization as flang
 import kinopoisk
 import media_type
 import omdb
@@ -221,6 +222,13 @@ def _kp_details(doc: dict) -> dict:
     original = doc.get("alternativeName")
     length = doc.get("movieLength") or doc.get("seriesLength")
     directors, _ = kinopoisk.extract_credits(doc.get("persons") or [])
+    # enName уже лежит в том же persons — второго запроса за английскими
+    # именами режиссёров не делаем.
+    directors_en = ", ".join(
+        person["enName"] for person in (doc.get("persons") or [])
+        if person.get("enProfession") == "director" and person.get("enName")
+    ) or None
+    kp_genres = ", ".join(g["name"] for g in (doc.get("genres") or [])) or None
     canonical_cast = kinopoisk.extract_cast(doc.get("persons") or [], limit=12)
     actors = ", ".join(member["name"] for member in canonical_cast[:8]) or None
     photos = cast_model.legacy_actor_photos(canonical_cast)
@@ -231,10 +239,20 @@ def _kp_details(doc: dict) -> dict:
         "title": name,
         "title_original": original if original and original != name else None,
         "year": str(doc["year"]) if doc.get("year") else None,
-        "genres": ", ".join(g["name"] for g in (doc.get("genres") or [])) or None,
+        "genres": kp_genres,
         "directors": directors,
         "actors": actors,
         "runtime": f"{length} мин" if length else None,
+        # Kinopoisk — русскоязычный источник, поэтому его данные идут В РУССКИЕ
+        # слоты и никогда в английские. Английским остаётся только оригинальное
+        # название и enName, которые провайдер отдаёт как есть.
+        "title_ru": name,
+        "title_en": original,
+        "plot_ru": doc.get("description") or doc.get("shortDescription"),
+        "genres_ru": flang.localized_genres(kp_genres, "ru") or None,
+        "genres_en": flang.localized_genres(kp_genres, "en") or None,
+        "directors_ru": directors,
+        "directors_en": directors_en,
         "imdb_rating": f"{r['imdb']:.1f}" if r.get("imdb") else None,
         "kp_rating": f"{r['kp']:.1f}" if r.get("kp") else None,
         "imdb_votes": str(v["imdb"]) if v.get("imdb") else None,
@@ -357,6 +375,17 @@ def _omdb_catalog_details(data: dict, title: str, poster_url: str | None) -> dic
         "plot": _clean(data.get("Plot")),
         "poster_url": poster_url,
         "media_type": media_type.from_omdb(data),
+        # OMDb англоязычен целиком. Его Plot/Genre/Director идут ТОЛЬКО в
+        # английские слоты: именно попадание английского текста в русские поля
+        # и давало «Crime · Drama · Thriller» в русском интерфейсе.
+        "title_en": original or title,
+        "plot_en": _clean(data.get("Plot")),
+        "genres_en": flang.localized_genres(_clean(data.get("Genre")), "en") or None,
+        "genres_ru": flang.localized_genres(_clean(data.get("Genre")), "ru") or None,
+        "directors_en": _clean(data.get("Director")),
+        # Русское название приходит не от OMDb, а от Wikidata выше по стеку —
+        # если оно там нашлось, `title` уже русское.
+        "title_ru": title if flang.looks_russian(title) else None,
     }
 
 
@@ -558,4 +587,12 @@ async def fetch_details(src: str, ref: str) -> dict | None:
         "backdrop_url": backdrop_url,
         "age_rating": age_rating,
         "media_type": media_type.from_omdb(data),
+        # См. _omdb_catalog_details: английские данные — только в английские
+        # слоты. Русское название здесь берётся из Wikidata (переменная title).
+        "title_ru": title if flang.looks_russian(title) else None,
+        "title_en": original or None,
+        "plot_en": _clean(data.get("Plot")),
+        "genres_en": flang.localized_genres(_clean(data.get("Genre")), "en") or None,
+        "genres_ru": flang.localized_genres(_clean(data.get("Genre")), "ru") or None,
+        "directors_en": _clean(data.get("Director")),
     }

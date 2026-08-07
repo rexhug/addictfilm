@@ -53,6 +53,7 @@ _SCHEMA_MIGRATION_FILM_IDENTITY = "2026-07-29-film-identity-v1"
 _SCHEMA_MIGRATION_CANONICAL_CAST = "2026-07-29-canonical-cast-v1"
 _SCHEMA_MIGRATION_USER_ACQUISITION = "2026-08-01-user-acquisition-v1"
 _SCHEMA_MIGRATION_HERO_POLICY_V3 = "2026-08-07-hero-policy-v3-recheck"
+_SCHEMA_MIGRATION_FILM_LOCALIZATION = "2026-08-07-film-localization-v1"
 
 
 # PostgreSQL SQLSTATE codes for "the object I am adding is already there".
@@ -848,6 +849,20 @@ async def _apply_hero_policy_v3_migration() -> None:
         await db.commit()
 
 
+async def _apply_film_localization_migration() -> None:
+    """Языковые колонки каталога — ТОЛЬКО добавление.
+
+    Старые title/plot/genres/directors остаются на месте и продолжают работать
+    как запасной вариант: в них годами писали и русский, и английский, и
+    разобрать это одним UPDATE нельзя. Раскладывает данные по языкам отдельная
+    команда localization_backfill, которая умеет отличать «пусто» от «лежит не
+    то» и ходит к провайдеру только за недостающим.
+    """
+    for column in ("title_ru", "title_en", "plot_ru", "plot_en",
+                   "genres_ru", "genres_en", "directors_ru", "directors_en"):
+        await _add_column_if_missing("films", f"{column} TEXT")
+
+
 def _row_time(row: dict, *fields: str) -> str:
     """Comparable ISO timestamp for conflict resolution during a film merge."""
     return max((str(row.get(field) or "") for field in fields), default="")
@@ -1195,6 +1210,7 @@ async def run_schema_migrations() -> None:
         (_SCHEMA_MIGRATION_CANONICAL_CAST, _apply_canonical_cast_migration),
         (_SCHEMA_MIGRATION_USER_ACQUISITION, _apply_user_acquisition_migration),
         (_SCHEMA_MIGRATION_HERO_POLICY_V3, _apply_hero_policy_v3_migration),
+        (_SCHEMA_MIGRATION_FILM_LOCALIZATION, _apply_film_localization_migration),
     )
     for version, migration in migrations:
         if await _schema_migration_applied(version):
