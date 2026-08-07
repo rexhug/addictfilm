@@ -21,7 +21,17 @@ class StaticAssetCacheTests(unittest.IsolatedAsyncioTestCase):
         app = (root / "app.js").read_text()
         index = (root / "index.html").read_text()
 
-        self.assertIn(".d-backdrop.no-bd{aspect-ratio:16/7", css)
+        # Запасные экраны обязаны иметь ОСОЗНАННУЮ компактную геометрию. Раньше
+        # это гарантировала одна строка `.d-backdrop.no-bd{aspect-ratio:16/7`;
+        # теперь высота и наплыв тела задаются состоянием на корне карточки и
+        # связаны через переменные. Сторожим сам контракт, а не пиксели: иначе
+        # тест защищал бы конкретную старую реализацию, а не свойство продукта.
+        self.assertIn(".detail-v2.detail-hero-poster{--detail-hero-height:", css)
+        self.assertIn(".detail-v2.detail-hero-none{--detail-hero-height:", css)
+        self.assertIn("--detail-hero-overlap", css)
+        self.assertIn("margin-top:calc(-1 * var(--detail-hero-overlap))", css)
+        # Прежняя жёсткая геометрия не должна вернуться незаметно.
+        self.assertNotIn("aspect-ratio:16/7", css)
         self.assertIn("#tabbar .tab::before", css)
         self.assertIn('btn.addEventListener("pointerup"', app)
         # Asset versions deliberately change on every frontend release so a
