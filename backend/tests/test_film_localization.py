@@ -92,6 +92,23 @@ class ProviderSlotTests(unittest.TestCase):
         self.assertEqual(details["genres_en"], "Thriller, Drama")
         self.assertNotIn("plot_en", details)
 
+    def test_a_record_without_a_russian_name_claims_no_russian_title(self):
+        """Реальная запись из прода: kp 459902 отдаёт name = null.
+
+        `name` тогда падает на alternativeName — для общей колонки title это
+        правильно, но русским названием латиница не становится. Каталог такое
+        всё равно отбивает, поэтому проверяем именно ИСТОЧНИК: он не должен
+        предлагать заведомо неподходящее значение.
+        """
+        details = search._kp_details({
+            "id": 459902, "name": None,
+            "alternativeName": "L.A.A.P Presents Family Values",
+        })
+        self.assertIsNone(details["title_ru"])
+        self.assertEqual(details["title_en"], "L.A.A.P Presents Family Values")
+        # Общая колонка по-прежнему заполнена — фильм не должен стать безымянным.
+        self.assertEqual(details["title"], "L.A.A.P Presents Family Values")
+
     def test_omdb_fills_english_slots_only(self):
         details = search._omdb_catalog_details(
             {"imdbID": "tt0137523", "Title": "Fight Club", "Plot": EN_PLOT,
