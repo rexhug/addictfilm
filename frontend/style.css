@@ -559,8 +559,12 @@ section{margin-top:30px;}
    Сделав высоту элемента равной высоте самой картинки, мы кладём маску ровно на
    неё. Кадр по политике всегда шире 1.45:1, поэтому он гарантированно ниже
    блока и переполнить его не может. */
+/* Отступ сверху растёт вместе с шириной экрана: под кнопками Telegram кадр
+   начинался почти вплотную, и сцена читалась как прижатая к чрому. Опускаем
+   ТОЛЬКО резкий кадр — фоновый слой, высота блока и наплыв тела не меняются. */
 .d-backdrop[data-hero-fit="contain"] .d-backdrop-main{
-  top:6px;bottom:auto;left:0;right:auto;width:100%;height:auto;max-height:100%;
+  top:clamp(17px,4.8vw,20px);
+  bottom:auto;left:0;right:auto;width:100%;height:auto;max-height:100%;
   object-fit:contain;object-position:var(--hero-focus-x,50%) top;
   -webkit-mask-image:linear-gradient(to bottom,#000 0%,#000 80%,rgba(0,0,0,.92) 87%,
     rgba(0,0,0,.55) 94%,transparent 100%);
@@ -575,9 +579,9 @@ section{margin-top:30px;}
    Класс ставит JS по РЕАЛЬНЫМ naturalWidth/naturalHeight загруженного файла,
    а не по названию фильма и не по метаданным каталога. */
 .d-backdrop[data-hero-fit="contain"].d-hero-wide .d-backdrop-main{
-  top:9px;left:-2.5%;width:105%;}
+  top:clamp(22px,6vw,26px);left:-2.5%;width:105%;}
 .d-backdrop[data-hero-fit="contain"].d-hero-ultrawide .d-backdrop-main{
-  top:13px;left:-6%;width:112%;}
+  top:clamp(27px,7vw,31px);left:-6%;width:112%;}
 /* cover уже заполняет блок целиком — ему хватает общего затемнения снизу. */
 .d-backdrop[data-hero-fit="cover"] .d-backdrop-main{
   object-fit:cover;object-position:var(--hero-focus-x,50%) var(--hero-focus-y,36%);}
