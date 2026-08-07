@@ -191,6 +191,7 @@ const DICT = {
     watched_empty_t: "Пока ничего не просмотрено", watched_empty_s: "Отмечай фильмы «Смотрел»",
     load_more: "Показать ещё", loading: "Загрузка…", retry: "Повторить",
     my_rating: "Моя оценка", rate_hint: " · нажми, чтобы отметить просмотренным", dir: "Режиссёр ",
+    runtime_minutes: n => `${n} мин`,
     act_want: "Хочу посмотреть", act_watched: "Отметить как просмотрено", act_to_want: "В «Хочу»", act_remove: "Убрать из списка",
     already_watched_link: "Отметить как просмотренное",
     my_review: "Моя оценка и отзыв",
@@ -367,6 +368,7 @@ const DICT = {
     watched_empty_t: "Nothing watched yet", watched_empty_s: "Mark movies as watched",
     load_more: "Show more", loading: "Loading…", retry: "Retry",
     my_rating: "My rating", rate_hint: " · tap to mark as watched", dir: "Director ",
+    runtime_minutes: n => `${n} min`,
     act_want: "Want to watch", act_watched: "Mark as watched", act_to_want: "Add to watchlist", act_remove: "Remove from list",
     already_watched_link: "Mark as watched",
     my_review: "Your rating and review",
@@ -497,14 +499,60 @@ function normalizedMovieTitle(value) {
     .replace(/\s+/g, " ")
     .trim();
 }
+// ── локализация метаданных каталога ───────────────────────────────────────
+// Один слой доступа вместо `lang === "ru" ? ... : ...` по всему файлу: иначе
+// каждый новый экран заново решает, какое поле показывать, и рано или поздно
+// решает неправильно. Каталог отдаёт ОБА языка сырыми, выбор делается здесь.
+//
+// Пользовательский текст (отзывы, комментарии, имена) сюда не попадает вовсе:
+// он не переводится ни при каких условиях.
+const CYRILLIC_RE = /[Ѐ-ӿ]/;
+const LATIN_RE = /[A-Za-z]/;
+function fitsLanguage(value, code) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return code === "ru" ? CYRILLIC_RE.test(text) : LATIN_RE.test(text) && !CYRILLIC_RE.test(text);
+}
+// Порядок: колонка своего языка → колонка второго, если она и правда на нужном
+// алфавите → общая легаси-колонка. Второй язык проверяем, потому что до
+// бекфила там лежит что угодно.
+function movieLocalizedField(movie, field) {
+  const other = lang === "ru" ? "en" : "ru";
+  const own = String(movie?.[`${field}_${lang}`] || "").trim();
+  if (own) return own;
+  const foreign = String(movie?.[`${field}_${other}`] || "").trim();
+  if (foreign && fitsLanguage(foreign, lang)) return foreign;
+  return String(movie?.[field] || "").trim();
+}
+function moviePlot(movie) { return movieLocalizedField(movie, "plot"); }
+function movieGenres(movie) { return movieLocalizedField(movie, "genres"); }
+function movieDirectors(movie) { return movieLocalizedField(movie, "directors"); }
+// «139 min» и «139 мин» — одно и то же число: суффикс это оформление, а не
+// данные, и хранить его как истину нельзя. Не разобрали число — отдаём как есть.
+function movieRuntime(movie) {
+  const raw = String(movie?.runtime || "").trim();
+  if (!raw) return "";
+  const minutes = raw.match(/\d+/);
+  return minutes ? t("runtime_minutes", minutes[0]) : raw;
+}
 function movieTitleParts(movie) {
-  const localized = normalizedMovieTitle(movie?.title);
-  const alternate = normalizedMovieTitle(movie?.title_original);
-  const distinct = Boolean(localized && alternate && localized.toLowerCase() !== alternate.toLowerCase());
-  if (lang === "en" && distinct) return { primary: alternate, secondary: localized };
-  return { primary: localized || alternate || "—", secondary: distinct ? alternate : "" };
+  const ru = normalizedMovieTitle(movie?.title_ru) || normalizedMovieTitle(movie?.title);
+  const en = normalizedMovieTitle(movie?.title_en) || normalizedMovieTitle(movie?.title_original);
+  const primaryFirst = lang === "en" ? en : ru;
+  const secondFirst = lang === "en" ? ru : en;
+  const primary = primaryFirst || secondFirst || "—";
+  const secondary = secondFirst && secondFirst.toLowerCase() !== primary.toLowerCase()
+    ? secondFirst : "";
+  return { primary, secondary };
 }
 function movieTitle(movie) { return movieTitleParts(movie).primary; }
+// Каст: name — локализованное имя провайдера (у kinopoisk русское),
+// original_name — оригинальное. Имена персонажей не трогаем.
+function castMemberName(member) {
+  const localized = String(member?.name || "").trim();
+  const original = String(member?.original_name || member?.originalName || "").trim();
+  return (lang === "en" ? original || localized : localized || original) || "";
+}
 // В Telegram-шапке уже есть «Addict Film» — на самом экране не дублируем название,
 // а здороваемся по имени (реальные данные), иначе мягкий фолбэк на бренд.
 function homeGreeting() {
@@ -1096,8 +1144,8 @@ function recommendationReasons(item) {
 function recommendationMovieCard(item, { sessionId = null, onAnother = null } = {}) {
   const titles = movieTitleParts(item);
   const poster = item.poster_url ? `<img src="${posterSrc(item.poster_url, true)}" alt="${esc(titles.primary)}" loading="eager" decoding="async" data-img-retry>` : `<span class="picker-poster-fallback">${esc(titles.primary.slice(0, 1))}</span>`;
-  const years = [item.year, item.runtime].filter(Boolean).join(" · ");
-  const genres = String(item.genres || "").split(",").slice(0, 3).join(" · ");
+  const years = [item.year, movieRuntime(item)].filter(Boolean).join(" · ");
+  const genres = movieGenres(item).split(",").slice(0, 3).join(" · ");
   return `<article class="recommendation-film" data-recommendation-film="${item.id}">
     <button class="recommendation-poster" type="button" data-pick-open>${poster}</button>
     <div class="recommendation-film-copy"><h2>${esc(titles.primary)}</h2>
@@ -1535,10 +1583,10 @@ function secondaryActionsHTML(allowWant) {
 function singlePickScreenHTML(item, { label = "", allowAnother = true, allowWant = true } = {}) {
   const titles = movieTitleParts(item);
   const chips = [item.rating ? `<span class="single-pick-chip single-pick-rating">★ ${esc(item.rating)}</span>` : ""]
-    .concat([item.year, item.runtime].filter(Boolean)
+    .concat([item.year, movieRuntime(item)].filter(Boolean)
       .map(value => `<span class="single-pick-chip">${esc(value)}</span>`))
     .join("");
-  const genres = String(item.genres || "").split(",").map(value => value.trim())
+  const genres = movieGenres(item).split(",").map(value => value.trim())
     .filter(Boolean).slice(0, 3).join(" · ");
   const reasons = recommendationReasons(item);
   return `<main class="single-pick-screen rise d1">
@@ -3426,7 +3474,7 @@ function renderDetailPreview(preview) {
   const titles = movieTitleParts(preview);
   const title = titles.primary;
   const poster = preview.poster_url || preview.poster || "";
-  const meta = [preview.year, preview.age_rating, preview.runtime].filter(Boolean).join(" · ");
+  const meta = [preview.year, preview.age_rating, movieRuntime(preview)].filter(Boolean).join(" · ");
   screen.innerHTML = `
     <div class="detail-v2 detail-preview ${poster ? "detail-hero-poster" : "detail-hero-none"}">
       <div class="d-backdrop">
@@ -3529,15 +3577,18 @@ function actorCardHTML(actor) {
   const candidates = [actor.photoUrl, ...actor.fallbackPhotoUrls].filter(Boolean);
   const primary = candidates[0] || "";
   const fallbacks = candidates.slice(1);
+  // Только показ: личность и дедуп по-прежнему держатся на actor.name/personId,
+  // и менять их из-за языка интерфейса нельзя.
+  const shown = castMemberName(actor) || actor.name;
   return `
     <div class="d-cast-item" data-person-id="${esc(actor.personId || "")}">
       <div class="d-avatar">
-        <span class="fb">${esc(initials(actor.name))}</span>
-        ${primary ? `<img loading="lazy" decoding="async" alt="${esc(actor.name)}"
+        <span class="fb">${esc(initials(shown))}</span>
+        ${primary ? `<img loading="lazy" decoding="async" alt="${esc(shown)}"
           data-person-photo data-person-photo-src="${esc(primary)}"
           data-person-photo-fallbacks="${attrEsc(JSON.stringify(fallbacks))}">` : ""}
       </div>
-      <div class="n">${esc(actor.name)}</div>
+      <div class="n">${esc(shown)}</div>
       ${actor.character ? `<div class="role">${esc(actor.character)}</div>` : ""}
     </div>`;
 }
@@ -3578,8 +3629,8 @@ function renderDetail(id, m) {
   _detailFilm = m;
   _detailBaseline = { status: m.status, my_rating: m.my_rating };
   syncCommentEditorState = null;
-  const genres = (m.genres || "").split(",").map(g => g.trim()).filter(Boolean).join(" · ");
-  const metaParts = [m.year, m.age_rating, m.runtime].filter(Boolean);
+  const genres = movieGenres(m).split(",").map(g => g.trim()).filter(Boolean).join(" · ");
+  const metaParts = [m.year, m.age_rating, movieRuntime(m)].filter(Boolean);
   const heroMedia = detailHeroMedia(m);
   // Геометрия героя живёт на КОРНЕ карточки, а не на самом блоке: высота
   // изображения и наплыв тела под него — одна связка, и менять их по
@@ -3635,10 +3686,10 @@ function renderDetail(id, m) {
         ${titles.secondary ? `<div class="d-original">${esc(titles.secondary)}</div>` : ""}
         ${metaParts.length ? `<div class="d-meta">${metaParts.map(esc).join(" · ")}</div>` : ""}
         ${genres ? `<div class="d-genres">${esc(genres)}</div>` : ""}
-        ${m.directors ? `<div class="d-director">${esc(t("dir"))}<b>${esc(m.directors)}</b></div>` : ""}
+        ${movieDirectors(m) ? `<div class="d-director">${esc(t("dir"))}<b>${esc(movieDirectors(m))}</b></div>` : ""}
         ${ratingsHTML(m)}
         ${ratingContextHTML(m)}
-        ${m.plot ? `<p class="d-overview">${esc(m.plot)}</p>` : ""}
+        ${moviePlot(m) ? `<p class="d-overview">${esc(moviePlot(m))}</p>` : ""}
         <div id="d-actions"></div>
         <section class="d-review d-comment-editor" id="d-review">
           <header class="d-comment-editor-head">

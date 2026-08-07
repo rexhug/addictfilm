@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 import aiosqlite
 import cast as cast_model
 import db_session
+import film_localization as flang
 from db_helpers import (  # noqa: F401
     _GENRE_CANON,
     _GENRE_SHOWCASE,
@@ -305,6 +306,12 @@ def _catalog_item(row) -> dict | None:
         "actors": row["actors"],
         "directors": row["directors"],
         "genres": row["genres"],
+        # Языковые колонки идут в выдачу сырыми: язык выбирает фронтенд, а не
+        # сервер, иначе смена языка требовала бы перезапроса каталога.
+        "title_ru": row["title_ru"],
+        "title_en": row["title_en"],
+        "genres_ru": row["genres_ru"],
+        "genres_en": row["genres_en"],
         "type": row["media_type"] or "movie",
     }
 
@@ -406,6 +413,10 @@ async def get_or_create_film(
     backdrop_url: str | None = None, age_rating: str | None = None, actors_photos: str | None = None,
     directors_photos: str | None = None, kp_id: str | None = None,
     media_type: str | None = None, cast_json: str | None = None,
+    title_ru: str | None = None, title_en: str | None = None,
+    plot_ru: str | None = None, plot_en: str | None = None,
+    genres_ru: str | None = None, genres_en: str | None = None,
+    directors_ru: str | None = None, directors_en: str | None = None,
 ) -> int:
     """Возвращает id фильма в общем каталоге, создавая запись при первом появлении
     (dedup по imdb_id/kp_id). Идемпотентно — один фильм на всех пользователей."""
@@ -418,7 +429,23 @@ async def get_or_create_film(
     # Тип записи от провайдера: 'unknown' не сохраняем, чтобы бэкфил потом мог
     # доопределить его, а не считал колонку уже заполненной.
     media_type = media_type if media_type in (_MEDIA_MOVIE, _MEDIA_SERIES, _MEDIA_EPISODE, _MEDIA_SHORT) else None
-    search_text = _catalog_search_text(title, title_original, actors, directors, imdb_id, kp_id)
+    # Языковые слоты принимаем только на «своём» алфавите. Это единственный
+    # барьер между провайдером и каталогом: OMDb честно отдаёт английский Plot,
+    # и без проверки он лёг бы в plot_ru просто потому, что тот пустой.
+    localized = {
+        "title_ru": title_ru if flang.looks_russian(title_ru) else None,
+        "title_en": title_en if flang.looks_english(title_en) else None,
+        "plot_ru": plot_ru if flang.looks_russian(plot_ru) else None,
+        "plot_en": plot_en if flang.looks_english(plot_en) else None,
+        "genres_ru": genres_ru or None,
+        "genres_en": genres_en or None,
+        "directors_ru": directors_ru if flang.looks_russian(directors_ru) else None,
+        "directors_en": directors_en if flang.looks_english(directors_en) else None,
+    }
+    search_text = _catalog_search_text(
+        title, title_original, actors, directors, imdb_id, kp_id,
+        localized["title_ru"], localized["title_en"],
+        localized["directors_ru"], localized["directors_en"])
     async with db_session.connect() as db:
         db.row_factory = aiosqlite.Row
         # INSERT + no-op UPDATE is a portable transaction-scoped mutex.  It
@@ -436,7 +463,9 @@ async def get_or_create_film(
         )
         cur = await db.execute(
             "SELECT id, imdb_id, title, title_original, year, genres, directors, actors, runtime, "
-            "imdb_rating, kp_rating, imdb_votes, plot, kp_id FROM films "
+            "imdb_rating, kp_rating, imdb_votes, plot, kp_id, "
+            "title_ru, title_en, plot_ru, plot_en, genres_ru, genres_en, "
+            "directors_ru, directors_en FROM films "
             "WHERE imdb_id = ? OR (kp_id IS NOT NULL AND kp_id = ?) LIMIT 1",
             (imdb_id, kp_id))
         row = await cur.fetchone()
@@ -446,7 +475,9 @@ async def get_or_create_film(
         if row is None and poster_url and title:
             fingerprint_cur = await db.execute(
                 "SELECT id, imdb_id, title, title_original, year, genres, directors, actors, runtime, "
-                "imdb_rating, kp_rating, imdb_votes, plot, kp_id FROM films "
+                "imdb_rating, kp_rating, imdb_votes, plot, kp_id, "
+                "title_ru, title_en, plot_ru, plot_en, genres_ru, genres_en, "
+                "directors_ru, directors_en FROM films "
                 "WHERE LOWER(TRIM(title)) = LOWER(TRIM(?)) "
                 "AND COALESCE(year, '') = COALESCE(?, '') AND poster_url = ? "
                 "AND (imdb_id LIKE 'kp_%' OR ? LIKE 'kp_%') ORDER BY id LIMIT 2",
@@ -473,9 +504,18 @@ async def get_or_create_film(
             merged_imdb_votes = _prefer_catalog_value(row["imdb_votes"], imdb_votes)
             merged_plot = _prefer_catalog_value(row["plot"], plot)
             merged_kp_id = _prefer_catalog_value(row["kp_id"], kp_id)
+            # Языковой слот заполняем только пустой. Провайдер не имеет права
+            # затирать уже разложенную локализацию — иначе один поиск по OMDb
+            # снова смешал бы языки в карточке, которую бекфил только что починил.
+            merged_localized = {
+                key: (str(row[key] or "").strip() or value)
+                for key, value in localized.items()
+            }
             merged_search_text = _catalog_search_text(
                 merged_title, merged_original, merged_actors, merged_directors,
                 merged_imdb_id, merged_kp_id,
+                merged_localized["title_ru"], merged_localized["title_en"],
+                merged_localized["directors_ru"], merged_localized["directors_en"],
             )
             await db.execute(
                 "UPDATE films SET imdb_id = ?, title = ?, title_original = ?, year = ?, genres = ?, directors = ?, actors = ?, "
@@ -488,13 +528,20 @@ async def get_or_create_film(
                 "directors_photos = COALESCE(NULLIF(directors_photos, ''), ?), "
                 "media_type = COALESCE(NULLIF(media_type, ''), ?), "
                 "media_type_source = CASE WHEN COALESCE(NULLIF(media_type, ''), ?) IS NULL "
-                "THEN media_type_source ELSE COALESCE(media_type_source, 'provider') END "
+                "THEN media_type_source ELSE COALESCE(media_type_source, 'provider') END, "
+                "title_ru = ?, title_en = ?, plot_ru = ?, plot_en = ?, "
+                "genres_ru = ?, genres_en = ?, directors_ru = ?, directors_en = ? "
                 "WHERE id = ?",
                 (merged_imdb_id, merged_title, merged_original, merged_year, merged_genres, merged_directors, merged_actors,
                  merged_runtime, merged_imdb_rating, merged_kp_rating, merged_imdb_votes, merged_plot,
                  merged_kp_id, merged_search_text, poster_url, backdrop_url, age_rating, actors_photos,
                  cast_json,
-                 directors_photos, media_type, media_type, row["id"]))
+                 directors_photos, media_type, media_type,
+                 merged_localized["title_ru"], merged_localized["title_en"],
+                 merged_localized["plot_ru"], merged_localized["plot_en"],
+                 merged_localized["genres_ru"], merged_localized["genres_en"],
+                 merged_localized["directors_ru"], merged_localized["directors_en"],
+                 row["id"]))
             if merged_genres != row["genres"]:
                 await _set_film_genres(db, row["id"], merged_genres)
             # Задание на пересчёт признаков ставится в ТОЙ ЖЕ транзакции: иначе
@@ -510,15 +557,20 @@ async def get_or_create_film(
             INSERT INTO films
                 (imdb_id, kp_id, title, title_original, year, genres, directors, actors, runtime,
                  imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
-                 actors_photos, cast_json, directors_photos, search_text, media_type, media_type_source, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 actors_photos, cast_json, directors_photos, search_text, media_type, media_type_source, created_at,
+                 title_ru, title_en, plot_ru, plot_en, genres_ru, genres_en, directors_ru, directors_en)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT DO NOTHING
             RETURNING id
             """,
             (imdb_id, kp_id, title, title_original, year, genres, directors, actors, runtime,
              imdb_rating, kp_rating, imdb_votes, plot, poster_url, backdrop_url, age_rating,
              actors_photos, cast_json, directors_photos, search_text, media_type,
-             "provider" if media_type else None, _now()),
+             "provider" if media_type else None, _now(),
+             localized["title_ru"], localized["title_en"],
+             localized["plot_ru"], localized["plot_en"],
+             localized["genres_ru"], localized["genres_en"],
+             localized["directors_ru"], localized["directors_en"]),
         )
         inserted = await cur.fetchone()
         if inserted:
@@ -736,6 +788,116 @@ async def repair_film_poster(film_id: int, poster_url: str) -> bool:
             (url, _now(), film_id, url))
         await db.commit()
         return cur.rowcount > 0
+
+
+_LOCALIZED_COLUMNS = (
+    "title_ru", "title_en", "plot_ru", "plot_en",
+    "genres_ru", "genres_en", "directors_ru", "directors_en",
+)
+
+
+async def repair_film_localization(film_id: int, values: dict) -> bool:
+    """Записать языковые слоты там, где они пусты или заполнены НЕ ТЕМ языком.
+
+    Обычная загрузка (get_or_create_film) намеренно только дозаполняет пустое:
+    провайдер не должен трогать уже разложенную локализацию. Но из-за этого
+    украинское описание, однажды попавшее в plot_ru, становилось вечным.
+
+    Это отдельный, осознанный путь починки. Он ПЕРЕЗАПИСЫВАЕТ, но только слот,
+    который не проходит проверку алфавита: годную локализацию не трогает даже
+    при наличии свежего значения от провайдера.
+    """
+    updates: dict[str, str] = {}
+    async with db_session.connect() as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"SELECT {', '.join(_LOCALIZED_COLUMNS)} FROM films WHERE id = ?", (film_id,))
+        row = await cur.fetchone()
+        if row is None:
+            await db.commit()
+            return False
+        for column in _LOCALIZED_COLUMNS:
+            proposed = str(values.get(column) or "").strip()
+            if not proposed:
+                continue
+            language = column.rsplit("_", 1)[1]
+            # Жанры собираются из канона, а не из провайдерского текста, поэтому
+            # проверка алфавита к ним неприменима.
+            if not column.startswith("genres_") and not flang.accepts(proposed, language):
+                continue
+            current = str(row[column] or "").strip()
+            current_ok = bool(current) and (
+                column.startswith("genres_") or flang.accepts(current, language))
+            if current_ok or current == proposed:
+                continue
+            updates[column] = proposed
+        if not updates:
+            await db.commit()
+            return False
+        assignments = ", ".join(f"{column} = ?" for column in updates)
+        await db.execute(f"UPDATE films SET {assignments} WHERE id = ?",
+                         (*updates.values(), film_id))
+        await db.commit()
+    return True
+
+
+async def rebuild_film_search_text(film_id: int) -> bool:
+    """Пересобрать поисковую строку после починки локализации: без этого
+    «Fight Club» не найдётся у фильма, чьё общее title русское."""
+    async with db_session.connect() as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT title, title_original, actors, directors, imdb_id, kp_id, "
+            "title_ru, title_en, directors_ru, directors_en FROM films WHERE id = ?",
+            (film_id,))
+        row = await cur.fetchone()
+        if row is None:
+            await db.commit()
+            return False
+        await db.execute(
+            "UPDATE films SET search_text = ? WHERE id = ?",
+            (_catalog_search_text(
+                row["title"], row["title_original"], row["actors"], row["directors"],
+                str(row["imdb_id"] or ""), row["kp_id"],
+                row["title_ru"], row["title_en"],
+                row["directors_ru"], row["directors_en"]), film_id))
+        await db.commit()
+    return True
+
+
+async def films_missing_localization(limit: int = 100, *, film_id: int | None = None) -> list[dict]:
+    """Кандидаты на починку локализации, в стабильном порядке."""
+    async with db_session.connect() as db:
+        db.row_factory = aiosqlite.Row
+        if film_id is not None:
+            cur = await db.execute("SELECT * FROM films WHERE id = ?", (film_id,))
+        else:
+            cur = await db.execute(
+                "SELECT * FROM films ORDER BY id LIMIT ?", (max(1, int(limit)),))
+        return [dict(row) for row in await cur.fetchall()]
+
+
+async def localization_quality_report() -> dict:
+    """Сколько строк каталога всё ещё без локализации и сколько с украинским
+    текстом в русском слоте. Считается по каталогу — отзывы и комментарии
+    пользователей сюда не входят вовсе."""
+    async with db_session.connect() as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT id, title_ru, title_en, plot_ru, plot_en, "
+            "directors_ru, directors_en FROM films")
+        rows = [dict(r) for r in await cur.fetchall()]
+    report = {"films": len(rows), "ukrainian_in_ru": 0, "english_in_ru_plot": 0}
+    for column in ("title_ru", "title_en", "plot_ru", "plot_en",
+                   "directors_ru", "directors_en"):
+        report[f"missing_{column}"] = sum(
+            1 for row in rows if not str(row.get(column) or "").strip())
+    for row in rows:
+        if any(flang.looks_ukrainian(row.get(c)) for c in ("title_ru", "plot_ru", "directors_ru")):
+            report["ukrainian_in_ru"] += 1
+        if flang.looks_english(row.get("plot_ru")):
+            report["english_in_ru_plot"] += 1
+    return report
 
 
 async def films_with_omdb_poster(limit: int = 200) -> list[dict]:

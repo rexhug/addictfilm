@@ -81,6 +81,7 @@ class FreshSchemaIntegrityTests(unittest.IsolatedAsyncioTestCase):
             schema_migrations._SCHEMA_MIGRATION_FILM_IDENTITY,
             schema_migrations._SCHEMA_MIGRATION_PUBLIC_REVIEWS,
             schema_migrations._SCHEMA_MIGRATION_USER_ACQUISITION,
+            schema_migrations._SCHEMA_MIGRATION_FILM_LOCALIZATION,
             schema_migrations._SCHEMA_MIGRATION_HERO_POLICY_V3,
         ])
 

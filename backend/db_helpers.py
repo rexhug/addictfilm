@@ -107,11 +107,18 @@ def _portrait_entries(value: str | None) -> list[dict]:
 
 def _catalog_search_text(title: str | None, title_original: str | None,
                          actors: str | None, directors: str | None,
-                         imdb_id: str, kp_id: str | None) -> str:
+                         imdb_id: str, kp_id: str | None,
+                         *extra: str | None) -> str:
     """Unicode-safe lookup text stored once with a catalog record. Включает
-    актёров и режиссёров — поиск по людям работает без внешних запросов."""
-    values = (title, title_original, actors, directors, imdb_id, kp_id)
-    return " ".join(" ".join(str(value or "").split()).casefold() for value in values).strip()
+    актёров и режиссёров — поиск по людям работает без внешних запросов.
+
+    `extra` — локализованные названия и режиссёры: «Бойцовский клуб» и «Fight
+    Club» обязаны находиться оба, независимо от того, какой язык лежит в общей
+    колонке title. Дубли схлопываем — строка хранится в каждой записи каталога.
+    """
+    values = (title, title_original, actors, directors, imdb_id, kp_id, *extra)
+    words = " ".join(" ".join(str(value or "").split()).casefold() for value in values).split()
+    return " ".join(dict.fromkeys(words)).strip()
 
 
 def _pair_key(first_user_id: int, second_user_id: int) -> str:
