@@ -3357,6 +3357,10 @@ function resetDetailViewport() {
 }
 function wireDetailScroll(backdropH) {
   const backdrop = document.getElementById("d-backdrop-img");
+  // Фоновый слой ведёт себя вдвое спокойнее резкого кадра: он и так почти
+  // неподвижная атмосфера, а не изображение. Размытие при этом статично —
+  // менять его на скролле означало бы перерисовку кадра вместо композиции.
+  const ambient = document.querySelector(".d-backdrop-ambient");
   const posterWrap = document.getElementById("d-poster-wrap");
   const sticky = document.getElementById("d-sticky");
   let ticking = false;
@@ -3367,6 +3371,7 @@ function wireDetailScroll(backdropH) {
       const y = Math.max(0, window.scrollY);
       const p = Math.min(1, y / backdropH);
       if (backdrop) { backdrop.style.opacity = String(1 - p); backdrop.style.transform = `scale(${1 + p * 0.06})`; }
+      if (ambient) { ambient.style.opacity = String(0.62 * (1 - p * 0.5)); ambient.style.transform = `scale(${1.06 + p * 0.03})`; }
       if (posterWrap) posterWrap.style.transform = `scale(${Math.max(.78, 1 - p * 0.22)})`;
       if (sticky) sticky.classList.toggle("show", y > backdropH - 44);
       ticking = false;
@@ -3423,8 +3428,8 @@ function renderDetailPreview(preview) {
   const poster = preview.poster_url || preview.poster || "";
   const meta = [preview.year, preview.age_rating, preview.runtime].filter(Boolean).join(" · ");
   screen.innerHTML = `
-    <div class="detail-v2 detail-preview">
-      <div class="d-backdrop no-bd">
+    <div class="detail-v2 detail-preview ${poster ? "detail-hero-poster" : "detail-hero-none"}">
+      <div class="d-backdrop">
         ${poster ? `<img src="${posterSrc(poster, true)}" alt="" data-img-retry>` : ""}
         <div class="d-scrim-t"></div><div class="d-scrim-b"></div>
         <div class="d-floatctrls">
@@ -3561,24 +3566,36 @@ function renderDetail(id, m) {
   const genres = (m.genres || "").split(",").map(g => g.trim()).filter(Boolean).join(" · ");
   const metaParts = [m.year, m.age_rating, m.runtime].filter(Boolean);
   const heroMedia = detailHeroMedia(m);
-  const heroClass = heroMedia.kind === "backdrop" ? "" : " no-bd";
-  const heroStyle = heroMedia.kind === "backdrop"
-    ? `--hero-fit:${m.hero_fit === "cover" ? "cover" : "contain"};`
-      + `--hero-focus-x:${percentFromUnit(m.hero_focus_x, 0.5)};`
-      + `--hero-focus-y:${percentFromUnit(m.hero_focus_y, 0.36)};`
-    : "";
+  // Геометрия героя живёт на КОРНЕ карточки, а не на самом блоке: высота
+  // изображения и наплыв тела под него — одна связка, и менять их по
+  // отдельности нельзя, иначе постер отрывается от кадра.
+  const heroState = heroMedia.kind === "backdrop" ? "detail-hero-backdrop"
+    : heroMedia.kind === "poster_blur" ? "detail-hero-poster" : "detail-hero-none";
+  const heroFit = m.hero_fit === "cover" ? "cover" : "contain";
+  const heroStyle = `--hero-focus-x:${percentFromUnit(m.hero_focus_x, 0.5)};`
+    + `--hero-focus-y:${percentFromUnit(m.hero_focus_y, 0.36)};`;
+  const heroSrc = heroMedia.url ? posterSrc(heroMedia.url, heroMedia.kind !== "backdrop") : "";
+  // Резкий кадр и его размытая копия — ОДИН и тот же URL: вторую отрисовку
+  // браузер берёт из кэша, сети на неё не тратится. Тот же приём уже работает
+  // на полноэкранном подборе.
+  const heroInner = heroMedia.kind === "backdrop"
+    ? `<img class="d-backdrop-ambient" src="${heroSrc}" alt="" aria-hidden="true" decoding="async">
+        <div class="d-backdrop-stage">
+          <img id="d-backdrop-img" class="d-backdrop-main" src="${heroSrc}" alt="">
+        </div>`
+    : heroMedia.url ? `<img id="d-backdrop-img" src="${heroSrc}" alt="">` : "";
   const cast = normalizeDetailCast(m);
   const titles = movieTitleParts(m);
 
   screen.innerHTML = `
-    <div class="detail-v2">
+    <div class="detail-v2 ${heroState}">
       <div class="d-sticky" id="d-sticky">
         <button class="d-ctrl" id="d-back-sticky" aria-label="${attrEsc(t("detail_back"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
         <span class="t">${esc(titles.primary)}</span>
         <button class="d-ctrl" id="d-more-sticky" aria-label="${attrEsc(t("detail_share"))}">${shareSvg()}</button>
       </div>
-      <div class="d-backdrop${heroClass}" id="d-backdrop" style="${heroStyle}">
-        ${heroMedia.url ? `<img id="d-backdrop-img" src="${posterSrc(heroMedia.url, heroMedia.kind !== "backdrop")}" alt="">` : ""}
+      <div class="d-backdrop" id="d-backdrop" data-hero-fit="${heroFit}" style="${heroStyle}">
+        ${heroInner}
         <div class="d-scrim-t"></div><div class="d-scrim-b"></div>
         <div class="d-floatctrls">
           <button class="d-ctrl" id="d-back-top" aria-label="${attrEsc(t("detail_back"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
@@ -3636,23 +3653,37 @@ function renderDetail(id, m) {
 
   const backdropShell = document.getElementById("d-backdrop");
   const bdImg = document.getElementById("d-backdrop-img");
-  // A portrait is a valid fallback, but a failed wide backdrop must never leave
-  // a tall black hole above the poster. The proxy already retries the source;
-  // after that, switch once to the known poster or collapse to a compact gradient.
+  const detailRoot = screen.querySelector(".detail-v2");
+  const setHeroState = (state) => {
+    detailRoot?.classList.remove(
+      "detail-hero-backdrop", "detail-hero-poster", "detail-hero-none");
+    detailRoot?.classList.add(state);
+  };
+  // Деградация строго в одну сторону: кадр → размытый постер → тёмный фон.
+  // Прокси картинок уже повторял запрос сам; после его отказа второй попытки
+  // нет. Узел картинки ПЕРЕИСПОЛЬЗУЕТСЯ, а не пересоздаётся: на него уже
+  // подписан обработчик скролла, и подмена элемента оставила бы его висеть на
+  // выброшенном узле.
+  let degradedState = heroMedia.kind;
   const usePosterBackdropFallback = () => {
-    backdropShell?.classList.add("no-bd");
-    if (!bdImg) return;
-    // Постер уже не загрузился (или его нет) — дальше отступать некуда,
-    // остаётся нейтральный градиент самого блока.
-    if (bdImg.dataset.heroFallback === "poster"
-        || heroMedia.kind !== "backdrop" || !m.poster_url) {
-      bdImg.remove();
+    if (!backdropShell) return;
+    // Размытая копия — это тот же самый файл. Если он не загрузился, оставлять
+    // её на экране бессмысленно: получилось бы пятно от битой картинки.
+    backdropShell.querySelector(".d-backdrop-ambient")?.remove();
+    if (degradedState === "backdrop" && bdImg && m.poster_url) {
+      degradedState = "poster_blur";
+      bdImg.classList.remove("d-backdrop-main");
+      backdropShell.prepend(bdImg);
+      backdropShell.querySelector(".d-backdrop-stage")?.remove();
+      setHeroState("detail-hero-poster");
+      bdImg.addEventListener("error", usePosterBackdropFallback, { once: true });
+      bdImg.src = posterSrc(m.poster_url, true);
       return;
     }
-    backdropShell?.style.removeProperty("--hero-fit");
-    bdImg.dataset.heroFallback = "poster";
-    bdImg.addEventListener("error", usePosterBackdropFallback, { once: true });
-    bdImg.src = posterSrc(m.poster_url, true);
+    degradedState = "none";
+    backdropShell.querySelector(".d-backdrop-stage")?.remove();
+    bdImg?.remove();
+    setHeroState("detail-hero-none");
   };
   if (bdImg) {
     bdImg.addEventListener("error", usePosterBackdropFallback, { once: true });
