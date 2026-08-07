@@ -33,6 +33,14 @@ class FrontendCachePolicyTests(unittest.IsolatedAsyncioTestCase):
     async def _serve(self, path: str):
         return await self.static.get_response(path, scope(path))
 
+    def _local_assets(self) -> list[str]:
+        """Пути, которые разметка просит у НАШЕГО сервера (без внешних CDN)."""
+        import re
+
+        return [asset for asset in re.findall(
+            r'(?:src|href)="([^"?]+)(?:\?v=\d+)?"', self.index)
+            if not asset.startswith(("http://", "https://", "//", "#"))]
+
     def test_the_markup_requests_the_current_bundle_version(self):
         self.assertIn(EXPECTED_APP_VERSION, self.index)
         # Именно этот номер завис в Telegram, пока файл под ним менялся.
@@ -50,14 +58,28 @@ class FrontendCachePolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["Cache-Control"], REVALIDATE)
 
+    async def test_every_script_and_stylesheet_is_revalidated_not_just_the_bundle(self):
+        """Список из двух имён был верен ровно до появления frontend/js/*.js.
+
+        Новые модули не совпали ни с app.js, ни со style.css и поехали в
+        Telegram вообще без Cache-Control — то есть на эвристическом кэше
+        браузера, который держит файл тем дольше, чем он старше. Поэтому
+        проверка перебирает то, что РЕАЛЬНО просит разметка: следующий
+        добавленный модуль попадёт сюда сам, а не через полгода в проде.
+        """
+        assets = self._local_assets()
+        scripts = [a for a in assets if a.endswith((".js", ".css"))]
+        self.assertGreater(len(scripts), 2, "разметка обязана грузить модули, а не только бандл")
+        for asset in scripts:
+            with self.subTest(asset=asset):
+                response = await self._serve(asset)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers.get("Cache-Control"), REVALIDATE)
+
     async def test_every_version_in_the_markup_resolves_to_a_served_file(self):
         """Разметка не должна просить файл, которого сервер не отдаёт: именно
         рассинхрон разметки и раздачи и был причиной инцидента."""
-        import re
-
-        for asset in re.findall(r'(?:src|href)="([^"?]+)(?:\?v=\d+)?"', self.index):
-            if asset.startswith(("http://", "https://", "//", "#")):
-                continue
+        for asset in self._local_assets():
             with self.subTest(asset=asset):
                 response = await self._serve(asset)
                 self.assertEqual(response.status_code, 200)
