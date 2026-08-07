@@ -87,6 +87,7 @@ from repositories.catalog import (  # noqa: F401
     mark_film_artwork_checked,
     mark_film_visuals_checked,
     normalize_acquisition,
+    repair_film_poster,
     search_catalog,
     set_film_artwork,
     set_film_poster,
@@ -593,6 +594,19 @@ async def mark_film_hero_checked(film_id: int) -> None:
     """
     async with db_session.connect() as db:
         await db.execute("UPDATE films SET hero_checked_at = ? WHERE id = ?", (_now(), film_id))
+        await db.commit()
+
+
+async def mark_film_hero_recheck(film_id: int) -> None:
+    """Вернуть фильм в очередь подбора кадра, НЕ трогая саму картинку.
+
+    Вызывается, когда у фильма появились новые исходники (постер, backdrop_url):
+    прежний вывод сделан по другим данным и больше ничего не значит. Удалять
+    текущий кадр при этом нельзя — замена ещё не найдена, и до неё пользователь
+    обязан видеть то, что видел.
+    """
+    async with db_session.connect() as db:
+        await db.execute("UPDATE films SET hero_checked_at = NULL WHERE id = ?", (film_id,))
         await db.commit()
 
 

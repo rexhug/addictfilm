@@ -23,6 +23,7 @@ import aiohttp
 import database as db
 import fanart
 import hero_media
+import kinopoisk
 from config import (
     FANART_HERO_ENABLED,
     HERO_REFRESH_BATCH,
@@ -179,15 +180,40 @@ class HeroReport:
                 "unavailable": self.unavailable}
 
 
+def _sniff_webp_dimensions(head: bytes) -> tuple[int, int] | None:
+    """Три подформата WebP объявляют размер в трёх разных местах."""
+    chunk = head[12:16]
+    if chunk == b"VP8X" and len(head) >= 30:
+        return (int.from_bytes(head[24:27], "little") + 1,
+                int.from_bytes(head[27:30], "little") + 1)
+    if chunk == b"VP8L" and len(head) >= 25:
+        bits = int.from_bytes(head[21:25], "little")
+        return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+    if chunk == b"VP8 " and len(head) >= 30 and head[23:26] == b"\x9d\x01\x2a":
+        return (int.from_bytes(head[26:28], "little") & 0x3FFF,
+                int.from_bytes(head[28:30], "little") & 0x3FFF)
+    return None
+
+
 def _sniff_dimensions(head: bytes) -> tuple[int, int] | None:
     """Размеры из заголовка файла, без Pillow.
 
-    Pillow ради этой одной проверки в образ не тянем: PNG и JPEG (а Fanart
-    отдаёт именно их) объявляют размеры в первых байтах. Не распознали формат —
-    считаем проверку неприменимой, а не проваленной.
+    Pillow ради этой одной проверки в образ не тянем: каждый формат объявляет
+    размеры в первых байтах сам. Разобраны PNG, JPEG, GIF и WebP — то есть все
+    типы, которые мы принимаем, кроме AVIF: там размер лежит в ISOBMFF-боксах,
+    и ради него пришлось бы тащить полноценный парсер контейнера.
+
+    Нераспознанный формат — это «размер не доказан», а не «файл плохой»: такой
+    кадр не отбраковывается, но и горизонтальным не объявляется, потому что
+    объявить его было бы нечем.
     """
     if head[:8] == b"\x89PNG\r\n\x1a\n" and len(head) >= 24:
         return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+    if head[:6] in (b"GIF87a", b"GIF89a") and len(head) >= 10:
+        return (int.from_bytes(head[6:8], "little"),
+                int.from_bytes(head[8:10], "little"))
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return _sniff_webp_dimensions(head)
     if head[:2] != b"\xff\xd8":
         return None
     offset = 2
@@ -290,12 +316,20 @@ def _unchanged(film: dict, selection: hero_media.HeroSelection) -> bool:
             and film.get("hero_source") == selection.source)
 
 
+# Сколько кадров из ответа /image имеет смысл реально скачивать. Ответ уже
+# отсортирован по ширине, и годный кадр почти всегда лежит в начале; пять проб —
+# это потолок трафика на один фильм, а не ожидаемая цена.
+_MAX_PROBED_IMAGE_CANDIDATES = 5
+
+
 async def _try_kinopoisk(film: dict, *, probe_session) -> tuple[hero_media.HeroSelection | None, bool]:
     """(выбор, был ли временный сбой).
 
-    Ходит только за файлом, ссылка на который УЖЕ лежит в каталоге: никакого
-    стороннего API здесь нет. Поэтому канал продолжает работать, когда Fanart
-    недоступен, — ради этого он и заведён.
+    Сначала — файл по ссылке, которая УЖЕ лежит в каталоге: этот шаг не требует
+    внешнего API вовсе, поэтому канал продолжает работать, когда Fanart лежит.
+    Если сохранённая ссылка оказалась негодной, спрашиваем у kinopoisk остальные
+    кадры фильма: backdrop_url — это один кадр из карточки, а не весь набор, и
+    без этого запроса плохая ссылка была бы приговором.
     """
     # Сохранённый размер в ссылке — это то, что вернул API, а не единственная
     # доступная редакция файла: тот же CDN по тому же пути отдаёт крупнее.
@@ -314,6 +348,43 @@ async def _try_kinopoisk(film: dict, *, probe_session) -> tuple[hero_media.HeroS
             candidate, width=result.width, height=result.height)
         if selection is not None:
             return selection, False
+    return await _try_kinopoisk_image_collection(film, probe_session=probe_session)
+
+
+async def _try_kinopoisk_image_collection(
+        film: dict, *, probe_session) -> tuple[hero_media.HeroSelection | None, bool]:
+    """Кадры фильма отдельным запросом — ровно один вызов API на фильм."""
+    kp_id = str(film.get("kp_id") or "").strip()
+    if not kp_id:
+        return None, False
+    collection = await kinopoisk.image_candidates(kp_id, limit=10)
+    if collection.unavailable:
+        # Ответа не было. Записать сейчас запасной постер значило бы объявить
+        # «кадров нет» по чужому сбою — вернёмся к этому фильму позже.
+        logger.info("hero: кадры kinopoisk недоступны, фильм %s", film.get("id"))
+        return None, True
+    ordered = sorted(collection.candidates,
+                     key=hero_media.kinopoisk_image_metadata_rank, reverse=True)
+    probed = 0
+    for candidate in ordered[:_MAX_PROBED_IMAGE_CANDIDATES]:
+        # Метаданные провайдера идут в probe как ОЖИДАНИЕ: расхождение с
+        # заголовком файла — это ложь источника, и такой кадр отбраковывается.
+        result = await probe_image_info(
+            candidate["url"], expected_width=candidate["width"],
+            expected_height=candidate["height"], session=probe_session)
+        probed += 1
+        if result.verdict == PROBE_UNKNOWN:
+            return None, True
+        if result.verdict != PROBE_OK:
+            continue
+        selection = hero_media.choose_kinopoisk_background(
+            candidate["url"], width=result.width, height=result.height)
+        if selection is not None:
+            logger.info("hero: кадр kinopoisk выбран, фильм %s (кандидатов %s, проб %s)",
+                        film.get("id"), len(collection.candidates), probed)
+            return selection, False
+    logger.info("hero: годного кадра kinopoisk нет, фильм %s (кандидатов %s, проб %s)",
+                film.get("id"), len(collection.candidates), probed)
     return None, False
 
 

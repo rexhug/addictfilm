@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import UTC, datetime, timedelta
 
 import hero_media
 from fanart import FanartImage
@@ -16,6 +17,92 @@ from fanart import FanartImage
 def image(width=1920, height=1080, likes=12, language="00", ident="a") -> FanartImage:
     return FanartImage(id=ident, url=f"https://assets.fanart.tv/{ident}.jpg",
                        language=language, likes=likes, width=width, height=height)
+
+
+class KinopoiskCinematicPolicyTests(unittest.TestCase):
+    """Кадр из фильма — не редакторский фон, и мерить их одной линейкой нельзя."""
+
+    def test_a_real_cinematic_frame_is_accepted(self):
+        # 1920x804 — настоящий кадр из проката (2.39:1). Прежний потолок 2.20
+        # объявлял такой кадр браком, и фильм оставался без изображения при том,
+        # что изображение у него было.
+        for width, height in ((1920, 804), (1920, 1080), (1200, 633), (2048, 858)):
+            with self.subTest(size=f"{width}x{height}"):
+                selection = hero_media.choose_kinopoisk_background(
+                    "https://avatars.mds.yandex.net/get-ott/1/x/orig",
+                    width=width, height=height)
+                self.assertIsNotNone(selection)
+                self.assertEqual(selection.source, hero_media.SOURCE_KINOPOISK)
+                self.assertEqual(selection.hero_type, hero_media.HERO_BACKDROP)
+
+    def test_small_portrait_and_extreme_files_are_still_refused(self):
+        for width, height in ((800, 450), (900, 900), (208, 304), (1600, 500), (1199, 700)):
+            with self.subTest(size=f"{width}x{height}"):
+                self.assertIsNone(hero_media.choose_kinopoisk_background(
+                    "https://avatars.mds.yandex.net/get-ott/1/x/orig",
+                    width=width, height=height))
+
+    def test_fanart_keeps_its_stricter_editorial_gate(self):
+        """Послабление адресное: у Fanart порог не двигался.
+
+        Тот же 1920x804, который проходит как кадр kinopoisk, редакторским
+        фоном Fanart быть не перестаёт права — его отбирал человек под широкий
+        блок, и требовать от него композицию ближе к 16:9 честно.
+        """
+        self.assertFalse(hero_media.qualifies(image(width=1920, height=804)))
+        self.assertIsNone(hero_media.choose_fanart_background([image(width=1920, height=804)]))
+
+    def test_candidate_order_is_deterministic_and_prefers_real_backdrops(self):
+        candidates = [
+            {"url": "https://kp/c.jpg", "width": 1920, "height": 1080, "type": "wallpaper"},
+            {"url": "https://kp/a.jpg", "width": 1920, "height": 804, "type": "backdrops"},
+            {"url": "https://kp/b.jpg", "width": 1280, "height": 720, "type": "frame"},
+        ]
+        ordered = sorted(candidates, key=hero_media.kinopoisk_image_metadata_rank, reverse=True)
+        self.assertEqual([item["url"] for item in ordered],
+                         ["https://kp/a.jpg", "https://kp/b.jpg", "https://kp/c.jpg"])
+        self.assertEqual(sorted(reversed(candidates),
+                                key=hero_media.kinopoisk_image_metadata_rank, reverse=True),
+                         ordered, "порядок входа не должен влиять на выбор")
+
+
+class VisualRepairEligibilityTests(unittest.TestCase):
+    """Непустое поле — это не доказательство пригодной картинки."""
+
+    NOW = datetime(2026, 8, 7, 12, 0, tzinfo=UTC)
+
+    def _film(self, **fields) -> dict:
+        base = {"poster_url": "https://p/1.jpg", "backdrop_url": "https://kp/bad.jpg",
+                "poster_checked_at": self.NOW.isoformat(),
+                "artwork_checked_at": self.NOW.isoformat(),
+                "hero_url": "https://kp/frame.jpg", "hero_type": hero_media.HERO_BACKDROP}
+        return {**base, **fields}
+
+    def test_a_proven_frame_closes_the_question(self):
+        self.assertFalse(hero_media.visual_repair_needed(self._film(), now=self.NOW))
+
+    def test_a_stored_backdrop_url_alone_does_not_close_it(self):
+        # Ровно тот случай, который делал плохую ссылку бессмертной: поля
+        # заполнены, отметки проставлены — и фильм больше никогда не смотрели.
+        film = self._film(hero_url=None, hero_type=None,
+                          artwork_checked_at=(self.NOW - timedelta(days=30)).isoformat())
+        self.assertTrue(hero_media.visual_repair_needed(film, now=self.NOW))
+
+    def test_a_poster_fallback_stays_upgradable(self):
+        film = self._film(hero_type=hero_media.HERO_POSTER_BLUR,
+                          artwork_checked_at=(self.NOW - timedelta(days=30)).isoformat())
+        self.assertTrue(hero_media.visual_repair_needed(film, now=self.NOW))
+
+    def test_a_rejected_poster_is_repairable(self):
+        film = self._film(poster_display_state="rejected",
+                          poster_display_url="https://p/1.jpg",
+                          poster_checked_at=(self.NOW - timedelta(days=30)).isoformat())
+        self.assertTrue(hero_media.visual_repair_needed(film, now=self.NOW))
+
+    def test_a_recent_check_still_protects_the_provider(self):
+        """Пересматривать — да, на каждом открытии карточки — нет."""
+        film = self._film(hero_url=None, hero_type=None)
+        self.assertFalse(hero_media.visual_repair_needed(film, now=self.NOW))
 
 
 class QualificationTests(unittest.TestCase):

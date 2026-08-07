@@ -710,6 +710,34 @@ async def set_film_poster(imdb_id: str, poster_url: str) -> bool:
         return cur.rowcount > 0
 
 
+async def repair_film_poster(film_id: int, poster_url: str) -> bool:
+    """Заменить постер там, где он отсутствует или ЗАБРАКОВАН.
+
+    Обычный бекфил намеренно осторожен (см. set_film_poster): он только
+    заполняет пустое, иначе случайное совпадение по названию затёрло бы хороший
+    постер. Но из-за этого забракованный файл становился вечным — «ссылка есть,
+    значит трогать нельзя».
+
+    Это отдельный путь: он ПЕРЕЗАПИСЫВАЕТ, но ровно тот файл, который проверка
+    признала негодным, и только на другой URL. Вердикт при этом снимается —
+    он относился к прежнему файлу, а не к фильму.
+    """
+    url = str(poster_url or "").strip()
+    if not url:
+        return False
+    async with db_session.connect() as db:
+        cur = await db.execute(
+            "UPDATE films SET poster_url = ?, poster_display_state = 'auto', "
+            "poster_display_url = NULL, poster_reject_reason = NULL, "
+            "poster_checked_at = ? WHERE id = ? AND ("
+            "poster_url IS NULL OR poster_url = '' OR ("
+            "poster_display_state = 'rejected' AND poster_display_url = poster_url "
+            "AND poster_url <> ?))",
+            (url, _now(), film_id, url))
+        await db.commit()
+        return cur.rowcount > 0
+
+
 async def films_with_omdb_poster(limit: int = 200) -> list[dict]:
     """Фильмы с постером Amazon/OMDb (заметно хуже качеством, чем кинопоиск) —
     кандидаты на апгрейд. Возвращает [{id, imdb_id, title, title_original, year}]."""

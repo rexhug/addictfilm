@@ -3537,6 +3537,21 @@ function actorCardHTML(actor) {
     </div>`;
 }
 
+// Режим изображения выбирает СЕРВЕР и присылает в hero_type — ровно так же,
+// как на полноэкранном подборе. Карточка раньше решала сама по backdrop_url, и
+// это была та самая ошибка: непроверенная ссылка (в том числе серая заглушка
+// кинопоиска) растягивалась на всю ширину как настоящий кадр.
+function detailHeroMedia(movie) {
+  const backdrop = movie?.hero_type === "backdrop"
+    && typeof movie?.hero_url === "string" && movie.hero_url.trim()
+    ? movie.hero_url.trim() : null;
+  const poster = typeof movie?.poster_url === "string" && movie.poster_url.trim()
+    ? movie.poster_url.trim() : null;
+  if (backdrop) return { kind: "backdrop", url: backdrop };
+  if (poster) return { kind: "poster_blur", url: poster };
+  return { kind: "none", url: null };
+}
+
 function renderDetail(id, m) {
   // Запоминаем фильм и его исходное состояние — при возврате точечно обновим карточку,
   // если оценка/статус изменились.
@@ -3545,7 +3560,13 @@ function renderDetail(id, m) {
   syncCommentEditorState = null;
   const genres = (m.genres || "").split(",").map(g => g.trim()).filter(Boolean).join(" · ");
   const metaParts = [m.year, m.age_rating, m.runtime].filter(Boolean);
-  const bdUrl = m.backdrop_url || m.poster_url;
+  const heroMedia = detailHeroMedia(m);
+  const heroClass = heroMedia.kind === "backdrop" ? "" : " no-bd";
+  const heroStyle = heroMedia.kind === "backdrop"
+    ? `--hero-fit:${m.hero_fit === "cover" ? "cover" : "contain"};`
+      + `--hero-focus-x:${percentFromUnit(m.hero_focus_x, 0.5)};`
+      + `--hero-focus-y:${percentFromUnit(m.hero_focus_y, 0.36)};`
+    : "";
   const cast = normalizeDetailCast(m);
   const titles = movieTitleParts(m);
 
@@ -3556,8 +3577,8 @@ function renderDetail(id, m) {
         <span class="t">${esc(titles.primary)}</span>
         <button class="d-ctrl" id="d-more-sticky" aria-label="${attrEsc(t("detail_share"))}">${shareSvg()}</button>
       </div>
-      <div class="d-backdrop${m.backdrop_url ? "" : " no-bd"}" id="d-backdrop">
-        ${bdUrl ? `<img id="d-backdrop-img" src="${posterSrc(bdUrl, !m.backdrop_url)}" alt="">` : ""}
+      <div class="d-backdrop${heroClass}" id="d-backdrop" style="${heroStyle}">
+        ${heroMedia.url ? `<img id="d-backdrop-img" src="${posterSrc(heroMedia.url, heroMedia.kind !== "backdrop")}" alt="">` : ""}
         <div class="d-scrim-t"></div><div class="d-scrim-b"></div>
         <div class="d-floatctrls">
           <button class="d-ctrl" id="d-back-top" aria-label="${attrEsc(t("detail_back"))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
@@ -3621,19 +3642,19 @@ function renderDetail(id, m) {
   const usePosterBackdropFallback = () => {
     backdropShell?.classList.add("no-bd");
     if (!bdImg) return;
-    if (bdImg.dataset.heroFallback === "poster") {
+    // Постер уже не загрузился (или его нет) — дальше отступать некуда,
+    // остаётся нейтральный градиент самого блока.
+    if (bdImg.dataset.heroFallback === "poster"
+        || heroMedia.kind !== "backdrop" || !m.poster_url) {
       bdImg.remove();
       return;
     }
-    if (!m.poster_url) {
-      bdImg.remove();
-      return;
-    }
+    backdropShell?.style.removeProperty("--hero-fit");
     bdImg.dataset.heroFallback = "poster";
     bdImg.addEventListener("error", usePosterBackdropFallback, { once: true });
     bdImg.src = posterSrc(m.poster_url, true);
   };
-  if (bdImg && m.backdrop_url) {
+  if (bdImg) {
     bdImg.addEventListener("error", usePosterBackdropFallback, { once: true });
   }
   const startScroll = () => {

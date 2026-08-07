@@ -109,6 +109,28 @@ class HttpContractTests(unittest.TestCase):
     def test_unknown_api_path_is_not_swallowed_by_the_static_mount(self):
         self.assertEqual(self.client.get("/api/definitely-not-a-route").status_code, 404)
 
+    def test_movie_detail_never_presents_a_raw_backdrop_url_as_a_hero(self):
+        """Карточка обязана отдавать ту же медиа-модель, что рулетка и подбор.
+
+        Пока она возвращала сырую строку каталога, непроверенный backdrop_url
+        был для фронтенда истиной — и заглушка провайдера уезжала на экран как
+        настоящий кадр. Синтетический id намеренно: он отключает фоновое
+        обогащение, и тест не ходит наружу.
+        """
+        import asyncio
+        film_id = asyncio.run(self.db.get_or_create_film(
+            imdb_id="kp_777001", title="Фильм с плохим кадром", genres="драма",
+            media_type="movie", poster_url="https://p/ok.jpg", year="2025",
+            backdrop_url="https://avatars.mds.yandex.net/get-ott/plate/1344x756"))
+        body = self.client.get(f"/api/movie/{film_id}", headers=self._auth()).json()
+        self.assertEqual(body["hero_type"], "poster_blur")
+        self.assertEqual(body["hero_url"], "https://p/ok.jpg")
+        self.assertNotEqual(body["hero_url"], body["backdrop_url"])
+        # Поля карточки нормализация не съедает.
+        for field in ("status", "my_rating", "my_comment", "cast", "partner",
+                      "community", "share_link"):
+            self.assertIn(field, body)
+
 
 def _registered_api_routes(routes):
     """Yield routes through FastAPI's included-router wrappers.
