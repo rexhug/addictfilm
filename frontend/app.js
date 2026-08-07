@@ -3574,16 +3574,23 @@ function renderDetail(id, m) {
   const heroFit = m.hero_fit === "cover" ? "cover" : "contain";
   const heroStyle = `--hero-focus-x:${percentFromUnit(m.hero_focus_x, 0.5)};`
     + `--hero-focus-y:${percentFromUnit(m.hero_focus_y, 0.36)};`;
-  const heroSrc = heroMedia.url ? posterSrc(heroMedia.url, heroMedia.kind !== "backdrop") : "";
-  // Резкий кадр и его размытая копия — ОДИН и тот же URL: вторую отрисовку
-  // браузер берёт из кэша, сети на неё не тратится. Тот же приём уже работает
-  // на полноэкранном подборе.
+  // Резкий кадр и его размытая копия — ОДИН и тот же вызов, значит один и тот
+  // же URL: вторую отрисовку браузер берёт из кэша, сети на неё не тратится.
+  // Тот же приём уже работает на полноэкранном подборе.
+  //
+  // Выражение записано на месте, а не поднято в переменную, намеренно: проверка
+  // test_every_dynamic_image_source_goes_through_the_proxy читает исходник
+  // буквально и за переменной не идёт. Это её осознанное свойство — так она
+  // ловит любую новую картинку в обход /img, — и обходить её переменной значило
+  // бы гасить сторожа ради красоты.
   const heroInner = heroMedia.kind === "backdrop"
-    ? `<img class="d-backdrop-ambient" src="${heroSrc}" alt="" aria-hidden="true" decoding="async">
+    ? `<img class="d-backdrop-ambient" src="${posterSrc(heroMedia.url, heroMedia.kind !== "backdrop")}" alt="" aria-hidden="true" decoding="async">
         <div class="d-backdrop-stage">
-          <img id="d-backdrop-img" class="d-backdrop-main" src="${heroSrc}" alt="">
+          <img id="d-backdrop-img" class="d-backdrop-main" src="${posterSrc(heroMedia.url, heroMedia.kind !== "backdrop")}" alt="">
         </div>`
-    : heroMedia.url ? `<img id="d-backdrop-img" src="${heroSrc}" alt="">` : "";
+    : heroMedia.url
+      ? `<img id="d-backdrop-img" src="${posterSrc(heroMedia.url, heroMedia.kind !== "backdrop")}" alt="">`
+      : "";
   const cast = normalizeDetailCast(m);
   const titles = movieTitleParts(m);
 
