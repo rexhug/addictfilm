@@ -475,6 +475,11 @@ section{margin-top:30px;}
 .d-backdrop.no-bd .d-scrim-t{height:76px;background:linear-gradient(180deg,rgba(0,0,0,.38),transparent);}
 .d-backdrop.no-bd .d-scrim-b{height:100%;background:linear-gradient(180deg,transparent 18%,var(--bg) 94%);}
 .d-backdrop.no-bd + .d-body{margin-top:-38px;}
+/* Доказанный кадр показываем по правилам, которые прислал сервер: широкий кадр
+   2.39:1 нельзя обрезать до 16:11 вслепую, иначе от композиции ничего не
+   остаётся. Запасной размытый постер эти переменные не касаются. */
+.d-backdrop:not(.no-bd) img{object-fit:var(--hero-fit,cover);
+  object-position:var(--hero-focus-x,50%) var(--hero-focus-y,36%);background:var(--bg);}
 .detail-preview .d-preview-lines{min-height:58px;padding-top:8px;}
 
 /* Telegram's iOS WebView can dispatch pointerup and click separately. Give each

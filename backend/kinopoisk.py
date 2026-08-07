@@ -6,6 +6,7 @@
 """
 import logging
 from collections import OrderedDict
+from dataclasses import dataclass
 
 import aiohttp
 import cast as cast_model
@@ -14,7 +15,11 @@ from config import KINOPOISK_TOKENS
 
 logger = logging.getLogger(__name__)
 
-BASE = "https://api.poiskkino.dev/v1.4"
+BASE_V14 = "https://api.poiskkino.dev/v1.4"
+# Кадры живут в отдельной версии API: /v1.4 её не отдаёт. Держим оба адреса
+# рядом, чтобы не гадать, какой из них «настоящий».
+BASE_V15 = "https://api.poiskkino.dev/v1.5"
+BASE = BASE_V14
 _TIMEOUT = aiohttp.ClientTimeout(total=12)
 _session: aiohttp.ClientSession | None = None
 
@@ -162,7 +167,7 @@ async def aclose() -> None:
     _session = None
 
 
-async def _request(path: str, params) -> dict | None:
+async def _request(path: str, params, *, base: str = BASE_V14) -> dict | None:
     """GET к kinopoisk с ротацией токенов. Перебираем пул по кругу; при
     401/402/403/429 (квота/доступ) пробуем следующий ключ. None = все ключи не
     дали ответа (или пул пуст)."""
@@ -182,7 +187,7 @@ async def _request(path: str, params) -> dict | None:
             return None
         try:
             session = await _get_session()
-            async with session.get(f"{BASE}{path}", params=params,
+            async with session.get(f"{base}{path}", params=params,
                                    headers={"X-API-KEY": keys[idx]}) as resp:
                 if resp.status == 200:
                     return await resp.json()
@@ -199,6 +204,72 @@ async def _request(path: str, params) -> dict | None:
             continue
     logger.warning("Kinopoisk %s: пул ключей исчерпан (last=%s)", path, last)
     return None
+
+
+KINOPOISK_HERO_IMAGE_TYPES = (
+    "backdrops", "frame", "still", "screenshot", "wallpaper",
+)
+
+
+@dataclass(frozen=True)
+class ImageCandidatesResult:
+    """Итог ОДНОГО запроса за кадрами.
+
+    `unavailable` живёт здесь, а не в модуле: глобальный флаг «прошлый запрос не
+    удался» два параллельных фильма затирали бы друг другу, и один получал бы
+    чужой вердикт. Пустой список при `unavailable=False` — это законный ответ
+    «кадров нет», а не сбой.
+    """
+    candidates: tuple[dict, ...]
+    unavailable: bool = False
+
+
+def _normalized_image_candidate(raw: dict) -> dict | None:
+    """Кандидат с ДОКАЗАННЫМИ полями. Размеры провайдера — только для порядка
+    перебора: годность решает скачанный файл."""
+    if not isinstance(raw, dict) or raw.get("type") not in KINOPOISK_HERO_IMAGE_TYPES:
+        return None
+    url = str(raw.get("url") or "").strip()
+    if not url:
+        return None
+    try:
+        width = int(raw.get("width"))
+        height = int(raw.get("height"))
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    preview = str(raw.get("previewUrl") or raw.get("preview_url") or "").strip()
+    return {"url": url, "preview_url": preview or None, "width": width,
+            "height": height, "type": raw.get("type"), "language": raw.get("language")}
+
+
+async def image_candidates(kp_id: str, limit: int = 10) -> ImageCandidatesResult:
+    """Кадры фильма отдельным endpoint'ом /v1.5/image — один запрос, не больше.
+
+    Сохранённый backdrop_url — это ОДИН кадр, который когда-то вернула карточка
+    фильма, а не весь доступный набор. Когда он оказывается негодным, спросить
+    остальные больше негде.
+
+    `page` не передаём намеренно: в v1.5 пагинация курсорная, и первая страница
+    запрашивается именно отсутствием курсора.
+    """
+    key = str(kp_id or "").strip()
+    if not key or not KINOPOISK_TOKENS:
+        return ImageCandidatesResult(())
+    bounded = max(1, min(int(limit), 10))
+    params = [("movieId", key), ("limit", str(bounded))]
+    params += [("notNullFields", field) for field in ("url", "width", "height")]
+    params += [("sortField", "width"), ("sortType", "-1")]
+    params += [("type", image_type) for image_type in KINOPOISK_HERO_IMAGE_TYPES]
+    data = await _request("/image", params, base=BASE_V15)
+    if data is None:
+        return ImageCandidatesResult((), unavailable=True)
+    docs = data.get("docs") if isinstance(data, dict) else None
+    return ImageCandidatesResult(tuple(
+        candidate for raw in (docs or [])
+        if (candidate := _normalized_image_candidate(raw)) is not None
+    ))
 
 
 async def search_movies(query: str, limit: int = 20) -> list[dict]:

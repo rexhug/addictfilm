@@ -14,10 +14,11 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from fanart import FanartImage
 
-HERO_POLICY_VERSION = "hero-policy-v2"
+HERO_POLICY_VERSION = "hero-policy-v3"
 
 HERO_BACKDROP = "backdrop"
 HERO_POSTER_BLUR = "poster_blur"
@@ -44,7 +45,23 @@ MIN_HERO_HEIGHT = 850
 MIN_HERO_RATIO = 1.55
 MAX_HERO_RATIO = 2.20
 
+# Отдельный порог для kinopoisk, и это не послабление ради послабления.
+# Fanart раздаёт РЕДАКТОРСКИЕ фоны — их отбирали люди под широкий блок, и
+# требовать от них 16:9 честно. Kinopoisk раздаёт КАДРЫ ИЗ ФИЛЬМА, а кино
+# снимают в 2.39:1: настоящий кадр «F1» — 1920x804, и прежний потолок 2.20
+# отбраковывал его как брак. Это была не защита качества, а отказ от
+# единственного горизонтального изображения, которое у фильма есть.
+MIN_KINOPOISK_HERO_WIDTH = 1200
+MIN_KINOPOISK_HERO_HEIGHT = 630
+MIN_KINOPOISK_HERO_PIXELS = 750_000
+MIN_KINOPOISK_HERO_RATIO = 1.45
+MAX_KINOPOISK_HERO_RATIO = 2.55
+
 _POSTER_FALLBACK_SCORE = 0.5
+
+# Как часто фильму без доказанной картинки разрешено снова беспокоить провайдер
+# из фонового обогащения карточки. Доказанный кадр сюда не попадает вообще.
+VISUAL_RECHECK_DAYS = 14
 
 
 @dataclass(frozen=True)
@@ -146,15 +163,29 @@ def choose_fanart_background(images: Iterable[FanartImage]) -> HeroSelection | N
 MIN_KINOPOISK_HERO_SCORE = 0.72
 
 
-def score_kinopoisk_background(width: int, height: int) -> float:
-    """У kinopoisk нет ни лайков, ни языка кадра — только размеры.
+def kinopoisk_hero_qualifies(width: int, height: int) -> bool:
+    """Жёсткий порог допуска. Именно он решает «кадр или не кадр»."""
+    if width < MIN_KINOPOISK_HERO_WIDTH or height < MIN_KINOPOISK_HERO_HEIGHT:
+        return False
+    if width * height < MIN_KINOPOISK_HERO_PIXELS:
+        return False
+    return MIN_KINOPOISK_HERO_RATIO <= width / height <= MAX_KINOPOISK_HERO_RATIO
 
-    Поэтому вес перераспределён между теми двумя измерениями, которые есть, а
-    не выдуман из воздуха: разрешение 0.65, соотношение 0.35. Порог остаётся
-    прежним, то есть кадру от kinopoisk приходится быть объективно крупнее,
-    чтобы его добрать без «социальных» очков.
+
+def score_kinopoisk_background(width: int, height: int) -> float:
+    """Оценка НЕ решает допуск — его решает kinopoisk_hero_qualifies.
+
+    Здесь считается только «насколько кадр хорош среди допущенных»: от этого
+    зависит, как скоро мы вернёмся его перепроверять (см. _HERO_STRONG_SCORE).
+    Соотношение в счёт не идёт намеренно: диапазон 1.45–2.55 уже задан
+    политикой, и наказывать кадр за то, что он снят в 2.39:1, значило бы
+    считать браком нормальную кинематографическую композицию.
     """
-    score = _resolution_score(width, height) * 0.65 + _ratio_score(width, height) * 0.35
+    if not kinopoisk_hero_qualifies(width, height):
+        return 0.0
+    pixels = width * height
+    resolution = min(1.0, 0.72 + (pixels - MIN_KINOPOISK_HERO_PIXELS) / 2_000_000)
+    score = resolution * 0.65 + 0.35
     return round(max(0.0, min(1.0, score)), 4)
 
 
@@ -192,15 +223,42 @@ def choose_kinopoisk_background(url: str | None, *, width: int | None,
     normalized = str(url or "").strip()
     if not normalized or not width or not height:
         return None
-    if width < MIN_HERO_WIDTH or height < MIN_HERO_HEIGHT:
-        return None
-    if not MIN_HERO_RATIO <= width / height <= MAX_HERO_RATIO:
+    if not kinopoisk_hero_qualifies(width, height):
         return None
     score = score_kinopoisk_background(width, height)
     if score < MIN_KINOPOISK_HERO_SCORE:
         return None
     return HeroSelection(url=normalized, hero_type=HERO_BACKDROP, source=SOURCE_KINOPOISK,
                          quality_score=score, width=width, height=height)
+
+
+KINOPOISK_IMAGE_TYPE_PRIORITY = {
+    "backdrops": 5,
+    "frame": 4,
+    "still": 4,
+    "screenshot": 3,
+    "wallpaper": 2,
+}
+
+
+def kinopoisk_image_metadata_rank(candidate: dict) -> tuple:
+    """Порядок ПЕРЕБОРА кандидатов, а не решение о годности.
+
+    Размеры здесь пришли от API и вполне могут врать — поэтому ключ нужен
+    только чтобы начинать с наиболее многообещающего и чтобы два прогона по
+    одному и тому же ответу дали один и тот же выбор. Последний элемент ключа —
+    сам URL: при полном равенстве метаданных выбор всё равно определён.
+    """
+    width = int(candidate.get("width") or 0)
+    height = int(candidate.get("height") or 0)
+    ratio = width / height if width and height else 0.0
+    return (
+        KINOPOISK_IMAGE_TYPE_PRIORITY.get(candidate.get("type"), 0),
+        width * height,
+        width,
+        -abs(ratio - (16 / 9)),
+        str(candidate.get("url") or ""),
+    )
 
 
 def poster_fallback(poster_url: str | None) -> HeroSelection | None:
@@ -265,6 +323,53 @@ def display_poster_url(film: dict) -> str | None:
         return None
     value = str(film.get("poster_url") or "").strip()
     return value or None
+
+
+def hero_is_verified_backdrop(film: dict) -> bool:
+    """Есть ли у фильма кадр, ДОКАЗАННЫЙ проверкой файла.
+
+    Заполненный backdrop_url этого не доказывает: он приходит из карточки
+    фильма и не проверялся ничем. Доказательством считается только запись,
+    которую оставил подбор кадра, — она делается после скачивания файла.
+    """
+    return (film.get("hero_type") == HERO_BACKDROP
+            and bool(str(film.get("hero_url") or "").strip()))
+
+
+def visual_repair_needed(film: dict, *, now: datetime | None = None) -> bool:
+    """Стоит ли фоново сходить к провайдеру за картинками этого фильма.
+
+    Прежнее правило («url пуст И проверки не было») делало ЛЮБУЮ непустую
+    ссылку вечной: битый постер и заглушка вместо кадра считались готовым
+    результатом и больше никогда не пересматривались.
+
+    Здесь наоборот: критерий — не «пусто ли поле», а «есть ли пригодная
+    картинка». При этом доказанный кадр закрывает вопрос совсем, а всё
+    остальное перепроверяется не чаще, чем раз в окно, — иначе каждое открытие
+    карточки уходило бы во внешний API.
+    """
+    moment = now or datetime.now(UTC)
+    if display_poster_url(film) is None and not _checked_recently(
+            film.get("poster_checked_at"), moment):
+        return True
+    if hero_is_verified_backdrop(film):
+        return False
+    return not _checked_recently(film.get("artwork_checked_at"), moment)
+
+
+def _checked_recently(checked_at: object, moment: datetime) -> bool:
+    value = str(checked_at or "").strip()
+    if not value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        # Нераспознанная отметка — это НЕ «проверяли только что». Считаем, что
+        # проверки не было: лишний фоновый запрос дешевле застрявшей картинки.
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return moment - parsed < timedelta(days=VISUAL_RECHECK_DAYS)
 
 
 def public_media_row(film: dict) -> dict:

@@ -32,6 +32,7 @@ import kinopoisk
 import omdb
 import pair_activity_notifications
 import pair_notifications
+import posters
 import ratelimit
 import recommendations
 import search
@@ -386,9 +387,7 @@ async def movie(film_id: int, user: dict = Depends(current_user)):
     # The current card returns from the catalog right away; a background task
     # improves missing poster/backdrop for the next view.
     imdb_id = f.get("imdb_id")
-    needs_poster = not f.get("poster_url") and not f.get("poster_checked_at")
-    needs_backdrop = not f.get("backdrop_url") and not f.get("artwork_checked_at")
-    if (needs_poster or needs_backdrop) and imdb_id and imdb_id.startswith("tt"):
+    if hero_media.visual_repair_needed(f) and imdb_id and imdb_id.startswith("tt"):
         _schedule_visual_enrichment(film_id, imdb_id)
     needs_actor_photos = cast_model.cast_refresh_due(f)
     needs_director_photos = bool(f.get("directors")) and not f.get("director_photos_checked_at")
@@ -409,7 +408,12 @@ async def movie(film_id: int, user: dict = Depends(current_user)):
     f["cast"] = db.decode_film_cast(f.get("cast_json"))
     f["partner"] = context["partner"]
     f["share_link"] = _movie_link(film_id)
-    return f
+    # Карточка обязана отдавать ТУ ЖЕ медиа-модель, что рулетка и подбор.
+    # Пока она возвращала сырую строку каталога, backdrop_url был для неё
+    # истиной — то есть непроверенная ссылка и заглушка провайдера попадали на
+    # экран как настоящий кадр. Нормализация должна быть последней: она
+    # опирается на поля, дополненные выше.
+    return hero_media.public_media_row(f)
 
 
 async def _enrich_film_visuals(film_id: int, imdb_id: str) -> None:
@@ -421,10 +425,35 @@ async def _enrich_film_visuals(film_id: int, imdb_id: str) -> None:
                 imdb_id, assets.get("poster_url"), assets.get("backdrop_url"),
                 assets.get("age_rating"),
             )
+        await _repair_film_artwork(film_id)
     except Exception:
         logger.warning("Visual enrichment failed for film %s", film_id, exc_info=True)
     finally:
         _visual_enrichment_film_ids.discard(film_id)
+
+
+async def _repair_film_artwork(film_id: int) -> None:
+    """Replace a missing or rejected poster, then requeue the hero selection.
+
+    ``mark_film_visuals_checked`` only fills empty columns, which is right for
+    ingestion but leaves a rejected poster in place forever. The repair path is
+    allowed to overwrite that one file — and only that one, via
+    ``repair_film_poster`` — reusing the existing multi-source resolver rather
+    than adding a second one.
+    """
+    film = await db.get_film(film_id)
+    if not film:
+        return
+    repaired = False
+    if hero_media.display_poster_url(film) is None:
+        poster_url = await posters.resolve(
+            film.get("imdb_id") or "", film.get("title"), film.get("year"),
+            film.get("title_original"))
+        repaired = bool(poster_url) and await db.repair_film_poster(film_id, poster_url)
+    # Новые исходники обесценивают прежний вывод о кадре: пересобрать его должен
+    # воркер, а не пользовательский запрос.
+    if repaired or not hero_media.hero_is_verified_backdrop(film):
+        await db.mark_film_hero_recheck(film_id)
 
 
 def _schedule_visual_enrichment(film_id: int, imdb_id: str) -> None:

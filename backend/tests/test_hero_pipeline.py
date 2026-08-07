@@ -16,6 +16,8 @@ import aiohttp
 import database as db
 import fanart
 import hero_media
+import kinopoisk
+import migrations
 from enrichment import hero
 
 
@@ -63,6 +65,31 @@ class HeroPipelineTests(unittest.IsolatedAsyncioTestCase):
         await db.init_db()
         film_id = await self._film()
         self.assertIsNotNone(await db.get_film(film_id))
+
+    async def test_policy_v3_rechecks_rows_that_were_accepted_as_a_backdrop(self):
+        """Ошибочные строки выглядят УСПЕХОМ, и в этом вся ловушка.
+
+        Заглушка провайдера, принятая прежней политикой, лежит в базе как
+        hero_type = 'backdrop'. Сброс «только пустых и постерных» обошёл бы
+        ровно те записи, ради которых политику и меняли.
+        """
+        poster_id = await self._film("tt0000101")
+        backdrop_id = await self._film("tt0000102")
+        await db.update_film_hero(
+            poster_id, hero_url="https://p/1.jpg", hero_type=hero_media.HERO_POSTER_BLUR,
+            hero_source=hero_media.SOURCE_POSTER, hero_quality_score=0.5,
+            hero_width=None, hero_height=None)
+        await db.update_film_hero(
+            backdrop_id, hero_url="https://kp/plate.jpg", hero_type=hero_media.HERO_BACKDROP,
+            hero_source=hero_media.SOURCE_KINOPOISK, hero_quality_score=0.9,
+            hero_width=1920, hero_height=1080)
+        await migrations._apply_hero_policy_v3_migration()
+        for film_id in (poster_id, backdrop_id):
+            with self.subTest(film_id=film_id):
+                film = await db.get_film(film_id)
+                self.assertIsNone(film["hero_checked_at"])
+                self.assertIsNotNone(film["hero_url"],
+                                     "картинку не удаляем: замена ещё не найдена")
 
     async def test_a_legacy_row_without_hero_columns_stays_readable(self):
         film_id = await self._film()
@@ -379,6 +406,73 @@ class HeroPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(distribution["by_source"]["none"]["count"], 1)
 
 
+class KinopoiskImageEndpointTests(unittest.IsolatedAsyncioTestCase):
+    """Запрос за кадрами: один вызов, честная форма, честный вердикт."""
+
+    def _capture(self):
+        calls: list[tuple] = []
+
+        async def _request(path, params, **kwargs):
+            calls.append((path, list(params), kwargs))
+            return {"docs": [
+                {"url": "https://kp/frame.jpg", "previewUrl": "https://kp/p.jpg",
+                 "width": 1920, "height": 804, "type": "backdrops", "language": "00"},
+                {"url": "https://kp/cover.jpg", "width": 1000, "height": 1500,
+                 "type": "cover", "language": "00"},
+                {"url": "", "width": 1920, "height": 1080, "type": "still"},
+                {"url": "https://kp/nosize.jpg", "type": "frame"},
+            ]}
+        return calls, mock.patch.object(kinopoisk, "_request", new=_request)
+
+    async def test_the_request_never_sends_a_page_number(self):
+        """В v1.5 пагинация курсорная: `page=1` там не первая страница, а мусор
+        в запросе, из-за которого можно не получить ничего."""
+        calls, patch_request = self._capture()
+        with patch_request, mock.patch.object(kinopoisk, "KINOPOISK_TOKENS", ("k",)):
+            await kinopoisk.image_candidates("5003510")
+        self.assertEqual(len(calls), 1, "один фильм — один запрос")
+        path, params, kwargs = calls[0]
+        self.assertEqual(path, "/image")
+        self.assertEqual(kwargs["base"], kinopoisk.BASE_V15)
+        self.assertNotIn("page", [name for name, _ in params])
+        self.assertIn(("movieId", "5003510"), params)
+        self.assertIn(("limit", "10"), params)
+
+    async def test_only_provable_horizontal_types_survive_normalization(self):
+        _calls, patch_request = self._capture()
+        with patch_request, mock.patch.object(kinopoisk, "KINOPOISK_TOKENS", ("k",)):
+            result = await kinopoisk.image_candidates("5003510")
+        self.assertFalse(result.unavailable)
+        self.assertEqual(result.candidates, ({
+            "url": "https://kp/frame.jpg", "preview_url": "https://kp/p.jpg",
+            "width": 1920, "height": 804, "type": "backdrops", "language": "00",
+        },), "обложка, пустой url и кандидат без размеров кадром быть не могут")
+
+    async def test_no_answer_is_reported_as_unavailable_not_as_empty(self):
+        async def _request(_path, _params, **_kwargs):
+            return None
+        with mock.patch.object(kinopoisk, "_request", new=_request), \
+                mock.patch.object(kinopoisk, "KINOPOISK_TOKENS", ("k",)):
+            result = await kinopoisk.image_candidates("5003510")
+        self.assertTrue(result.unavailable)
+        self.assertEqual(result.candidates, ())
+
+    async def test_unavailability_belongs_to_the_request_not_to_the_module(self):
+        """Два фильма подряд не должны наследовать чужой вердикт."""
+        async def _request(_path, params, **_kwargs):
+            if dict(params)["movieId"] == "bad":
+                return None
+            return {"docs": [{"url": "https://kp/frame.jpg", "width": 1920,
+                              "height": 804, "type": "frame", "language": "00"}]}
+        with mock.patch.object(kinopoisk, "_request", new=_request), \
+                mock.patch.object(kinopoisk, "KINOPOISK_TOKENS", ("k",)):
+            broken = await kinopoisk.image_candidates("bad")
+            healthy = await kinopoisk.image_candidates("good")
+        self.assertTrue(broken.unavailable)
+        self.assertFalse(healthy.unavailable)
+        self.assertEqual(len(healthy.candidates), 1)
+
+
 class ImageProbeTests(unittest.TestCase):
     """Проверка файла — единственное место, где мы вообще качаем байты."""
 
@@ -391,8 +485,25 @@ class ImageProbeTests(unittest.TestCase):
                 + (1080).to_bytes(2, "big") + (1920).to_bytes(2, "big"))
         self.assertEqual(hero._sniff_dimensions(head), (1920, 1080))
 
+    def test_gif_dimensions_are_read_from_the_screen_descriptor(self):
+        head = b"GIF89a" + (208).to_bytes(2, "little") + (304).to_bytes(2, "little") + b"\x00"
+        self.assertEqual(hero._sniff_dimensions(head), (208, 304))
+
+    def test_webp_dimensions_are_read_for_all_three_subformats(self):
+        lossy = (b"RIFF" + b"\x00" * 4 + b"WEBPVP8 " + b"\x00" * 7 + b"\x9d\x01\x2a"
+                 + (1920).to_bytes(2, "little") + (804).to_bytes(2, "little"))
+        lossless = (b"RIFF" + b"\x00" * 4 + b"WEBPVP8L" + b"\x00" * 5
+                    + (((804 - 1) << 14) | (1920 - 1)).to_bytes(4, "little"))
+        extended = (b"RIFF" + b"\x00" * 4 + b"WEBPVP8X" + b"\x00" * 8
+                    + (1920 - 1).to_bytes(3, "little") + (804 - 1).to_bytes(3, "little"))
+        for head in (lossy, lossless, extended):
+            with self.subTest(head=head[12:16]):
+                self.assertEqual(hero._sniff_dimensions(head), (1920, 804))
+
     def test_an_unknown_format_is_not_a_failure(self):
-        self.assertIsNone(hero._sniff_dimensions(b"GIF89a not really"))
+        # AVIF мы принимаем как тип, но размер его контейнера не разбираем:
+        # «не доказано» — законный ответ, а падать на нём нельзя.
+        self.assertIsNone(hero._sniff_dimensions(b"\x00\x00\x00\x20ftypavif"))
 
 
 class _ProbeResponse:
@@ -895,8 +1006,78 @@ class KinopoiskRenditionFlowTests(unittest.IsolatedAsyncioTestCase):
         with patch_probe:
             await hero.refresh_due_heroes(limit=1)
         self.assertEqual(len(asked), 2)
-        # 1344x756 не проходит порог — честно уходим в постер, а не растягиваем.
-        self.assertEqual((await db.get_film(self.film_id))["hero_type"], "poster_blur")
+        # 1344x756 проходит порог kinopoisk (v3): это настоящий кадр, и
+        # отправлять фильм в размытый постер при живом кадре незачем.
+        film = await db.get_film(self.film_id)
+        self.assertEqual(film["hero_type"], "backdrop")
+        self.assertEqual((film["hero_width"], film["hero_height"]), (1344, 756))
+
+    async def _with_kp_id(self, kp_id="5003510", backdrop=...):
+        async with db.db_runtime.connect(db.DB_PATH, db.DATABASE_URL) as conn:
+            if backdrop is ...:
+                await conn.execute("UPDATE films SET kp_id = ? WHERE id = ?",
+                                   (kp_id, self.film_id))
+            else:
+                await conn.execute("UPDATE films SET kp_id = ?, backdrop_url = ? WHERE id = ?",
+                                   (kp_id, backdrop, self.film_id))
+            await conn.commit()
+
+    async def test_a_rejected_saved_backdrop_falls_through_to_the_image_collection(self):
+        """Главный сценарий. Сохранённая ссылка — ОДИН кадр, а не весь набор.
+
+        Пока негодная ссылка означала «кадров нет», фильм с настоящим широким
+        кадром неделями показывал серую заглушку.
+        """
+        await self._with_kp_id()
+        asked, patch_probe = self._probe(
+            lambda url: hero.ImageProbeResult(hero.PROBE_OK, 1920, 804)
+            if url == "https://kp/frame.jpg" else hero.ImageProbeResult(hero.PROBE_REJECTED))
+        collection = mock.AsyncMock(return_value=kinopoisk.ImageCandidatesResult((
+            {"url": "https://kp/tiny.jpg", "preview_url": None, "width": 900,
+             "height": 900, "type": "screenshot", "language": "00"},
+            {"url": "https://kp/frame.jpg", "preview_url": None, "width": 1920,
+             "height": 804, "type": "backdrops", "language": "00"},
+        )))
+        with patch_probe, mock.patch.object(kinopoisk, "image_candidates", new=collection):
+            await hero.refresh_due_heroes(limit=1)
+        collection.assert_awaited_once_with("5003510", limit=10)
+        film = await db.get_film(self.film_id)
+        self.assertEqual(film["hero_type"], "backdrop")
+        self.assertEqual(film["hero_source"], "kinopoisk")
+        self.assertEqual(film["hero_url"], "https://kp/frame.jpg")
+        self.assertEqual((film["hero_width"], film["hero_height"]), (1920, 804))
+        self.assertEqual(film["backdrop_url"],
+                         "https://avatars.mds.yandex.net/get-ott/1/x/1344x756",
+                         "прежняя ссылка остаётся в каталоге: её не мы туда клали")
+
+    async def test_an_unavailable_image_collection_leaves_the_film_retryable(self):
+        """Сбой источника — это не «кадров нет»."""
+        await self._with_kp_id(backdrop=None)
+        collection = mock.AsyncMock(
+            return_value=kinopoisk.ImageCandidatesResult((), unavailable=True))
+        with mock.patch.object(kinopoisk, "image_candidates", new=collection):
+            report = await hero.refresh_due_heroes(limit=1)
+        self.assertEqual(report.unavailable, 1)
+        film = await db.get_film(self.film_id)
+        self.assertIsNone(film["hero_checked_at"], "фильм обязан вернуться в очередь")
+        self.assertIsNone(film["hero_type"], "запасной постер по чужому сбою не пишем")
+
+    async def test_an_empty_image_collection_is_an_answer_not_a_failure(self):
+        await self._with_kp_id(backdrop=None)
+        collection = mock.AsyncMock(return_value=kinopoisk.ImageCandidatesResult(()))
+        with mock.patch.object(kinopoisk, "image_candidates", new=collection):
+            report = await hero.refresh_due_heroes(limit=1)
+        self.assertEqual(report.unavailable, 0)
+        film = await db.get_film(self.film_id)
+        self.assertEqual(film["hero_type"], "poster_blur")
+        self.assertIsNotNone(film["hero_checked_at"])
+
+    async def test_a_film_without_kp_id_never_asks_for_frames(self):
+        collection = mock.AsyncMock(return_value=kinopoisk.ImageCandidatesResult(()))
+        _asked, patch_probe = self._probe(lambda _url: hero.ImageProbeResult(hero.PROBE_REJECTED))
+        with patch_probe, mock.patch.object(kinopoisk, "image_candidates", new=collection):
+            await hero.refresh_due_heroes(limit=1)
+        collection.assert_not_awaited()
 
     async def test_a_network_failure_does_not_trigger_a_second_rendition_request(self):
         asked, patch_probe = self._probe(lambda _url: hero.ImageProbeResult(hero.PROBE_UNKNOWN))
