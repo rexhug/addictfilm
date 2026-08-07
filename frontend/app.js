@@ -3557,6 +3557,21 @@ function detailHeroMedia(movie) {
   return { kind: "none", url: null };
 }
 
+const DETAIL_HERO_RATIO_CLASSES = ["d-hero-standard", "d-hero-wide", "d-hero-ultrawide"];
+
+// Насколько кадр широкий — решает сам файл, а не каталог. У 2.39:1 при ширине
+// экрана остаётся ~163 px сцены против ~219 px у 16:9, поэтому одинаковая рамка
+// для обоих означает, что чем кинематографичнее кадр, тем хуже его видно.
+// Порог 2.15 отделяет прокатные 2.35–2.39 от «широкого» 1.85–2.0.
+function classifyDetailHeroRatio(img) {
+  const shell = img?.closest?.(".d-backdrop");
+  if (!shell || !img.naturalWidth || !img.naturalHeight) return;
+  const ratio = img.naturalWidth / img.naturalHeight;
+  shell.classList.remove(...DETAIL_HERO_RATIO_CLASSES);
+  shell.classList.add(
+    ratio >= 2.15 ? "d-hero-ultrawide" : ratio >= 1.85 ? "d-hero-wide" : "d-hero-standard");
+}
+
 function renderDetail(id, m) {
   // Запоминаем фильм и его исходное состояние — при возврате точечно обновим карточку,
   // если оценка/статус изменились.
@@ -3677,6 +3692,9 @@ function renderDetail(id, m) {
     // Размытая копия — это тот же самый файл. Если он не загрузился, оставлять
     // её на экране бессмысленно: получилось бы пятно от битой картинки.
     backdropShell.querySelector(".d-backdrop-ambient")?.remove();
+    // Классы соотношения относятся к КАДРУ. Постер вертикальный, и унаследовать
+    // от провалившегося кадра «ultrawide» он не должен.
+    backdropShell.classList.remove(...DETAIL_HERO_RATIO_CLASSES);
     if (degradedState === "backdrop" && bdImg && m.poster_url) {
       degradedState = "poster_blur";
       bdImg.classList.remove("d-backdrop-main");
@@ -3694,6 +3712,14 @@ function renderDetail(id, m) {
   };
   if (bdImg) {
     bdImg.addEventListener("error", usePosterBackdropFallback, { once: true });
+  }
+  // Только доказанный кадр в режиме contain: у cover рамка и так заполнена, а у
+  // постера соотношение вообще не про эту задачу. Кэшированный файл приходит уже
+  // complete — тогда классифицируем сразу, иначе по load. Обработчик ошибки
+  // выше не трогаем: это отдельная подписка.
+  if (bdImg && heroMedia.kind === "backdrop" && heroFit === "contain") {
+    if (bdImg.complete) classifyDetailHeroRatio(bdImg);
+    else bdImg.addEventListener("load", () => classifyDetailHeroRatio(bdImg), { once: true });
   }
   const startScroll = () => {
     const h = document.getElementById("d-backdrop").getBoundingClientRect().height;
