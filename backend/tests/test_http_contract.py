@@ -14,6 +14,8 @@ import unittest
 from pathlib import Path
 from urllib.parse import urlencode
 
+from fastapi.routing import APIRoute
+
 BOT_TOKEN = "test:token"
 os.environ.setdefault("BOT_TOKEN", BOT_TOKEN)
 
@@ -106,6 +108,36 @@ class HttpContractTests(unittest.TestCase):
 
     def test_unknown_api_path_is_not_swallowed_by_the_static_mount(self):
         self.assertEqual(self.client.get("/api/definitely-not-a-route").status_code, 404)
+
+
+def _registered_api_routes(routes):
+    """Yield routes through FastAPI's included-router wrappers.
+
+    Newer FastAPI releases keep included routers nested until OpenAPI is built.
+    Walking that stable public shape lets this test catch duplicate HTTP
+    registrations that an ``include_in_schema=False`` legacy route would hide.
+    """
+    for route in routes:
+        if isinstance(route, APIRoute):
+            yield route
+            continue
+        nested_router = getattr(route, "original_router", None)
+        if nested_router is not None:
+            yield from _registered_api_routes(nested_router.routes)
+
+
+class RouteRegistrationTests(unittest.TestCase):
+    def test_each_path_and_http_method_has_one_owner(self):
+        """Router extraction must not leave a hidden legacy route behind."""
+        import main
+
+        owners: dict[tuple[str, str], list[str]] = {}
+        for route in _registered_api_routes(main.app.router.routes):
+            for method in route.methods or ():
+                key = (route.path, method)
+                owners.setdefault(key, []).append(route.name)
+        duplicates = {key: names for key, names in owners.items() if len(names) > 1}
+        self.assertEqual(duplicates, {})
 
 
 ADMIN_PATHS = {

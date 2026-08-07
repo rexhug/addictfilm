@@ -26,4 +26,3 @@ async def stats(user: dict = Depends(current_user)):
 async def stats_person_films(role: str = "actor", name: str = "", scope: str = "me",
                              user: dict = Depends(current_user)):
     return await _main_handler("stats_person_films", role, name, scope, user)
-

@@ -1,7 +1,7 @@
 # 🎬 Movie Mini App
 
 **Публичный Telegram Mini App** для поиска, просмотра и оценивания фильмов
-(модель Кинопоиск/Letterboxd, single-user). Любой пользователь Telegram
+(модель Кинопоиск/Letterboxd, multi-user). Любой пользователь Telegram
 регистрируется при первом входе; у каждого свой список и оценки. Каталог
 фильмов общий, community-рейтинг = средняя оценка всех пользователей.
 
@@ -15,8 +15,11 @@ Telegram (кнопка меню бота)
    └─▶ frontend/  — Mini App (HTML/JS, Telegram WebApp SDK, RU/EN, тема Telegram)
          └─▶ backend/ — FastAPI: раздаёт фронт + JSON API
                ├─ auth.py       — initData (HMAC), регистрируем любого юзера
+               ├─ routers/       — HTTP-маршруты по доменам (auth, фильмы, пары,
+               │                   каталог, статистика, подбор, уведомления, admin)
                ├─ search.py     — cache-first: каталог → kinopoisk.dev → OMDb/Wikidata
-               ├─ database.py   — Neon/Postgres в проде, SQLite (WAL) локально
+               ├─ database.py + repositories/ — DB-фасад, Neon/Postgres в проде,
+               │                   SQLite (WAL) локально
                ├─ ratelimit.py  — дневной бюджет источников + per-user throttle
                ├─ recommendation*/mood.py — подбор: quiz-граф, mood-слой, движки
                ├─ hero_media.py / fanart.py / posters.py — визуал карточек
@@ -87,7 +90,8 @@ Mini App пушить не умеет — уведомления (напомин
 - **Фоновое обогащение** — отдельный Fly-процесс `worker`: постеры, кадры,
   канонический состав, портреты, hero-медиа. Подробности —
   [docs/ENRICHMENT.md](docs/ENRICHMENT.md).
-- **Локализация RU/EN** — весь видимый текст через `DICT` во `frontend/app.js`.
+- **Локализация RU/EN** — видимый текст централизован в `DICT`; `frontend/app.js`
+  работает вместе с небольшими browser-модулями из `frontend/js/` без сборщика.
 
 Архитектурные решения и их причины — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 добытые граблями уроки — [docs/LESSONS.md](docs/LESSONS.md).
@@ -120,8 +124,10 @@ Mini App пушить не умеет — уведомления (напомин
 - [x] **Локализация RU/EN**.
 - [ ] Веб-логин вне Telegram (сейчас только Telegram initData).
 - [x] CI: GitHub Actions запускає smoke-тести й лише потім деплоїть `main` на Fly.
-- [ ] Бот-уведомления (напоминания оценить) — есть только БД-заготовка
-      (`get_unrated_watched`), сам бот не написан.
+- [x] Парные Telegram-уведомления: durable outbox с безопасным replay после
+      рестарта. Одноразовая команда напоминаний об неоценённых фильмах готова в
+      `backend/bot_notifications.py`; для регулярного запуска ей нужен отдельный
+      scheduler/worker-процесс.
 
 Все грабли и уроки — в **docs/LESSONS.md** (обязательно к прочтению).
 
