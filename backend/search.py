@@ -246,7 +246,12 @@ def _kp_details(doc: dict) -> dict:
         # Kinopoisk — русскоязычный источник, поэтому его данные идут В РУССКИЕ
         # слоты и никогда в английские. Английским остаётся только оригинальное
         # название и enName, которые провайдер отдаёт как есть.
-        "title_ru": name,
+        # `name` уже упал на alternativeName, если русского названия у записи
+        # нет вовсе (kp 459902: name = null). Для общей колонки title это
+        # правильный фолбэк, но объявлять латиницу РУССКИМ названием — нет.
+        # Запись всё равно отбивает проверка на входе каталога; врать на уровне
+        # источника незачем.
+        "title_ru": name if flang.looks_russian(name) else None,
         "title_en": original,
         "plot_ru": doc.get("description") or doc.get("shortDescription"),
         "genres_ru": flang.localized_genres(kp_genres, "ru") or None,
