@@ -4977,13 +4977,15 @@ if (!tg) {
       if (!isDeepLink) prefetchHomeData();
       me = await mePromise;
       bindNotificationRefresh();
+      // Capabilities are independent of the initial route and must refresh
+      // without delaying the first screen.
+      AdminMode.refresh().catch(() => {});
       // Возможности спрашиваем у сервера отдельно и не блокируем ими старт:
       // обычный пользователь получит пустой набор и ничего админского не увидит.
       if (sp.startsWith("inv_")) showAcceptInvite(sp);  // пришли по инвайт-ссылке
       else if (sp.startsWith("film_")) openDetail(+sp.slice(5));  // пришли по ссылке «Поделиться» фильмом
       else {
         showHome();
-        AdminMode.refresh().catch(() => {});
       }
     } catch (e) {
       screen.innerHTML = emptyState("⛔", t("load_err"), uiError(e, "auth_err_s"));

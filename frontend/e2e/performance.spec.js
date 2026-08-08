@@ -67,10 +67,12 @@ test("deep links do not prefetch unrelated home rails", async ({ page }) => {
     const url = new URL(route.request().url());
     requests.push(url.pathname);
     if (url.pathname === "/api/me") return route.fulfill(json({ id: 1, label: "Test", features: {} }));
+    if (url.pathname === "/api/me/capabilities") return route.fulfill(json({}));
     return route.fulfill(json({}));
   });
   await page.goto("/", { waitUntil: "networkidle" });
   expect(requests.filter(path => path === "/api/browse" || path === "/api/genres" || path === "/api/collections")).toEqual([]);
+  expect(requests).toContain("/api/me/capabilities");
 });
 
 test("static shell is present before deferred app scripts execute", async ({ page }) => {
