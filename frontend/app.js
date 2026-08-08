@@ -792,7 +792,7 @@ function emptyState(icon, text, sub = "") {
   return `<div class="empty"><div class="empty-icon">${glyph}</div><div class="empty-text">${esc(text)}</div>${sub ? `<div class="empty-sub">${esc(sub)}</div>` : ""}</div>`;
 }
 
-function posterTile(m, { onClick, badge } = {}) {
+function posterTile(m, { onClick, badge, imagePriority = "lazy" } = {}) {
   const titles = movieTitleParts(m);
   const card = document.createElement("div");
   card.className = "poster";
@@ -805,7 +805,7 @@ function posterTile(m, { onClick, badge } = {}) {
   card.innerHTML = `
     <div class="art">
       <div class="noposter">${esc(titles.primary)}</div>
-      ${m.poster_url ? `<img loading="lazy" decoding="async" src="${posterSrc(m.poster_url, true)}" alt="" data-img-retry>` : ""}
+      ${m.poster_url ? `<img loading="${imagePriority === "lazy" ? "lazy" : "eager"}"${imagePriority === "high" ? ` fetchpriority="high"` : ""} decoding="async" src="${posterSrc(m.poster_url, true)}" alt="" data-img-retry>` : ""}
     </div>
     <div class="meta">
       <div class="t">${esc(titles.primary)}</div>
@@ -819,6 +819,18 @@ function posterTile(m, { onClick, badge } = {}) {
     onClick();
   };
   return card;
+}
+function warmInitialPopularPosters(items, limit = 3) {
+  items.slice(0, limit).forEach(movie => {
+    if (!movie?.poster_url) return;
+    const image = new Image();
+    image.decoding = "async";
+    image.src = posterSrc(movie.poster_url, true);
+    if (typeof image.decode === "function") {
+      const timeout = new Promise(resolve => { setTimeout(resolve, 1500); });
+      Promise.race([image.decode().catch(() => {}), timeout]).catch(() => {});
+    }
+  });
 }
 function gridOf(items, toCard) { const g = document.createElement("div"); g.className = "grid"; for (const it of items) g.appendChild(toCard(it)); return g; }
 function openDetail(id, back, preview = null) {
@@ -996,7 +1008,15 @@ async function showHome() {
   loadRail("rail-top", "/api/browse?sort=top&limit=20");
   loadGenrePills();
   loadCollectionsRail();
-  refreshNotificationBadge();
+  const refresh = () => refreshNotificationBadge();
+  if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(refresh, { timeout: 900 });
+  else window.setTimeout(refresh, 0);
+}
+
+function prefetchHomeData() {
+  const popular = api("/api/browse?sort=popular&limit=20").catch(() => null);
+  popular.then(data => warmInitialPopularPosters(data?.items || []));
+  ["/api/browse?sort=top&limit=20", "/api/genres", "/api/collections"].forEach(path => api(path).catch(() => null));
 }
 
 async function refreshNotificationBadge() {
@@ -2040,7 +2060,10 @@ async function loadRail(id, path, { onItems = null } = {}) {
     if (!el) return;
     if (!items.length) { el.innerHTML = `<div class="rail-empty">${esc(t("rail_empty"))}</div>`; return; }
     const back = () => { setActiveTab("home"); showHome(); };
-    el.replaceChildren(...items.map(m => posterTile(m, { onClick: () => openDetail(m.id, back, m) })));
+    el.replaceChildren(...items.map((m, index) => posterTile(m, {
+      onClick: () => openDetail(m.id, back, m),
+      imagePriority: id === "rail-pop" ? (index === 0 ? "high" : index < 3 ? "eager" : "lazy") : "lazy",
+    })));
   } catch (e) { if (el) el.innerHTML = `<div class="rail-empty">${esc(t("rail_err"))}</div>`; }
 }
 
@@ -4948,15 +4971,22 @@ if (!tg) {
   applyTabLabels();
   (async () => {
     try {
-      me = await api("/api/me");
+      const mePromise = api("/api/me");
+      const sp = tg?.initDataUnsafe?.start_param || "";
+      const isDeepLink = sp.startsWith("inv_") || sp.startsWith("film_");
+      if (!isDeepLink) prefetchHomeData();
+      me = await mePromise;
       bindNotificationRefresh();
+      // Capabilities are independent of the initial route and must refresh
+      // without delaying the first screen.
+      AdminMode.refresh().catch(() => {});
       // Возможности спрашиваем у сервера отдельно и не блокируем ими старт:
       // обычный пользователь получит пустой набор и ничего админского не увидит.
-      AdminMode.refresh().catch(() => {});
-      const sp = tg?.initDataUnsafe?.start_param || "";
       if (sp.startsWith("inv_")) showAcceptInvite(sp);  // пришли по инвайт-ссылке
       else if (sp.startsWith("film_")) openDetail(+sp.slice(5));  // пришли по ссылке «Поделиться» фильмом
-      else showHome();
+      else {
+        showHome();
+      }
     } catch (e) {
       screen.innerHTML = emptyState("⛔", t("load_err"), uiError(e, "auth_err_s"));
     }

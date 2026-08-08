@@ -734,7 +734,25 @@ test("pair invite stays balanced and safe across compact mobile viewports", asyn
   await expect(page.getByRole("heading", { name: /приглашает тебя смотреть фильмы вместе/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Принять" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Не сейчас" })).toBeVisible();
+  const waitForStableInviteLayout = async () => {
+    await page.evaluate(async () => {
+      const roots = [
+        document.querySelector(".accept-screen"),
+        document.querySelector(".accept"),
+        document.querySelector("#tabbar"),
+      ].filter(Boolean);
+      const animations = roots
+        .flatMap(node => node.getAnimations({ subtree: true }))
+        .filter(animation => {
+          const timing = animation.effect?.getComputedTiming?.();
+          return timing && Number.isFinite(timing.endTime) && timing.endTime <= 1500;
+        });
+      await Promise.all(animations.map(animation => animation.finished.catch(() => {})));
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+  };
   const assertSafeInvite = async () => {
+    await waitForStableInviteLayout();
     const layout = await page.evaluate(() => {
       const card = document.querySelector(".accept").getBoundingClientRect();
       const bar = document.querySelector("#tabbar").getBoundingClientRect();
@@ -750,8 +768,8 @@ test("pair invite stays balanced and safe across compact mobile viewports", asyn
       };
     });
     expect(layout.overflows).toBeFalsy();
-    // Keep a real gap even on a compact 320×568 Mini App viewport.  The
-    // tab bar has a translucent shadow, so three CSS pixels remains visible.
+    // Keep a real gap even on a compact 320×568 Mini App viewport. The
+    // compact invite layout reserves space for the translucent tab bar.
     expect(layout.cardBottom).toBeLessThanOrEqual(layout.tabTop - 3);
     expect(layout.nameOverflow).toBeTruthy();
     expect(layout.illustrationLoaded).toBeTruthy();

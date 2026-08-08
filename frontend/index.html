@@ -4,12 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>Addict Film</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script defer src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="stylesheet" href="style.css?v=98">
 </head>
 <body>
   <div id="top-scrim" aria-hidden="true"></div>
-  <main id="screen"><!-- рендерится из app.js --></main>
+  <main id="screen">
+    <div class="startup-shell" aria-hidden="true">
+      <div class="startup-shell-head"><div class="startup-shell-line startup-shell-title"></div><div class="startup-shell-line startup-shell-subtitle"></div></div>
+      <div class="startup-shell-search"></div>
+      <div class="startup-shell-section"><div class="startup-shell-line startup-shell-heading"></div><div class="startup-shell-rail"><i></i><i></i><i></i></div></div>
+    </div>
+  </main>
 
   <nav id="tabbar">
     <button class="tab active" data-tab="home">
@@ -34,12 +40,12 @@
     </button>
   </nav>
 
-  <script src="js/api.js?v=2"></script>
-  <script src="js/ui.js?v=2"></script>
-  <script src="js/recommendations.js?v=2"></script>
-  <script src="js/stats.js?v=2"></script>
-  <script src="js/reviews.js?v=2"></script>
-  <script src="js/partner.js?v=2"></script>
-  <script src="app.js?v=101"></script>
+  <script defer src="js/api.js?v=2"></script>
+  <script defer src="js/ui.js?v=2"></script>
+  <script defer src="js/recommendations.js?v=2"></script>
+  <script defer src="js/stats.js?v=2"></script>
+  <script defer src="js/reviews.js?v=2"></script>
+  <script defer src="js/partner.js?v=2"></script>
+  <script defer src="app.js?v=101"></script>
 </body>
 </html>
