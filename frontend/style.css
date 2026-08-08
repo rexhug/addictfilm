@@ -484,13 +484,23 @@ section{margin-top:30px;}
 .empty-text{font-size:16px;font-weight:600;margin-top:12px;}
 .empty-sub{font-size:13px;color:var(--ink-2);margin-top:4px;}
 
+/* Static first-paint shell: keeps the viewport composed while auth/data load. */
+.startup-shell{display:grid;gap:22px;padding:calc(28px + var(--safe-top)) 16px 160px;opacity:.82;}
+.startup-shell-head{display:grid;gap:10px;padding:4px 2px 0;}
+.startup-shell-line,.startup-shell-search,.startup-shell-rail i{background:linear-gradient(90deg,#17191f,#20232b,#17191f);background-size:200% 100%;animation:startup-shimmer 1.35s ease-in-out infinite;border-radius:10px;}
+.startup-shell-title{width:58%;height:28px}.startup-shell-subtitle{width:42%;height:14px;border-radius:7px}
+.startup-shell-search{height:58px;border-radius:18px}.startup-shell-section{display:grid;gap:16px}.startup-shell-heading{width:34%;height:22px}
+.startup-shell-rail{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.startup-shell-rail i{display:block;height:222px;border-radius:18px;}
+@keyframes startup-shimmer{0%,100%{background-position:100% 0}50%{background-position:0 0}}
+
 /* ── motion ─────────────────────────────────── */
 @keyframes rise{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:none;}}
-.rise{animation:rise .55s cubic-bezier(.2,.8,.2,1) both;}
-.d1{animation-delay:.04s;}.d2{animation-delay:.10s;}.d3{animation-delay:.17s;}.d4{animation-delay:.25s;}.d5{animation-delay:.33s;}
-#tabbar{animation:rise .6s cubic-bezier(.2,.8,.2,1) both;animation-delay:.15s;}
+.rise{animation:rise .24s cubic-bezier(.2,.8,.2,1) both;}
+.d1{animation-delay:.01s;}.d2{animation-delay:.025s;}.d3{animation-delay:.05s;}.d4{animation-delay:.075s;}.d5{animation-delay:.10s;}
+#tabbar{animation:rise .28s cubic-bezier(.2,.8,.2,1) both;animation-delay:.02s;}
 @media (prefers-reduced-motion:reduce){
   .rise,#tabbar{animation:none;}
+  .startup-shell-line,.startup-shell-search,.startup-shell-rail i{animation:none;}
   .poster:active,.genre:active,.chip:active,.back:active,.d-stars button:active,
   .d-cta:active,.d-icon-btn:active,#tabbar .tab:active{transform:none;}
   .sk::after{animation:none;}
