@@ -549,8 +549,13 @@ section{margin-top:30px;}
 /* Размытая копия ТОГО ЖЕ файла. Нужна ровно за одним: убрать чёрные поля,
    которые contain оставляет вокруг широкого кадра. Тихая и тёмная — это фон
    сцены, а не эффект. */
-.d-backdrop .d-backdrop-ambient{position:absolute;z-index:0;inset:-28px;
-  width:calc(100% + 56px);height:calc(100% + 56px);
+/* Запас по вертикали больше, чем радиус размытия. blur размывает и СОБСТВЕННЫЙ
+   край элемента: если он совпадает с краем блока, внутрь кадра уезжает тёмная
+   виньетка. Замер на белой картинке: при width:100% рамка тёмная со всех
+   четырёх сторон, при запасе — ровная заливка. Поэтому запас нужен и сверху,
+   и по бокам; убрать горизонтальный, оставив вертикальный, нельзя. */
+.d-backdrop .d-backdrop-ambient{position:absolute;z-index:0;top:-40px;left:-28px;right:auto;
+  width:calc(100% + 56px);height:calc(100% + 80px);
   object-fit:cover;object-position:var(--hero-focus-x,50%) var(--hero-focus-y,36%);
   filter:blur(24px) saturate(.82) brightness(.58);opacity:.62;transform:scale(1.06);
   pointer-events:none;}
@@ -595,8 +600,14 @@ section{margin-top:30px;}
 .d-backdrop[data-hero-fit="cover"] .d-backdrop-main{
   object-fit:cover;object-position:var(--hero-focus-x,50%) var(--hero-focus-y,36%);}
 
-.d-scrim-t{position:absolute;inset:0 0 auto;height:120px;z-index:2;pointer-events:none;
-  background:linear-gradient(180deg,rgba(0,0,0,.55),transparent);}
+/* Верхняя зона — управляемая, а не «как вышло». Кнопки Telegram стояли прямо на
+   деталях кадра (снег «Интерстеллара», белый бокс F1, розовое мыло «Бойцовского
+   клуба»), и там же проходит жёсткая верхняя граница резкого contain-кадра:
+   маска гасит только низ. Плотная, но многоступенчатая шторка убирает и то, и
+   другое, оставаясь кинематографичной, а не чёрной полосой. */
+.d-scrim-t{position:absolute;inset:0 0 auto;height:42%;z-index:2;pointer-events:none;
+  background:linear-gradient(to bottom,rgba(5,5,5,.82) 0%,rgba(5,5,5,.74) 10%,
+    rgba(5,5,5,.58) 20%,rgba(5,5,5,.36) 32%,rgba(5,5,5,.16) 46%,rgba(5,5,5,0) 60%);}
 /* Многоступенчатый уход в фон страницы: последняя остановка — ровно var(--bg),
    поэтому видимой горизонтальной границы между героем и телом не остаётся. */
 /* Последние 5% — уже сплошной var(--bg), а не «почти». Пока градиент добирал
